@@ -140,6 +140,22 @@ All workflows are `workflow_dispatch` only.
     - `ref` (default: `main`)
     - `run_verify` (default: `true`)
 
+## Release Asset List (`release-all.yml`)
+### Desktop
+- Windows: `CodexManager_<version>_x64-setup.exe`, `CodexManager-portable.exe`
+- macOS: `CodexManager_<version>_aarch64.dmg`, `CodexManager_<version>_x64.dmg`
+- Linux: `CodexManager_<version>_amd64.AppImage`, `CodexManager_<version>_amd64.deb`, `CodexManager-linux-portable.zip`
+
+### Service
+- Windows: `CodexManager-service-windows-x86_64.zip`
+- macOS: `CodexManager-service-macos-arm64.zip`, `CodexManager-service-macos-x64.zip`
+- Linux: `CodexManager-service-linux-x86_64.zip`
+
+### Release Type
+- Tag containing `-` (for example `v0.1.5-beta.1`) is published as **pre-release**
+- Tag without `-` (for example `v0.1.5`) is published as a stable release
+- GitHub will still auto-attach `Source code (zip/tar.gz)`
+
 ## Script Reference
 ### `scripts/rebuild.ps1` (Windows)
 Primarily for local Windows packaging. `-AllPlatforms` mode dispatches GitHub workflow.
@@ -334,5 +350,9 @@ Related implementation points:
 - `crates/service/src/gateway/upstream/transport.rs`
 
 ## Contact
-![Personal](assets/images/personal.jpg)
-![Group](assets/images/group.jpg)
+<p align="center">
+  <img src="assets/images/group.jpg" alt="Group QR Code" width="280" />
+</p>
+
+- Telegram group: <https://t.me/+8o2Eu7GPMIFjNDM1>
+- WeChat Official Account: 七线牛马

@@ -24,6 +24,7 @@ docs/*
 
 # Worktrees
 /.worktrees/
+/.tmp-antigravity-manager*/
 
 # Docs/specs (keep repo clean)
 /docs/

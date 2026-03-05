@@ -140,6 +140,22 @@ pwsh -NoLogo -NoProfile -File scripts/rebuild.ps1 -Bundle nsis -CleanDist -Porta
     - `ref`（默认 `main`）
     - `run_verify`（默认 `true`，可关闭）
 
+## Release 产物清单（`release-all.yml`）
+### Desktop
+- Windows：`CodexManager_<version>_x64-setup.exe`、`CodexManager-portable.exe`
+- macOS：`CodexManager_<version>_aarch64.dmg`、`CodexManager_<version>_x64.dmg`
+- Linux：`CodexManager_<version>_amd64.AppImage`、`CodexManager_<version>_amd64.deb`、`CodexManager-linux-portable.zip`
+
+### Service
+- Windows：`CodexManager-service-windows-x86_64.zip`
+- macOS：`CodexManager-service-macos-arm64.zip`、`CodexManager-service-macos-x64.zip`
+- Linux：`CodexManager-service-linux-x86_64.zip`
+
+### 发布类型
+- `tag` 包含 `-`（例如 `v0.1.5-beta.1`）会发布为 **pre-release**
+- 不包含 `-`（例如 `v0.1.5`）会发布为正式版
+- GitHub 仍会自动附带 `Source code (zip/tar.gz)`
+
 ## 脚本说明
 ### `scripts/rebuild.ps1`（Windows）
 默认用于本地 Windows 打包；`-AllPlatforms` 模式会调用 GitHub workflow。
