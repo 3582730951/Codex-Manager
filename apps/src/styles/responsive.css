@@ -25,8 +25,9 @@
   }
 
   .settings-top-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
+
 }
 
 @media (max-width: 1024px) {
@@ -75,12 +76,25 @@
   }
 
   .settings-top-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    grid-template-columns: 1fr;
+    gap: 0;
   }
 
-  .settings-top-grid .settings-card {
-    min-height: auto;
+  .settings-top-grid .settings-top-item,
+  .settings-proxy-strip .settings-top-item {
+    grid-template-columns: minmax(128px, 156px) minmax(0, 1fr);
+    gap: 10px 14px;
+    align-items: flex-start;
+  }
+
+  .settings-top-label {
+    grid-row: 1 / span 2;
+    padding-top: 6px;
+  }
+
+  .settings-top-main,
+  .settings-top-aside {
+    grid-column: 2;
   }
 
   .settings-workers-grid {
@@ -212,6 +226,26 @@
 
   .settings-row-proxy .settings-inline-input {
     flex: 1 1 100%;
+  }
+
+  .settings-top-grid .settings-top-item,
+  .settings-proxy-strip .settings-top-item {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .settings-top-label {
+    grid-row: auto;
+    padding-top: 0;
+  }
+
+  .settings-top-main,
+  .settings-top-aside {
+    grid-column: auto;
+  }
+
+  .settings-top-aside .settings-inline-select {
+    width: 100%;
   }
 }
 

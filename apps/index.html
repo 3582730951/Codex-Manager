@@ -331,16 +331,14 @@
                     <div class="panel settings-sheet">
                         <div class="settings-grid">
                             <div class="settings-top-grid">
-                                <div
-                                    class="panel settings-card settings-card-update settings-card-compact"
-                                >
-                                    <div class="panel-header">
-                                        <div>
-                                            <h3>更新设置</h3>
-                                            <p>自动检查与手动更新</p>
-                                        </div>
-                                    </div>
-                                    <div class="settings-row">
+                                <div class="settings-top-item settings-top-item-update">
+                                    <label
+                                        class="hint settings-field-label settings-top-label"
+                                        for="autoCheckUpdate"
+                                    >
+                                        <span>更新设置</span>
+                                    </label>
+                                    <div class="settings-top-main settings-row-actions">
                                         <label
                                             class="update-auto-check switch-control"
                                             for="autoCheckUpdate"
@@ -360,6 +358,17 @@
                                             </span>
                                             <span>自动检查更新</span>
                                         </label>
+                                        <div class="hint">
+                                            当前版本：<span
+                                                id="updateCurrentVersion"
+                                                >--</span
+                                            >
+                                        </div>
+                                        <div id="updateStatusText" class="hint">
+                                            尚未检查更新
+                                        </div>
+                                    </div>
+                                    <div class="settings-top-aside settings-row-actions">
                                         <button
                                             id="checkUpdate"
                                             class="secondary"
@@ -368,27 +377,25 @@
                                             检查更新
                                         </button>
                                     </div>
-                                    <div class="hint">
-                                        当前版本：<span
-                                            id="updateCurrentVersion"
-                                            >--</span
-                                        >
-                                    </div>
-                                    <div id="updateStatusText" class="hint">
-                                        尚未检查更新
-                                    </div>
                                 </div>
 
-                                <div
-                                    class="panel settings-card settings-card-gateway settings-card-compact"
-                                >
-                                    <div class="panel-header">
-                                        <div>
-                                            <h3>网关策略</h3>
-                                            <p>配置请求路由策略</p>
-                                        </div>
-                                    </div>
-                                    <div class="settings-row">
+                                <div class="settings-top-item settings-top-item-gateway">
+                                    <label
+                                        class="hint settings-field-label settings-field-label-with-tip settings-top-label"
+                                        for="routeStrategySelect"
+                                    >
+                                        <span>网关策略</span>
+                                        <span
+                                            id="routeStrategyHint"
+                                            class="settings-inline-tip"
+                                            tabindex="0"
+                                            role="note"
+                                            title="按账号顺序优先请求，优先使用可用账号（不可用账号不会参与选路）。"
+                                            aria-label="网关选路策略说明：按账号顺序优先请求，优先使用可用账号（不可用账号不会参与选路）。"
+                                            >?</span
+                                        >
+                                    </label>
+                                    <div class="settings-top-main settings-row-actions">
                                         <label
                                             class="update-auto-check switch-control"
                                             for="cpaNoCookieHeaderMode"
@@ -421,22 +428,7 @@
                                             </span>
                                         </label>
                                     </div>
-                                    <div class="settings-row">
-                                        <label
-                                            class="hint settings-field-label settings-field-label-with-tip"
-                                            for="routeStrategySelect"
-                                        >
-                                            <span>网关选路策略</span>
-                                            <span
-                                                id="routeStrategyHint"
-                                                class="settings-inline-tip"
-                                                tabindex="0"
-                                                role="note"
-                                                title="按账号顺序优先请求，优先使用可用账号（不可用账号不会参与选路）。"
-                                                aria-label="网关选路策略说明：按账号顺序优先请求，优先使用可用账号（不可用账号不会参与选路）。"
-                                                >?</span
-                                            >
-                                        </label>
+                                    <div class="settings-top-aside settings-row-actions">
                                         <select
                                             id="routeStrategySelect"
                                             class="inline-select settings-inline-select"
@@ -451,16 +443,14 @@
                                     </div>
                                 </div>
 
-                                <div
-                                    class="panel settings-card settings-card-compact"
-                                >
-                                    <div class="panel-header">
-                                        <div>
-                                            <h3>窗口行为</h3>
-                                            <p>关闭按钮动作</p>
-                                        </div>
-                                    </div>
-                                    <div class="settings-row">
+                                <div class="settings-top-item settings-top-item-window">
+                                    <label
+                                        class="hint settings-field-label settings-top-label"
+                                        for="closeToTrayOnClose"
+                                    >
+                                        <span>窗口行为</span>
+                                    </label>
+                                    <div class="settings-top-main settings-row-actions">
                                         <label
                                             class="update-auto-check switch-control"
                                             for="closeToTrayOnClose"
@@ -480,22 +470,24 @@
                                             <span>关闭时最小化到托盘</span>
                                         </label>
                                     </div>
-                                    <div class="hint">
-                                        默认关闭：点击关闭会直接退出应用。
+                                    <div class="settings-top-aside settings-row-actions">
+                                        <div class="hint">
+                                            默认关闭：点击关闭会直接退出应用。
+                                        </div>
                                     </div>
                                 </div>
 
                                 <div
                                     id="settingsLowTransparencyCard"
-                                    class="panel settings-card settings-card-visual settings-card-compact"
+                                    class="settings-top-item settings-top-item-visual"
                                 >
-                                    <div class="panel-header">
-                                        <div>
-                                            <h3>视觉性能</h3>
-                                            <p>低端设备可开启，减少特效开销</p>
-                                        </div>
-                                    </div>
-                                    <div class="settings-row">
+                                    <label
+                                        class="hint settings-field-label settings-top-label"
+                                        for="lowTransparencyMode"
+                                    >
+                                        <span>视觉性能</span>
+                                    </label>
+                                    <div class="settings-top-main settings-row-actions">
                                         <label
                                             class="update-auto-check switch-control"
                                             for="lowTransparencyMode"
@@ -515,17 +507,19 @@
                                             <span>性能模式 / 低透明度</span>
                                         </label>
                                     </div>
-                                    <div class="hint">
-                                        关闭 blur、backdrop-filter
-                                        等高成本效果。
+                                    <div class="settings-top-aside settings-row-actions">
+                                        <div class="hint">
+                                            关闭 blur、backdrop-filter
+                                            等高成本效果。
+                                        </div>
                                     </div>
                                 </div>
                             </div>
 
                             <div class="settings-proxy-strip">
-                                <div class="settings-row settings-row-proxy settings-row-actions">
+                                <div class="settings-top-item settings-top-item-proxy">
                                     <label
-                                        class="hint settings-field-label settings-field-label-with-tip"
+                                        class="hint settings-field-label settings-field-label-with-tip settings-top-label"
                                         for="upstreamProxyUrlInput"
                                     >
                                         <span>OpenAI 上游代理</span>
@@ -538,21 +532,25 @@
                                             >?</span
                                         >
                                     </label>
-                                    <input
-                                        id="upstreamProxyUrlInput"
-                                        class="settings-inline-input mono"
-                                        type="text"
-                                        placeholder="http://127.0.0.1:7890"
-                                    />
-                                    <button
-                                        id="upstreamProxySave"
-                                        class="secondary"
-                                        type="button"
-                                    >
-                                        保存代理
-                                    </button>
-                                    <div id="upstreamProxyHint" class="hint">
-                                        保存后立即生效。
+                                    <div class="settings-top-main">
+                                        <input
+                                            id="upstreamProxyUrlInput"
+                                            class="settings-inline-input mono"
+                                            type="text"
+                                            placeholder="http://127.0.0.1:7890"
+                                        />
+                                    </div>
+                                    <div class="settings-top-aside settings-row-actions">
+                                        <button
+                                            id="upstreamProxySave"
+                                            class="secondary"
+                                            type="button"
+                                        >
+                                            保存代理
+                                        </button>
+                                        <div id="upstreamProxyHint" class="hint">
+                                            保存后立即生效。
+                                        </div>
                                     </div>
                                 </div>
                             </div>

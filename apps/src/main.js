@@ -173,11 +173,11 @@ function applyBrowserModeUi() {
   if (serviceSetup) {
     serviceSetup.style.display = "none";
   }
-  const updateCard = dom.checkUpdate ? dom.checkUpdate.closest(".settings-card") : null;
+  const updateCard = dom.checkUpdate ? dom.checkUpdate.closest(".settings-top-item, .settings-card") : null;
   if (updateCard) {
     updateCard.style.display = "none";
   }
-  const closeToTrayCard = dom.closeToTrayOnClose ? dom.closeToTrayOnClose.closest(".settings-card") : null;
+  const closeToTrayCard = dom.closeToTrayOnClose ? dom.closeToTrayOnClose.closest(".settings-top-item, .settings-card") : null;
   if (closeToTrayCard) {
     closeToTrayCard.style.display = "none";
   }
