@@ -235,6 +235,7 @@ dependencies = [
  "codexmanager-service",
  "include_dir",
  "mime_guess",
+ "rand 0.8.5",
  "reqwest",
  "serde",
  "serde_json",

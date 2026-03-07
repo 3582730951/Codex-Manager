@@ -15,6 +15,7 @@ use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use rand::RngCore;
 use tokio::sync::{watch, Mutex};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -32,6 +33,7 @@ struct AppState {
     service_rpc_url: String,
     service_addr: String,
     rpc_token: String,
+    web_auth_session_key: String,
     shutdown_tx: watch::Sender<bool>,
     spawned_service: Arc<Mutex<bool>>,
     missing_ui_html: Arc<String>,
@@ -404,8 +406,20 @@ fn current_web_access_password_hash() -> Option<String> {
     codexmanager_service::current_web_access_password_hash()
 }
 
-fn build_web_auth_cookie_value(password_hash: &str, rpc_token: &str) -> String {
-    codexmanager_service::build_web_access_session_token(password_hash, rpc_token)
+fn generate_web_auth_session_key() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn build_web_auth_cookie_value(password_hash: &str, rpc_token: &str, session_key: &str) -> String {
+    // 中文注释：会话值额外绑定当前 web 进程随机密钥，避免“上次登录 cookie”跨重启继续生效。
+    let scoped_rpc_token = format!("{rpc_token}:{session_key}");
+    codexmanager_service::build_web_access_session_token(password_hash, &scoped_rpc_token)
 }
 
 fn parse_cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
@@ -441,7 +455,11 @@ fn request_is_authenticated(headers: &HeaderMap, state: &AppState) -> bool {
     let Some(cookie_value) = parse_cookie_value(headers, WEB_AUTH_COOKIE_NAME) else {
         return false;
     };
-    let expected = build_web_auth_cookie_value(&password_hash, &state.rpc_token);
+    let expected = build_web_auth_cookie_value(
+        &password_hash,
+        &state.rpc_token,
+        &state.web_auth_session_key,
+    );
     cookie_value == expected
 }
 
@@ -490,7 +508,11 @@ async fn login_submit(
         )
             .into_response();
     }
-    let token = build_web_auth_cookie_value(&password_hash, &state.rpc_token);
+    let token = build_web_auth_cookie_value(
+        &password_hash,
+        &state.rpc_token,
+        &state.web_auth_session_key,
+    );
     let mut response = Redirect::to("/").into_response();
     if let Some(header_value) = set_cookie_header_value(&token) {
         response
@@ -634,6 +656,7 @@ async fn async_main() {
         service_rpc_url: rpc_url,
         service_addr: service_addr.clone(),
         rpc_token,
+        web_auth_session_key: generate_web_auth_session_key(),
         shutdown_tx,
         spawned_service: spawned_service.clone(),
         missing_ui_html,
@@ -697,4 +720,33 @@ fn main() {
 
     let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
     runtime.block_on(async_main());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_auth_cookie_is_scoped_by_process_session_key() {
+        let password_hash = "sha256$abc$def";
+        let rpc_token = "rpc-token";
+
+        let first = build_web_auth_cookie_value(password_hash, rpc_token, "session-a");
+        let second = build_web_auth_cookie_value(password_hash, rpc_token, "session-b");
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn parse_cookie_value_returns_matching_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("a=1; codexmanager_web_auth=token-123; b=2"),
+        );
+
+        let actual = parse_cookie_value(&headers, WEB_AUTH_COOKIE_NAME);
+
+        assert_eq!(actual.as_deref(), Some("token-123"));
+    }
 }

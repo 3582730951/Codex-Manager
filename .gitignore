@@ -36,6 +36,14 @@ docs/*
 *.sqlite
 codexmanager.rpc-token
 codex resume*.txt
+.tmp_stage_ps/
+.tmp_stage_sh/
+scripts/release/build-tauri-with-retry.ps1
+scripts/release/build-tauri-with-retry.sh
+scripts/release/publish-github-release.sh
+scripts/release/stage-service-package.ps1
+scripts/release/stage-service-package.sh
+scripts/tests/release_version.test.ps1
 
 # OS files
 .DS_Store
