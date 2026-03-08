@@ -127,6 +127,10 @@ async function rpcInvoke(method, params, options = {}) {
 function resolveRpcAddr() {
   const raw = String(state.serviceAddr || "").trim();
   if (raw) {
+    const [host, port] = raw.split(":");
+    if (port && (host === "0.0.0.0" || host === "127.0.0.1")) {
+      return `localhost:${port}`;
+    }
     return raw;
   }
   return "localhost:48760";

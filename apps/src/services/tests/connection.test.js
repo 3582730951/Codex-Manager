@@ -2,11 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createConnectionService } from "../connection.js";
-import { normalizeAddr } from "../connection.js";
+import { normalizeAddr, normalizeRpcAddr } from "../connection.js";
 
 test("normalizeAddr defaults to localhost", () => {
   assert.equal(normalizeAddr("5050"), "localhost:5050");
   assert.equal(normalizeAddr("localhost:5050"), "localhost:5050");
+});
+
+test("normalizeAddr preserves wildcard bind host", () => {
+  assert.equal(normalizeAddr("0.0.0.0:5050"), "0.0.0.0:5050");
+  assert.equal(normalizeRpcAddr("0.0.0.0:5050"), "localhost:5050");
 });
 
 test("startService retries initialize before surfacing error", async () => {

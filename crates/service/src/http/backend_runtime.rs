@@ -1,6 +1,7 @@
 use std::io;
 use std::io::Write;
 use std::net::TcpStream;
+use std::panic::AssertUnwindSafe;
 use std::thread;
 use std::time::Duration;
 
@@ -77,10 +78,35 @@ fn spawn_request_workers(worker_count: usize, rx: Receiver<Request>, is_stream_q
         let _ = thread::spawn(move || {
             while let Ok(request) = worker_rx.recv() {
                 crate::gateway::record_http_queue_dequeue(is_stream_queue);
-                crate::http::backend_router::handle_backend_request(request);
+                handle_backend_request_safely(request);
             }
         });
     }
+}
+
+fn handle_backend_request_safely(request: Request) {
+    let method = request.method().as_str().to_string();
+    let path = request.url().to_string();
+    if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        crate::http::backend_router::handle_backend_request(request);
+    })) {
+        log::error!(
+            "backend request handler panicked: method={} path={} panic={}",
+            method,
+            path,
+            panic_payload_message(payload.as_ref())
+        );
+    }
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "unknown panic payload".to_string()
 }
 
 fn request_accept_header(request: &Request) -> Option<String> {

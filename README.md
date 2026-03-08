@@ -283,7 +283,14 @@ pwsh -NoLogo -NoProfile -File scripts/tests/gateway_regression_suite.ps1 `
 | `CODEXMANAGER_DISABLE_POLLING` | 未设置（即开启轮询） | 兼容旧开关：只要变量存在（值可为空）就禁用后台用量轮询线程。 |
 | `CODEXMANAGER_USAGE_POLLING_ENABLED` | `true` | 用量轮询总开关（`1/true/on/yes` 开启，`0/false/off/no` 关闭）。与 `CODEXMANAGER_DISABLE_POLLING` 同时存在时，以该值为准。 |
 | `CODEXMANAGER_USAGE_POLL_INTERVAL_SECS` | `600` | 用量轮询间隔（秒），最小 `30`。非法值回退默认。 |
-| `CODEXMANAGER_GATEWAY_KEEPALIVE_ENABLED` | `true` | 网关保活轮询总开关（`1/true/on/yes` 开启，`0/false/off/no` 关闭）。 |
+| `CODEXMANAGER_USAGE_POLL_BATCH_LIMIT` | `100` | 单次后台用量轮询最多处理多少账号/token；设为 `0` 表示不限制。大规模账号场景建议保留分批，避免一次轮询拖垮服务。 |
+| `CODEXMANAGER_USAGE_POLL_CYCLE_BUDGET_SECS` | `30` | 单次后台用量轮询的最长耗时预算（秒）；设为 `0` 表示不限制。达到预算后下轮从上次游标继续。 |
+
+| `CODEXMANAGER_WATCHDOG_ENABLED` | `true` | Desktop service watchdog master switch; when enabled it periodically probes the local service and auto-restarts on repeated failures. |
+| `CODEXMANAGER_WATCHDOG_INTERVAL_SECS` | `15` | Watchdog health-check interval in seconds; minimum `5`. |
+| `CODEXMANAGER_WATCHDOG_FAILURE_THRESHOLD` | `3` | Number of consecutive failed health checks required before the watchdog attempts an automatic restart. |
+| `CODEXMANAGER_WATCHDOG_RESTART_COOLDOWN_SECS` | `60` | Minimum cooldown between automatic watchdog restarts; set `0` to disable cooldown. |
+| `CODEXMANAGER_GATEWAY_KEEPALIVE_ENABLED` | `true` | Gateway keepalive polling master switch (`1/true/on/yes` to enable, `0/false/off/no` to disable). |
 | `CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS` | `180` | Gateway keepalive 间隔（秒），最小 `30`。 |
 | `CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED` | `true` | 令牌刷新轮询总开关（`1/true/on/yes` 开启，`0/false/off/no` 关闭）。 |
 | `CODEXMANAGER_TOKEN_REFRESH_POLL_INTERVAL_SECS` | `60` | 令牌刷新轮询间隔（秒），最小 `10`。 |

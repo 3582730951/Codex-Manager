@@ -29,7 +29,7 @@ export function createStartupMaskController({ dom, state }) {
       0,
       Math.floor((Date.now() - startupMaskState.startedAt) / 1000),
     );
-    const addr = state.serviceAddr || "localhost:48760";
+  const addr = state.serviceAddr || "0.0.0.0:48760";
     const reason = state.serviceLastError
       ? `；最近错误：${state.serviceLastError}`
       : "";

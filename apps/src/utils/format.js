@@ -7,10 +7,6 @@ const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
   second: "2-digit",
 });
 
-const monthFormatterZh = new Intl.DateTimeFormat("zh-CN", {
-  month: "numeric",
-});
-
 const COMPACT_NUMBER_UNITS = [
   { value: 1e18, suffix: "E" },
   { value: 1e15, suffix: "P" },
@@ -112,7 +108,7 @@ export function formatResetLabel(ts) {
     return `重置：${hh}:${mm}`;
   }
   const day = date.getDate();
-  const month = monthFormatterZh.format(date);
+  const month = date.getMonth() + 1;
   return `重置：${month}月${day}日 ${hh}:${mm}`;
 }
 

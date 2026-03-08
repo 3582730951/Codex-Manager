@@ -1,6 +1,7 @@
 use super::{
     clear_pending_usage_refresh_tasks_for_tests, enqueue_usage_refresh_with_worker,
-    token_refresh_schedule,
+    next_usage_poll_cursor, reset_usage_poll_cursor_for_tests, token_refresh_schedule,
+    usage_poll_batch_indices,
 };
 use codexmanager_core::storage::{now_ts, Token};
 use std::collections::HashSet;
@@ -105,4 +106,19 @@ fn schedule_falls_back_to_last_refresh_when_exp_missing() {
     let (exp, scheduled_at) = token_refresh_schedule(&token, now, 300, 2700);
     assert_eq!(exp, None);
     assert_eq!(scheduled_at, now);
+}
+
+#[test]
+fn usage_poll_batch_indices_rotate_from_cursor() {
+    reset_usage_poll_cursor_for_tests();
+    assert_eq!(usage_poll_batch_indices(5, 4, 3), vec![4, 0, 1]);
+    assert_eq!(usage_poll_batch_indices(3, 1, 10), vec![1, 2, 0]);
+}
+
+#[test]
+fn usage_poll_cursor_advances_by_processed_count() {
+    reset_usage_poll_cursor_for_tests();
+    assert_eq!(next_usage_poll_cursor(5, 4, 2), 1);
+    assert_eq!(next_usage_poll_cursor(5, 1, 5), 1);
+    assert_eq!(next_usage_poll_cursor(0, 7, 3), 0);
 }

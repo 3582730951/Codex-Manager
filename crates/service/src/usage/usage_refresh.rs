@@ -35,6 +35,7 @@ static TOKEN_REFRESH_POLLING_STARTED: OnceLock<()> = OnceLock::new();
 static PENDING_USAGE_REFRESH_TASKS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static USAGE_REFRESH_EXECUTOR: OnceLock<UsageRefreshExecutor> = OnceLock::new();
 static BACKGROUND_TASKS_CONFIG_LOADED: OnceLock<()> = OnceLock::new();
+static USAGE_POLL_CURSOR: AtomicUsize = AtomicUsize::new(0);
 static USAGE_POLLING_ENABLED: AtomicBool = AtomicBool::new(true);
 static USAGE_POLL_INTERVAL_SECS: AtomicU64 = AtomicU64::new(DEFAULT_USAGE_POLL_INTERVAL_SECS);
 static GATEWAY_KEEPALIVE_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -52,6 +53,8 @@ static HTTP_STREAM_WORKER_MIN: AtomicUsize = AtomicUsize::new(DEFAULT_HTTP_STREA
 const ENV_DISABLE_POLLING: &str = "CODEXMANAGER_DISABLE_POLLING";
 const ENV_USAGE_POLLING_ENABLED: &str = "CODEXMANAGER_USAGE_POLLING_ENABLED";
 const ENV_USAGE_POLL_INTERVAL_SECS: &str = "CODEXMANAGER_USAGE_POLL_INTERVAL_SECS";
+const ENV_USAGE_POLL_BATCH_LIMIT: &str = "CODEXMANAGER_USAGE_POLL_BATCH_LIMIT";
+const ENV_USAGE_POLL_CYCLE_BUDGET_SECS: &str = "CODEXMANAGER_USAGE_POLL_CYCLE_BUDGET_SECS";
 const ENV_GATEWAY_KEEPALIVE_ENABLED: &str = "CODEXMANAGER_GATEWAY_KEEPALIVE_ENABLED";
 const ENV_GATEWAY_KEEPALIVE_INTERVAL_SECS: &str = "CODEXMANAGER_GATEWAY_KEEPALIVE_INTERVAL_SECS";
 const ENV_TOKEN_REFRESH_POLLING_ENABLED: &str = "CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED";
@@ -61,6 +64,8 @@ const COMMON_POLL_FAILURE_BACKOFF_MAX_ENV: &str = "CODEXMANAGER_POLL_FAILURE_BAC
 const USAGE_POLL_JITTER_ENV: &str = "CODEXMANAGER_USAGE_POLL_JITTER_SECS";
 const USAGE_POLL_FAILURE_BACKOFF_MAX_ENV: &str = "CODEXMANAGER_USAGE_POLL_FAILURE_BACKOFF_MAX_SECS";
 const USAGE_REFRESH_WORKERS_ENV: &str = "CODEXMANAGER_USAGE_REFRESH_WORKERS";
+const DEFAULT_USAGE_POLL_BATCH_LIMIT: usize = 100;
+const DEFAULT_USAGE_POLL_CYCLE_BUDGET_SECS: u64 = 30;
 const DEFAULT_USAGE_REFRESH_WORKERS: usize = 4;
 const DEFAULT_HTTP_WORKER_FACTOR: usize = 4;
 const DEFAULT_HTTP_WORKER_MIN: usize = 8;
@@ -333,25 +338,38 @@ use self::usage_refresh_errors::{
 };
 
 pub(crate) fn ensure_usage_polling() {
-    // 启动后台用量刷新线程（只启动一次）
     ensure_background_tasks_config_loaded();
     USAGE_POLLING_STARTED.get_or_init(|| {
-        let _ = thread::spawn(usage_polling_loop);
+        spawn_background_loop("usage-polling", usage_polling_loop);
     });
 }
 
 pub(crate) fn ensure_gateway_keepalive() {
     ensure_background_tasks_config_loaded();
     GATEWAY_KEEPALIVE_STARTED.get_or_init(|| {
-        let _ = thread::spawn(gateway_keepalive_loop);
+        spawn_background_loop("gateway-keepalive", gateway_keepalive_loop);
     });
 }
 
 pub(crate) fn ensure_token_refresh_polling() {
     ensure_background_tasks_config_loaded();
     TOKEN_REFRESH_POLLING_STARTED.get_or_init(|| {
-        let _ = thread::spawn(token_refresh_polling_loop);
+        spawn_background_loop("token-refresh-polling", token_refresh_polling_loop);
     });
+}
+
+fn spawn_background_loop(name: &str, worker: fn()) {
+    let thread_name = name.to_string();
+    let _ = thread::Builder::new()
+        .name(thread_name.clone())
+        .spawn(move || loop {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(worker));
+            if result.is_ok() {
+                break;
+            }
+            log::error!("background task panicked and will restart: task={}", thread_name);
+            thread::sleep(Duration::from_secs(1));
+        });
 }
 
 pub(crate) fn enqueue_usage_refresh_for_account(account_id: &str) -> bool {
@@ -618,6 +636,50 @@ fn usage_refresh_worker_count() -> usize {
     USAGE_REFRESH_WORKERS.load(Ordering::Relaxed).max(1)
 }
 
+fn usage_poll_batch_limit(total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let configured = std::env::var(ENV_USAGE_POLL_BATCH_LIMIT)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_USAGE_POLL_BATCH_LIMIT);
+    if configured == 0 {
+        total
+    } else {
+        configured.max(1).min(total)
+    }
+}
+
+fn usage_poll_cycle_budget() -> Option<Duration> {
+    let configured = std::env::var(ENV_USAGE_POLL_CYCLE_BUDGET_SECS)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_USAGE_POLL_CYCLE_BUDGET_SECS);
+    if configured == 0 {
+        None
+    } else {
+        Some(Duration::from_secs(configured.max(1)))
+    }
+}
+
+fn usage_poll_batch_indices(total: usize, cursor: usize, batch_limit: usize) -> Vec<usize> {
+    if total == 0 || batch_limit == 0 {
+        return Vec::new();
+    }
+    let start = cursor % total;
+    (0..batch_limit.min(total))
+        .map(|offset| (start + offset) % total)
+        .collect()
+}
+
+fn next_usage_poll_cursor(total: usize, cursor: usize, processed: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    (cursor % total + processed.min(total)) % total
+}
+
 fn mark_usage_refresh_task_pending(account_id: &str) -> bool {
     let mutex = PENDING_USAGE_REFRESH_TASKS.get_or_init(|| Mutex::new(HashSet::new()));
     let mut pending = crate::lock_utils::lock_recover(mutex, "pending_usage_refresh_tasks");
@@ -640,8 +702,12 @@ fn clear_pending_usage_refresh_tasks_for_tests() {
     }
 }
 
+#[cfg(test)]
+fn reset_usage_poll_cursor_for_tests() {
+    USAGE_POLL_CURSOR.store(0, Ordering::Relaxed);
+}
+
 pub(crate) fn refresh_usage_for_all_accounts() -> Result<(), String> {
-    // 批量刷新所有账号用量
     let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
     let tokens = storage.list_tokens().map_err(|e| e.to_string())?;
     if tokens.is_empty() {
@@ -652,12 +718,24 @@ pub(crate) fn refresh_usage_for_all_accounts() -> Result<(), String> {
     let workspace_map = build_workspace_map_from_accounts(&accounts);
     let mut account_map = account_map_from_list(accounts);
 
-    for token in tokens {
+    let total = tokens.len();
+    let start_cursor = USAGE_POLL_CURSOR.load(Ordering::Relaxed) % total;
+    let batch_limit = usage_poll_batch_limit(total);
+    let cycle_budget = usage_poll_cycle_budget();
+    let cycle_started_at = Instant::now();
+    let indices = usage_poll_batch_indices(total, start_cursor, batch_limit);
+    let mut processed = 0usize;
+
+    for index in indices {
+        if processed > 0 && cycle_budget.is_some_and(|budget| cycle_started_at.elapsed() >= budget) {
+            break;
+        }
+        let token = &tokens[index];
         let workspace_id = workspace_map
             .get(&token.account_id)
             .and_then(|value| value.as_deref());
         let started_at = Instant::now();
-        match refresh_usage_for_token(&storage, &token, workspace_id, Some(&mut account_map)) {
+        match refresh_usage_for_token(&storage, token, workspace_id, Some(&mut account_map)) {
             Ok(result) => {
                 record_usage_refresh_metrics(true, started_at);
                 let _ = result;
@@ -667,6 +745,20 @@ pub(crate) fn refresh_usage_for_all_accounts() -> Result<(), String> {
                 record_usage_refresh_failure(&storage, &token.account_id, &err);
             }
         }
+        processed = processed.saturating_add(1);
+    }
+
+    if processed > 0 {
+        USAGE_POLL_CURSOR.store(next_usage_poll_cursor(total, start_cursor, processed), Ordering::Relaxed);
+    }
+    if processed < total {
+        log::info!(
+            "usage polling batch truncated: processed={} total={} batch_limit={} budget_secs={}",
+            processed,
+            total,
+            batch_limit,
+            cycle_budget.map(|budget| budget.as_secs()).unwrap_or(0)
+        );
     }
     Ok(())
 }

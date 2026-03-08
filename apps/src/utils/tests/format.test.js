@@ -5,6 +5,7 @@ import {
   calcAvailability,
   computeUsageStats,
   formatCompactNumber,
+  formatResetLabel,
   formatTs,
 } from "../format.js";
 
@@ -153,6 +154,13 @@ test("computeUsageStats returns total/ok/unavailable/lowCount in one pass", () =
 test("formatTs supports custom empty label", () => {
   assert.equal(formatTs(0, { emptyLabel: "-" }), "-");
   assert.equal(formatTs(null, { emptyLabel: "-" }), "-");
+});
+
+test("formatResetLabel does not duplicate month unit", () => {
+  const futureTs = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
+  const label = formatResetLabel(futureTs);
+  assert.equal(label.includes("月月"), false);
+  assert.match(label, /^重置：\d+月\d+日 \d{2}:\d{2}$/);
 });
 
 test("formatCompactNumber renders K/M suffixes for large values", () => {
