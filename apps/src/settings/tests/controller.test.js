@@ -9,10 +9,10 @@ function createNormalizeAddr() {
     if (!raw) {
       return "localhost:48760";
     }
-    if (raw.includes(":")) {
-      return raw;
+    if (/^\d+$/.test(raw)) {
+      return `localhost:${raw}`;
     }
-    return `localhost:${raw}`;
+    return raw;
   };
 }
 
