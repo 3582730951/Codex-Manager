@@ -1,4 +1,4 @@
-use super::{build_backend_base_url, proxy_handler, ProxyState};
+use super::{build_backend_base_url, build_local_backend_client, proxy_handler, ProxyState};
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
 use axum::http::{Request as HttpRequest, StatusCode};
@@ -33,6 +33,11 @@ fn backend_base_url_uses_http_scheme() {
         build_backend_base_url("127.0.0.1:18080"),
         "http://127.0.0.1:18080"
     );
+}
+
+#[test]
+fn local_backend_client_builds_without_system_proxy() {
+    build_local_backend_client().expect("local backend client");
 }
 
 #[test]

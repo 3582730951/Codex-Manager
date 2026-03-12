@@ -30,6 +30,10 @@ fn build_backend_base_url(backend_addr: &str) -> String {
     format!("http://{backend_addr}")
 }
 
+fn build_local_backend_client() -> Result<Client, reqwest::Error> {
+    Client::builder().no_proxy().build()
+}
+
 async fn proxy_handler(
     State(state): State<ProxyState>,
     request: HttpRequest<Body>,
@@ -112,9 +116,8 @@ pub(crate) fn run_front_proxy(addr: &str, backend_addr: &str) -> io::Result<()> 
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
     runtime.block_on(async move {
-        let client = Client::builder()
-            .build()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let client =
+            build_local_backend_client().map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         let state = ProxyState {
             backend_base_url: build_backend_base_url(backend_addr),
             client,

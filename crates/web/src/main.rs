@@ -188,7 +188,10 @@ async fn async_main() {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let state = Arc::new(AppState {
-        client: reqwest::Client::new(),
+        client: reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new()),
         service_rpc_url: rpc_url,
         service_addr: service_addr.clone(),
         rpc_token,

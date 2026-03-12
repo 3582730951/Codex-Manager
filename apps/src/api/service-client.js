@@ -1,9 +1,6 @@
-import { isAbortError } from "../utils/request.js";
 import {
-  clearRpcTokenCache,
   invoke,
   isTauriRuntime,
-  requestlogListViaHttpRpc,
   rpcInvoke,
   withAddr,
 } from "./transport.js";
@@ -56,22 +53,6 @@ export async function serviceListenConfigSet(mode) {
 }
 
 export async function serviceRequestLogList(query, limit, options = {}) {
-  const signal = options && options.signal ? options.signal : undefined;
-  if (signal && isTauriRuntime()) {
-    try {
-      return await requestlogListViaHttpRpc(query, limit, {
-        signal,
-        timeoutMs: options.timeoutMs,
-        retries: options.retries,
-        retryDelayMs: options.retryDelayMs,
-      });
-    } catch (err) {
-      if (isAbortError(err)) {
-        throw err;
-      }
-      clearRpcTokenCache();
-    }
-  }
   if (!isTauriRuntime()) {
     return rpcInvoke("requestlog/list", { query, limit }, options);
   }
