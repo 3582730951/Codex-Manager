@@ -23,7 +23,7 @@ fn reset_runtime_defaults() {
         codexmanager_service::SERVICE_BIND_MODE_LOOPBACK,
     );
     let _ = codexmanager_service::app_settings_set(Some(&json!({
-        "routeStrategy": "ordered",
+        "routeStrategy": "balanced",
         "lightweightModeOnCloseToTray": false,
         "cpaNoCookieHeaderModeEnabled": false,
         "upstreamProxyUrl": "",

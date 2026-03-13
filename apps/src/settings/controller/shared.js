@@ -61,7 +61,7 @@ export function defaultNormalizeRouteStrategy(strategy) {
   if (["balanced", "round_robin", "round-robin", "rr"].includes(raw)) {
     return ROUTE_STRATEGY_BALANCED;
   }
-  return ROUTE_STRATEGY_ORDERED;
+  return ROUTE_STRATEGY_BALANCED;
 }
 
 export function defaultRouteStrategyLabel(strategy) {

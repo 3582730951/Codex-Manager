@@ -94,7 +94,7 @@ function createServiceSync(overrides = {}) {
     setRouteStrategySelect: (value) => {
       sinks.routeSelected.push(value);
     },
-    normalizeRouteStrategy: (value) => String(value || "ordered"),
+    normalizeRouteStrategy: (value) => String(value || "balanced"),
     routeStrategyLabel: (value) => String(value || ""),
     readCpaNoCookieHeaderModeSetting: () => cpaNoCookieHeaderModeValue,
     saveCpaNoCookieHeaderModeSetting: (value) => {

@@ -121,7 +121,6 @@ mod tests {
         should_record_error_log, GatewayErrorLogEntry,
     };
     use std::fs;
-    use std::path::PathBuf;
 
     #[test]
     fn should_record_error_log_for_http_error_status() {
@@ -132,10 +131,15 @@ mod tests {
 
     #[test]
     fn error_file_path_uses_db_parent_directory() {
-        std::env::set_var("CODEXMANAGER_DB_PATH", r"D:\tmp\codexmanager.db");
+        let temp_root = std::env::temp_dir().join(format!(
+            "codexmanager-error-path-test-{}",
+            std::process::id()
+        ));
+        let db_path = temp_root.join("codexmanager.db");
+        std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
         assert_eq!(
             error_file_path_from_env(),
-            PathBuf::from(r"D:\tmp\gateway-error.txt")
+            temp_root.join("gateway-error.txt")
         );
         std::env::remove_var("CODEXMANAGER_DB_PATH");
     }

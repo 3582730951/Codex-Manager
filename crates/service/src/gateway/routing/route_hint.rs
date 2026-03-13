@@ -17,14 +17,15 @@ const ROUTE_STATE_TTL_SECS_ENV: &str = "CODEXMANAGER_ROUTE_STATE_TTL_SECS";
 const ROUTE_STATE_CAPACITY_ENV: &str = "CODEXMANAGER_ROUTE_STATE_CAPACITY";
 const DEFAULT_ROUTE_HEALTH_P2C_ENABLED: bool = true;
 const DEFAULT_ROUTE_HEALTH_P2C_ORDERED_WINDOW: usize = 3;
-const DEFAULT_ROUTE_HEALTH_P2C_BALANCED_WINDOW: usize = 6;
+// 中文注释：balanced 默认应严格轮询所有可用账号；仅在显式调大窗口时才启用健康度换头。
+const DEFAULT_ROUTE_HEALTH_P2C_BALANCED_WINDOW: usize = 1;
 // 中文注释：Route 状态（按 key_id + model 维度）用于 round-robin 起点与 P2C nonce。
 // 为避免 key/model 高基数导致 HashMap 无限增长，默认增加 TTL + 容量上限；不会影响“短时间内连续请求”的既有语义。
 const DEFAULT_ROUTE_STATE_TTL_SECS: u64 = 6 * 60 * 60;
 const DEFAULT_ROUTE_STATE_CAPACITY: usize = 4096;
 const ROUTE_STATE_MAINTENANCE_EVERY: u64 = 64;
 
-static ROUTE_MODE: AtomicU8 = AtomicU8::new(ROUTE_MODE_ORDERED);
+static ROUTE_MODE: AtomicU8 = AtomicU8::new(ROUTE_MODE_BALANCED_ROUND_ROBIN);
 static ROUTE_HEALTH_P2C_ENABLED: AtomicBool = AtomicBool::new(DEFAULT_ROUTE_HEALTH_P2C_ENABLED);
 static ROUTE_HEALTH_P2C_ORDERED_WINDOW: AtomicUsize =
     AtomicUsize::new(DEFAULT_ROUTE_HEALTH_P2C_ORDERED_WINDOW);
@@ -383,7 +384,7 @@ fn key_model_key(key_id: &str, model: Option<&str>) -> String {
 
 pub(super) fn reload_from_env() {
     let raw = std::env::var(ROUTE_STRATEGY_ENV).unwrap_or_default();
-    let mode = parse_route_mode(raw.as_str()).unwrap_or(ROUTE_MODE_ORDERED);
+    let mode = parse_route_mode(raw.as_str()).unwrap_or(ROUTE_MODE_BALANCED_ROUND_ROBIN);
     ROUTE_MODE.store(mode, Ordering::Relaxed);
     ROUTE_HEALTH_P2C_ENABLED.store(
         env_bool_or(

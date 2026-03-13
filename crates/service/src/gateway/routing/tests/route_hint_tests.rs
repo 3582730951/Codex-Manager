@@ -79,7 +79,7 @@ fn account_ids(candidates: &[(Account, Token)]) -> Vec<String> {
 }
 
 #[test]
-fn defaults_to_ordered_strategy() {
+fn defaults_to_balanced_strategy() {
     let _guard = route_strategy_test_guard();
     let previous = std::env::var(ROUTE_STRATEGY_ENV).ok();
     std::env::remove_var(ROUTE_STRATEGY_ENV);
@@ -94,6 +94,17 @@ fn defaults_to_ordered_strategy() {
             "acc-a".to_string(),
             "acc-b".to_string(),
             "acc-c".to_string()
+        ]
+    );
+
+    let mut second = candidate_list();
+    apply_route_strategy(&mut second, "gk_1", Some("gpt-5.3-codex"));
+    assert_eq!(
+        account_ids(&second),
+        vec![
+            "acc-b".to_string(),
+            "acc-c".to_string(),
+            "acc-a".to_string()
         ]
     );
 
@@ -342,5 +353,49 @@ fn health_p2c_promotes_healthier_candidate_in_ordered_mode() {
     std::env::remove_var(ROUTE_HEALTH_P2C_ENABLED_ENV);
     std::env::remove_var(ROUTE_HEALTH_P2C_ORDERED_WINDOW_ENV);
     std::env::remove_var(ROUTE_STRATEGY_ENV);
+    reload_from_env();
+}
+
+#[test]
+fn balanced_mode_keeps_strict_round_robin_by_default() {
+    let _guard = route_strategy_test_guard();
+    let prev_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    let prev_p2c = std::env::var(ROUTE_HEALTH_P2C_ENABLED_ENV).ok();
+    let prev_balanced_window = std::env::var(ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV).ok();
+
+    std::env::set_var(ROUTE_HEALTH_P2C_ENABLED_ENV, "1");
+    std::env::remove_var(ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV);
+    std::env::remove_var(ROUTE_STRATEGY_ENV);
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    for _ in 0..4 {
+        super::super::route_quality::record_route_quality("acc-a", 429);
+        super::super::route_quality::record_route_quality("acc-b", 200);
+    }
+
+    let mut first = candidate_list();
+    apply_route_strategy(&mut first, "gk-strict-default", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&first)[0], "acc-a");
+
+    let mut second = candidate_list();
+    apply_route_strategy(&mut second, "gk-strict-default", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&second)[0], "acc-b");
+
+    if let Some(value) = prev_strategy {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    if let Some(value) = prev_p2c {
+        std::env::set_var(ROUTE_HEALTH_P2C_ENABLED_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_HEALTH_P2C_ENABLED_ENV);
+    }
+    if let Some(value) = prev_balanced_window {
+        std::env::set_var(ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV);
+    }
     reload_from_env();
 }

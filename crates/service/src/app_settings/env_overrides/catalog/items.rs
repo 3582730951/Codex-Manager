@@ -223,7 +223,7 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         "均衡模式 P2C 窗口",
         ENV_OVERRIDE_SCOPE_SERVICE,
         ENV_OVERRIDE_APPLY_MODE_RUNTIME,
-        "6",
+        "1",
     ),
     EnvOverrideCatalogItem::new(
         "CODEXMANAGER_ROUTE_HEALTH_P2C_ENABLED",

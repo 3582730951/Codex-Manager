@@ -109,7 +109,7 @@ export function createRuntimeSettingsController(deps = {}) {
     }
     let hintText = "按账号顺序优先请求，优先使用可用账号（不可用账号不会参与选路）。";
     if (normalizeRouteStrategy(strategy) === ROUTE_STRATEGY_BALANCED) {
-      hintText = "按密钥 + 模型均衡轮询起点，优先使用可用账号（不可用账号不会参与选路）。";
+      hintText = "按密钥 + 模型在所有可用账号间严格均衡轮询；不可用账号不会参与选路。";
     }
     dom.routeStrategyHint.title = hintText;
     dom.routeStrategyHint.setAttribute("aria-label", `网关选路策略说明：${hintText}`);
