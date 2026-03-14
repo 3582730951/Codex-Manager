@@ -94,6 +94,10 @@ fn normalize_token(value: Option<i64>) -> Option<i64> {
     value.map(|v| v.max(0))
 }
 
+fn normalize_duration_ms(value: Option<u128>) -> Option<i64> {
+    value.map(|duration| duration.min(i64::MAX as u128) as i64)
+}
+
 fn is_inference_path(path: &str) -> bool {
     path.starts_with("/v1/responses")
         || path.starts_with("/v1/chat/completions")
@@ -125,6 +129,7 @@ pub(super) fn write_request_log(
     status_code: Option<u16>,
     usage: RequestLogUsage,
     error: Option<&str>,
+    duration_ms: Option<u128>,
 ) {
     let original_path = trace_context.original_path.unwrap_or(request_path);
     let adapted_path = trace_context.adapted_path.unwrap_or(request_path);
@@ -133,6 +138,7 @@ pub(super) fn write_request_log(
     let output_tokens = normalize_token(usage.output_tokens);
     let total_tokens = normalize_token(usage.total_tokens);
     let reasoning_output_tokens = normalize_token(usage.reasoning_output_tokens);
+    let duration_ms = normalize_duration_ms(duration_ms);
     let created_at = now_ts();
     let estimated_cost_usd =
         estimate_cost_usd(model, input_tokens, cached_input_tokens, output_tokens);
@@ -193,6 +199,7 @@ pub(super) fn write_request_log(
                 .map(str::to_string),
             upstream_url: upstream_url.map(|v| v.to_string()),
             status_code: status_code.map(|v| i64::from(v)),
+            duration_ms,
             input_tokens: None,
             cached_input_tokens: None,
             output_tokens: None,

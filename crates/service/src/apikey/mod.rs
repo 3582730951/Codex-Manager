@@ -16,3 +16,5 @@ pub(crate) mod profile;
 pub(crate) mod read_secret;
 #[path = "apikey_update_model.rs"]
 pub(crate) mod update_model;
+#[path = "apikey_usage_stats.rs"]
+pub(crate) mod usage_stats;

@@ -1,6 +1,6 @@
 use rusqlite::Result;
 
-use super::{RequestLogTodaySummary, RequestTokenStat, Storage};
+use super::{ApiKeyTokenUsageSummary, RequestLogTodaySummary, RequestTokenStat, Storage};
 
 impl Storage {
     pub fn insert_request_token_stat(&self, stat: &RequestTokenStat) -> Result<()> {
@@ -59,6 +59,41 @@ impl Storage {
             reasoning_output_tokens: 0,
             estimated_cost_usd: 0.0,
         })
+    }
+
+    pub fn summarize_request_token_stats_by_key(&self) -> Result<Vec<ApiKeyTokenUsageSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                key_id,
+                IFNULL(
+                    SUM(
+                        CASE
+                            WHEN total_tokens IS NOT NULL THEN
+                                CASE WHEN total_tokens > 0 THEN total_tokens ELSE 0 END
+                            ELSE
+                                CASE
+                                    WHEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0) > 0
+                                        THEN IFNULL(input_tokens, 0) - IFNULL(cached_input_tokens, 0) + IFNULL(output_tokens, 0)
+                                    ELSE 0
+                                END
+                        END
+                    ),
+                    0
+                ) AS total_tokens
+             FROM request_token_stats
+             WHERE key_id IS NOT NULL AND TRIM(key_id) <> ''
+             GROUP BY key_id
+             ORDER BY total_tokens DESC, key_id ASC",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut items = Vec::new();
+        while let Some(row) = rows.next()? {
+            items.push(ApiKeyTokenUsageSummary {
+                key_id: row.get(0)?,
+                total_tokens: row.get(1)?,
+            });
+        }
+        Ok(items)
     }
 
     pub(super) fn ensure_request_token_stats_table(&self) -> Result<()> {

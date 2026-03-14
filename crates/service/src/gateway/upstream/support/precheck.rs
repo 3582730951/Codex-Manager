@@ -45,6 +45,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
                     Some(500),
                     super::super::super::request_log::RequestLogUsage::default(),
                     Some(err_text.as_str()),
+                    None,
                 );
                 let response = super::super::super::error_response::terminal_text_response(
                     500,
@@ -83,6 +84,7 @@ pub(in super::super) fn prepare_candidates_for_proxy(
             Some(503),
             super::super::super::request_log::RequestLogUsage::default(),
             Some("no available account"),
+            None,
         );
         let response = super::super::super::error_response::terminal_text_response(
             503,

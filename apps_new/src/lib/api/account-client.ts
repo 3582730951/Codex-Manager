@@ -3,6 +3,7 @@ import {
   normalizeAccountList,
   normalizeApiKeyCreateResult,
   normalizeApiKeyList,
+  normalizeApiKeyUsageStats,
   normalizeLoginStartResult,
   normalizeModelOptions,
   normalizeUsageAggregateSummary,
@@ -14,6 +15,8 @@ import {
   AccountUsage,
   ApiKey,
   ApiKeyCreateResult,
+  ApiKeyUsageStat,
+  LoginStatusResult,
   LoginStartResult,
   ModelOption,
   UsageAggregateSummary,
@@ -138,8 +141,17 @@ export const accountClient = {
     );
     return normalizeLoginStartResult(result);
   },
-  getLoginStatus: (loginId: string) =>
-    invoke<unknown>("service_login_status", withAddr({ loginId })),
+  async getLoginStatus(loginId: string): Promise<LoginStatusResult> {
+    const result = await invoke<unknown>("service_login_status", withAddr({ loginId }));
+    const source =
+      result && typeof result === "object" && !Array.isArray(result)
+        ? (result as Record<string, unknown>)
+        : {};
+    return {
+      status: typeof source.status === "string" ? source.status.trim() : "",
+      error: typeof source.error === "string" ? source.error.trim() : "",
+    };
+  },
   completeLogin: (state: string, code: string, redirectUri: string) =>
     invoke("service_login_complete", withAddr({ state, code, redirectUri })),
 
@@ -160,6 +172,10 @@ export const accountClient = {
       })
     );
     return normalizeApiKeyCreateResult(result);
+  },
+  async listApiKeyUsageStats(): Promise<ApiKeyUsageStat[]> {
+    const result = await invoke<unknown>("service_apikey_usage_stats", withAddr());
+    return normalizeApiKeyUsageStats(result);
   },
   deleteApiKey: (keyId: string) =>
     invoke("service_apikey_delete", withAddr({ keyId })),

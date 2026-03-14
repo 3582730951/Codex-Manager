@@ -644,9 +644,8 @@ fn extract_quoted_model_before_keyword(raw: &str, lowered: &str) -> Option<Strin
 }
 
 fn extract_model_token(fragment: &str) -> Option<String> {
-    let fragment = fragment.trim_start_matches(|c: char| {
-        c.is_whitespace() || matches!(c, '=' | ':' | '(' | '[')
-    });
+    let fragment = fragment
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '=' | ':' | '(' | '['));
     let mut chars = fragment.chars();
     let first = chars.next()?;
     let token = if first == '\'' || first == '"' || first == '`' {

@@ -101,6 +101,7 @@ pub(in super::super) fn proxy_azure_request(
             Some(400),
             super::super::super::request_log::RequestLogUsage::default(),
             Some(message),
+            Some(started_at.elapsed().as_millis()),
         );
         respond_error(request, 400, message, Some(trace_id));
         return Ok(());
@@ -140,6 +141,7 @@ pub(in super::super) fn proxy_azure_request(
                 Some(400),
                 super::super::super::request_log::RequestLogUsage::default(),
                 Some(err.as_str()),
+                Some(started_at.elapsed().as_millis()),
             );
             respond_error(request, 400, err.as_str(), Some(trace_id));
             return Ok(());
@@ -183,6 +185,7 @@ pub(in super::super) fn proxy_azure_request(
                     Some(403),
                     super::super::super::request_log::RequestLogUsage::default(),
                     Some(message),
+                    Some(started_at.elapsed().as_millis()),
                 );
                 respond_error(request, 403, message, Some(trace_id));
                 return Ok(());
@@ -220,6 +223,7 @@ pub(in super::super) fn proxy_azure_request(
                     Some(500),
                     super::super::super::request_log::RequestLogUsage::default(),
                     Some(message.as_str()),
+                    Some(started_at.elapsed().as_millis()),
                 );
                 respond_error(request, 500, message.as_str(), Some(trace_id));
                 return Ok(());
@@ -342,6 +346,7 @@ pub(in super::super) fn proxy_azure_request(
                         Some(502),
                         super::super::super::request_log::RequestLogUsage::default(),
                         Some(message.as_str()),
+                        Some(started_at.elapsed().as_millis()),
                     );
                     respond_error(request, 502, message.as_str(), Some(trace_id));
                     return Ok(());
@@ -416,6 +421,7 @@ pub(in super::super) fn proxy_azure_request(
             reasoning_output_tokens: usage.reasoning_output_tokens,
         },
         final_error_text.as_deref(),
+        Some(started_at.elapsed().as_millis()),
     );
     Ok(())
 }

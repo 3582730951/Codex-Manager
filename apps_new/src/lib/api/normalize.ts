@@ -6,6 +6,7 @@ import {
   AccountUsage,
   ApiKey,
   ApiKeyCreateResult,
+  ApiKeyUsageStat,
   AppSettings,
   BackgroundTaskSettings,
   DeviceAuthInfo,
@@ -259,6 +260,22 @@ export function normalizeApiKeyCreateResult(payload: unknown): ApiKeyCreateResul
   };
 }
 
+export function normalizeApiKeyUsageStats(payload: unknown): ApiKeyUsageStat[] {
+  const source = asObject(payload);
+  const items = asArray(source.items ?? payload);
+  return items
+    .map((item) => {
+      const current = asObject(item);
+      const keyId = asString(current.keyId ?? current.key_id);
+      if (!keyId) return null;
+      return {
+        keyId,
+        totalTokens: asInteger(current.totalTokens ?? current.total_tokens, 0, 0),
+      };
+    })
+    .filter((item): item is ApiKeyUsageStat => Boolean(item));
+}
+
 export function normalizeDeviceAuthInfo(payload: unknown): DeviceAuthInfo | null {
   const source = asObject(payload);
   const verificationUrl = asString(source.verificationUrl ?? source.verification_url);
@@ -296,6 +313,16 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
   const method = asString(source.method);
   const id = traceId || [createdAt ?? "", method, requestPath, accountId, keyId].join("|");
   if (!id) return null;
+  const durationMs = toNullableNumber(
+    source.durationMs ??
+      source.duration_ms ??
+      source.latencyMs ??
+      source.latency_ms ??
+      source.elapsedMs ??
+      source.elapsed_ms ??
+      source.responseTimeMs ??
+      source.response_time_ms
+  );
 
   return {
     id,
@@ -324,6 +351,7 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     estimatedCostUsd: toNullableNumber(
       source.estimatedCostUsd ?? source.estimated_cost_usd
     ),
+    durationMs,
     error: asString(source.error),
     createdAt,
   };

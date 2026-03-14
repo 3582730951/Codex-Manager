@@ -221,6 +221,9 @@ mod tests {
     #[test]
     fn stream_terminal_messages_are_user_friendly() {
         assert_eq!(stream_incomplete_message(), "上游流中途中断（未正常结束）");
-        assert_eq!(stream_reader_disconnected_message(), "上游流读取失败（连接中断）");
+        assert_eq!(
+            stream_reader_disconnected_message(),
+            "上游流读取失败（连接中断）"
+        );
     }
 }

@@ -127,7 +127,8 @@ pub(crate) fn export_accounts_data() -> Result<AccountExportDataResult, String> 
             continue;
         };
 
-        let file_path = build_account_export_file_path(Path::new(""), &account, &mut file_name_counter);
+        let file_path =
+            build_account_export_file_path(Path::new(""), &account, &mut file_name_counter);
         let file_name = file_path
             .file_name()
             .and_then(|value| value.to_str())

@@ -99,8 +99,9 @@ export function ApiKeyModal({ open, onOpenChange, apiKey }: ApiKeyModalProps) {
 
       const params = {
         name: name || null,
-        modelSlug: modelSlug || null,
-        reasoningEffort: reasoningEffort || null,
+        modelSlug: !modelSlug || modelSlug === "auto" ? null : modelSlug,
+        reasoningEffort:
+          !reasoningEffort || reasoningEffort === "auto" ? null : reasoningEffort,
         protocolType,
         upstreamBaseUrl: protocolType === "azure_openai" ? azureEndpoint : (upstreamBaseUrl || null),
         staticHeadersJson: Object.keys(staticHeaders).length > 0 ? JSON.stringify(staticHeaders) : null,

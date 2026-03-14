@@ -87,6 +87,7 @@ pub struct RequestLog {
     pub response_adapter: Option<String>,
     pub upstream_url: Option<String>,
     pub status_code: Option<i64>,
+    pub duration_ms: Option<i64>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
@@ -119,6 +120,12 @@ pub struct RequestLogTodaySummary {
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyTokenUsageSummary {
+    pub key_id: String,
+    pub total_tokens: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -308,6 +315,11 @@ impl Storage {
         self.apply_sql_migration(
             "030_accounts_scale_indexes",
             include_str!("../../migrations/030_accounts_scale_indexes.sql"),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "031_request_logs_duration_ms",
+            include_str!("../../migrations/031_request_logs_duration_ms.sql"),
+            |s| s.ensure_request_log_duration_column(),
         )?;
         self.ensure_request_token_stats_table()?;
         Ok(())

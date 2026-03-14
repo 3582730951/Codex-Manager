@@ -69,6 +69,7 @@ fn request_log_summary_serialization_includes_trace_route_fields() {
         response_adapter: Some("OpenAIChatCompletionsJson".to_string()),
         upstream_url: Some("https://api.openai.com/v1".to_string()),
         status_code: Some(502),
+        duration_ms: Some(1450),
         input_tokens: Some(10),
         cached_input_tokens: Some(0),
         output_tokens: Some(3),
@@ -88,6 +89,7 @@ fn request_log_summary_serialization_includes_trace_route_fields() {
         "responseAdapter",
         "requestPath",
         "upstreamUrl",
+        "durationMs",
     ] {
         assert!(obj.contains_key(key), "missing key: {key}");
     }

@@ -116,8 +116,8 @@ pub(crate) fn run_front_proxy(addr: &str, backend_addr: &str) -> io::Result<()> 
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
     runtime.block_on(async move {
-        let client =
-            build_local_backend_client().map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let client = build_local_backend_client()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
         let state = ProxyState {
             backend_base_url: build_backend_base_url(backend_addr),
             client,

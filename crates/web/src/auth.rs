@@ -315,7 +315,7 @@ pub(super) async fn login_submit(
             StatusCode::UNAUTHORIZED,
             Html(builtin_login_html(Some("密码错误，请重试。"))),
         )
-        .into_response();
+            .into_response();
         append_no_store_headers(&mut response);
         return response;
     }

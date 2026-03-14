@@ -94,6 +94,7 @@ pub(super) fn maybe_respond_local_models(
                 Some(503),
                 super::request_log::RequestLogUsage::default(),
                 Some(message.as_str()),
+                None,
             );
             let response =
                 super::error_response::terminal_text_response(503, message, Some(trace_id));
@@ -157,6 +158,7 @@ pub(super) fn maybe_respond_local_models(
         Some(200),
         super::request_log::RequestLogUsage::default(),
         fallback_reason.as_deref(),
+        None,
     );
     let response = super::error_response::with_trace_id_header(
         Response::from_string(output)

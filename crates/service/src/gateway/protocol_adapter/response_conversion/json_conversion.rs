@@ -318,7 +318,10 @@ fn build_anthropic_usage(usage: Option<&Map<String, Value>>) -> Value {
 
     if let Some(cache_creation_input_tokens) = extract_usage_i64(
         usage,
-        &["cache_creation_input_tokens", "input_tokens_details.cache_creation_tokens"],
+        &[
+            "cache_creation_input_tokens",
+            "input_tokens_details.cache_creation_tokens",
+        ],
     ) {
         out.insert(
             "cache_creation_input_tokens".to_string(),
@@ -350,7 +353,9 @@ fn extract_usage_i64(usage: Option<&Map<String, Value>>, paths: &[&str]) -> Opti
             cursor = if index == 0 {
                 usage.get(segment)
             } else {
-                cursor.and_then(Value::as_object).and_then(|map| map.get(segment))
+                cursor
+                    .and_then(Value::as_object)
+                    .and_then(|map| map.get(segment))
             };
         }
         if let Some(value) = cursor.and_then(Value::as_i64) {

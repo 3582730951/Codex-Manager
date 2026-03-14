@@ -126,7 +126,10 @@ mod tests {
     fn should_record_error_log_for_http_error_status() {
         assert!(should_record_error_log(Some(502), None));
         assert!(!should_record_error_log(Some(200), None));
-        assert!(should_record_error_log(Some(200), Some("上游流中途中断（未正常结束）")));
+        assert!(should_record_error_log(
+            Some(200),
+            Some("上游流中途中断（未正常结束）")
+        ));
     }
 
     #[test]

@@ -39,8 +39,8 @@ impl Storage {
         self.conn.execute(
             "INSERT INTO request_logs (
                 trace_id, key_id, account_id, request_path, original_path, adapted_path,
-                method, model, reasoning_effort, response_adapter, upstream_url, status_code, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                method, model, reasoning_effort, response_adapter, upstream_url, status_code, duration_ms, error, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             (
                 &log.trace_id,
                 &log.key_id,
@@ -54,6 +54,7 @@ impl Storage {
                 &log.response_adapter,
                 &log.upstream_url,
                 log.status_code,
+                log.duration_ms,
                 &log.error,
                 log.created_at,
             ),
@@ -70,8 +71,8 @@ impl Storage {
         tx.execute(
             "INSERT INTO request_logs (
                 trace_id, key_id, account_id, request_path, original_path, adapted_path,
-                method, model, reasoning_effort, response_adapter, upstream_url, status_code, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                method, model, reasoning_effort, response_adapter, upstream_url, status_code, duration_ms, error, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             (
                 &log.trace_id,
                 &log.key_id,
@@ -85,6 +86,7 @@ impl Storage {
                 &log.response_adapter,
                 &log.upstream_url,
                 log.status_code,
+                log.duration_ms,
                 &log.error,
                 log.created_at,
             ),
@@ -130,7 +132,7 @@ impl Storage {
                 let mut stmt = self.conn.prepare(
                     "SELECT
                         r.trace_id, r.key_id, r.account_id, r.request_path, r.original_path, r.adapted_path,
-                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code,
+                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code, r.duration_ms,
                         t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                         r.error, r.created_at
                      FROM request_logs r
@@ -147,7 +149,7 @@ impl Storage {
                 let sql = format!(
                     "SELECT
                         r.trace_id, r.key_id, r.account_id, r.request_path, r.original_path, r.adapted_path,
-                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code,
+                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code, r.duration_ms,
                         t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                         r.error, r.created_at
                      FROM request_logs r
@@ -166,7 +168,7 @@ impl Storage {
                 let sql = format!(
                     "SELECT
                         r.trace_id, r.key_id, r.account_id, r.request_path, r.original_path, r.adapted_path,
-                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code,
+                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code, r.duration_ms,
                         t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                         r.error, r.created_at
                      FROM request_logs r
@@ -185,7 +187,7 @@ impl Storage {
                 let mut stmt = self.conn.prepare(
                     "SELECT
                         r.trace_id, r.key_id, r.account_id, r.request_path, r.original_path, r.adapted_path,
-                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code,
+                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code, r.duration_ms,
                         t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                         r.error, r.created_at
                      FROM request_logs r
@@ -203,7 +205,7 @@ impl Storage {
                 let mut stmt = self.conn.prepare(
                     "SELECT
                         r.trace_id, r.key_id, r.account_id, r.request_path, r.original_path, r.adapted_path,
-                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code,
+                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code, r.duration_ms,
                         t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                         r.error, r.created_at
                      FROM request_logs r
@@ -221,7 +223,7 @@ impl Storage {
                 let mut stmt = self.conn.prepare(
                     "SELECT
                         r.trace_id, r.key_id, r.account_id, r.request_path, r.original_path, r.adapted_path,
-                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code,
+                        r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.status_code, r.duration_ms,
                         t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
                         r.error, r.created_at
                      FROM request_logs r
@@ -288,6 +290,7 @@ impl Storage {
                 response_adapter TEXT,
                 upstream_url TEXT,
                 status_code INTEGER,
+                duration_ms INTEGER,
                 error TEXT,
                 created_at INTEGER NOT NULL
             )",
@@ -328,6 +331,11 @@ impl Storage {
             "CREATE INDEX IF NOT EXISTS idx_request_logs_trace_id_created_at ON request_logs(trace_id, created_at DESC)",
             [],
         )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_request_log_duration_column(&self) -> Result<()> {
+        self.ensure_column("request_logs", "duration_ms", "INTEGER")?;
         Ok(())
     }
 
@@ -372,16 +380,17 @@ impl Storage {
                 response_adapter TEXT,
                 upstream_url TEXT,
                 status_code INTEGER,
+                duration_ms INTEGER,
                 error TEXT,
                 created_at INTEGER NOT NULL
              );
              INSERT INTO request_logs (
                 id, trace_id, key_id, account_id, request_path, original_path, adapted_path,
-                method, model, reasoning_effort, response_adapter, upstream_url, status_code, error, created_at
+                method, model, reasoning_effort, response_adapter, upstream_url, status_code, duration_ms, error, created_at
              )
              SELECT
                 id, trace_id, key_id, account_id, request_path, original_path, adapted_path,
-                method, model, reasoning_effort, response_adapter, upstream_url, status_code, error, created_at
+                method, model, reasoning_effort, response_adapter, upstream_url, status_code, NULL, error, created_at
              FROM request_logs_legacy_028;
              DROP TABLE request_logs_legacy_028;",
         )?;
@@ -406,14 +415,15 @@ fn map_request_log_row(row: &Row<'_>) -> Result<RequestLog> {
         response_adapter: row.get(9)?,
         upstream_url: row.get(10)?,
         status_code: row.get(11)?,
-        input_tokens: row.get(12)?,
-        cached_input_tokens: row.get(13)?,
-        output_tokens: row.get(14)?,
-        total_tokens: row.get(15)?,
-        reasoning_output_tokens: row.get(16)?,
-        estimated_cost_usd: row.get(17)?,
-        error: row.get(18)?,
-        created_at: row.get(19)?,
+        duration_ms: row.get(12)?,
+        input_tokens: row.get(13)?,
+        cached_input_tokens: row.get(14)?,
+        output_tokens: row.get(15)?,
+        total_tokens: row.get(16)?,
+        reasoning_output_tokens: row.get(17)?,
+        estimated_cost_usd: row.get(18)?,
+        error: row.get(19)?,
+        created_at: row.get(20)?,
     })
 }
 

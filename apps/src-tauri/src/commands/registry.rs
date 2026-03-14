@@ -55,6 +55,7 @@ macro_rules! invoke_handler {
             crate::commands::apikey::service_apikey_read_secret,
             crate::commands::apikey::service_apikey_create,
             crate::commands::apikey::service_apikey_models,
+            crate::commands::apikey::service_apikey_usage_stats,
             crate::commands::apikey::service_apikey_update_model,
             crate::commands::apikey::service_apikey_delete,
             crate::commands::apikey::service_apikey_disable,

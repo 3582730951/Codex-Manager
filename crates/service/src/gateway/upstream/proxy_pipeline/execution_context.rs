@@ -142,6 +142,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             Some(status_code),
             usage,
             error,
+            Some(elapsed_ms),
         );
         super::super::super::trace_log::log_request_final(
             self.trace_id,

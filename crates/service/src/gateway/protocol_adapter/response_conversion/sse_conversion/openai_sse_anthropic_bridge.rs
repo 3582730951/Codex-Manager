@@ -179,18 +179,19 @@ pub(super) fn convert_openai_sse_to_anthropic(
                                 .and_then(Value::as_i64)
                                 .or_else(|| usage.get("input_tokens").and_then(Value::as_i64))
                                 .unwrap_or(input_tokens);
-                            cache_creation_input_tokens = cache_creation_input_tokens.or_else(|| {
-                                usage
-                                    .get("cache_creation_input_tokens")
-                                    .and_then(Value::as_i64)
-                                    .or_else(|| {
-                                        usage.get("input_tokens_details").and_then(|details| {
-                                            details
-                                                .get("cache_creation_tokens")
-                                                .and_then(Value::as_i64)
+                            cache_creation_input_tokens =
+                                cache_creation_input_tokens.or_else(|| {
+                                    usage
+                                        .get("cache_creation_input_tokens")
+                                        .and_then(Value::as_i64)
+                                        .or_else(|| {
+                                            usage.get("input_tokens_details").and_then(|details| {
+                                                details
+                                                    .get("cache_creation_tokens")
+                                                    .and_then(Value::as_i64)
+                                            })
                                         })
-                                    })
-                            });
+                                });
                             cache_read_input_tokens = cache_read_input_tokens.or_else(|| {
                                 usage
                                     .get("cache_read_input_tokens")
@@ -243,9 +244,7 @@ pub(super) fn convert_openai_sse_to_anthropic(
                     .and_then(Value::as_i64)
                     .or_else(|| {
                         usage.get("input_tokens_details").and_then(|details| {
-                            details
-                                .get("cache_creation_tokens")
-                                .and_then(Value::as_i64)
+                            details.get("cache_creation_tokens").and_then(Value::as_i64)
                         })
                     })
             });
@@ -349,7 +348,10 @@ pub(super) fn convert_openai_sse_to_anthropic(
     start_usage.insert("input_tokens".to_string(), Value::from(input_tokens));
     start_usage.insert("output_tokens".to_string(), Value::from(0));
     if let Some(value) = cache_creation_input_tokens {
-        start_usage.insert("cache_creation_input_tokens".to_string(), Value::from(value));
+        start_usage.insert(
+            "cache_creation_input_tokens".to_string(),
+            Value::from(value),
+        );
     }
     if let Some(value) = cache_read_input_tokens {
         start_usage.insert("cache_read_input_tokens".to_string(), Value::from(value));

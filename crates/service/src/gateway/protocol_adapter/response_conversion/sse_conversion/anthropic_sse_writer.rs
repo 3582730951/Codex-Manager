@@ -55,7 +55,10 @@ pub(super) fn convert_anthropic_json_to_sse(
     start_usage.insert("input_tokens".to_string(), Value::from(input_tokens));
     start_usage.insert("output_tokens".to_string(), Value::from(0));
     if let Some(value) = cache_creation_input_tokens {
-        start_usage.insert("cache_creation_input_tokens".to_string(), Value::from(value));
+        start_usage.insert(
+            "cache_creation_input_tokens".to_string(),
+            Value::from(value),
+        );
     }
     if let Some(value) = cache_read_input_tokens {
         start_usage.insert("cache_read_input_tokens".to_string(), Value::from(value));

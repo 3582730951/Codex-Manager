@@ -1,8 +1,10 @@
-use codexmanager_core::rpc::types::{ApiKeyListResult, JsonRpcRequest, JsonRpcResponse};
+use codexmanager_core::rpc::types::{
+    ApiKeyListResult, ApiKeyUsageStatListResult, JsonRpcRequest, JsonRpcResponse,
+};
 
 use crate::{
     apikey_create, apikey_delete, apikey_disable, apikey_enable, apikey_list, apikey_models,
-    apikey_read_secret, apikey_update_model,
+    apikey_read_secret, apikey_update_model, apikey_usage_stats,
 };
 
 pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
@@ -34,6 +36,10 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let refresh_remote = super::bool_param(req, "refreshRemote").unwrap_or(false);
             super::value_or_error(apikey_models::read_model_options(refresh_remote))
         }
+        "apikey/usageStats" => super::value_or_error(
+            apikey_usage_stats::read_api_key_usage_stats()
+                .map(|items| ApiKeyUsageStatListResult { items }),
+        ),
         "apikey/updateModel" => {
             let key_id = super::str_param(req, "id").unwrap_or("");
             let model_slug = super::string_param(req, "modelSlug");

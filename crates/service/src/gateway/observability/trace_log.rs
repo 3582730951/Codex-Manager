@@ -467,8 +467,9 @@ pub(crate) fn log_bridge_result(
     output_text_len: usize,
     output_tokens: Option<i64>,
 ) {
-    let bridge_has_error =
-        delivery_error.is_some() || stream_terminal_error.is_some() || (is_stream && !stream_terminal_seen);
+    let bridge_has_error = delivery_error.is_some()
+        || stream_terminal_error.is_some()
+        || (is_stream && !stream_terminal_seen);
     if bridge_has_error {
         mark_trace_has_error(trace_id);
     }

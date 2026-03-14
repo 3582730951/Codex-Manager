@@ -767,7 +767,10 @@ fn passthrough_sse_reader_emits_keepalive_for_responses_stream() {
 fn passthrough_sse_reader_captures_raw_html_error_body() {
     let (upstream, server) = open_streaming_mock_http_response(
         "text/html",
-        &[("<html><title>Just a moment...</title><body>cf</body></html>", 0)],
+        &[(
+            "<html><title>Just a moment...</title><body>cf</body></html>",
+            0,
+        )],
     );
     let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
     let mut reader = PassthroughSseUsageReader::new(

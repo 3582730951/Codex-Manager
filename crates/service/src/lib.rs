@@ -34,6 +34,7 @@ pub(crate) use apikey::models as apikey_models;
 pub(crate) use apikey::profile as apikey_profile;
 pub(crate) use apikey::read_secret as apikey_read_secret;
 pub(crate) use apikey::update_model as apikey_update_model;
+pub(crate) use apikey::usage_stats as apikey_usage_stats;
 pub(crate) use auth::callback as auth_callback;
 pub(crate) use auth::login as auth_login;
 pub(crate) use auth::tokens as auth_tokens;

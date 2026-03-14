@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { 
   Dialog, 
   DialogContent, 
@@ -38,7 +38,10 @@ interface AddAccountModalProps {
 export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
   const [activeTab, setActiveTab] = useState("login");
   const [isLoading, setIsLoading] = useState(false);
+  const [isPollingLogin, setIsPollingLogin] = useState(false);
+  const [loginHint, setLoginHint] = useState("");
   const queryClient = useQueryClient();
+  const loginPollTokenRef = useRef(0);
 
   // Login Form
   const [tags, setTags] = useState("");
@@ -50,8 +53,80 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
   // Bulk Import
   const [bulkContent, setBulkContent] = useState("");
 
+  const invalidateLoginQueries = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["accounts"] }),
+      queryClient.invalidateQueries({ queryKey: ["usage"] }),
+      queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
+    ]);
+  };
+
+  const handleDialogOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      loginPollTokenRef.current += 1;
+      setIsPollingLogin(false);
+      setLoginHint("");
+      setLoginUrl("");
+      setManualCallback("");
+    }
+    onOpenChange(nextOpen);
+  };
+
+  const completeLoginSuccess = async (message: string) => {
+    loginPollTokenRef.current += 1;
+    setIsPollingLogin(false);
+    setLoginHint("");
+    await invalidateLoginQueries();
+    toast.success(message);
+    setLoginUrl("");
+    setManualCallback("");
+    onOpenChange(false);
+  };
+
+  const waitForLogin = async (loginId: string) => {
+    const pollToken = loginPollTokenRef.current + 1;
+    loginPollTokenRef.current = pollToken;
+    setIsPollingLogin(true);
+    setLoginHint("已生成登录链接，正在等待授权完成...");
+
+    const deadline = Date.now() + 2 * 60 * 1000;
+    while (pollToken === loginPollTokenRef.current && Date.now() < deadline) {
+      try {
+        const result = await accountClient.getLoginStatus(loginId);
+        if (pollToken !== loginPollTokenRef.current) {
+          return;
+        }
+
+        const status = String(result.status || "").trim().toLowerCase();
+        if (status === "success") {
+          await completeLoginSuccess("登录成功");
+          return;
+        }
+        if (status === "failed") {
+          const message = result.error || "登录失败，请重试";
+          setIsPollingLogin(false);
+          setLoginHint(`登录失败：${message}`);
+          toast.error(message);
+          return;
+        }
+      } catch {
+        if (pollToken !== loginPollTokenRef.current) {
+          return;
+        }
+      }
+
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 1500));
+    }
+
+    if (pollToken === loginPollTokenRef.current) {
+      setIsPollingLogin(false);
+      setLoginHint("登录超时，请重试或使用下方手动解析回调。");
+    }
+  };
+
   const handleStartLogin = async () => {
     setIsLoading(true);
+    setLoginHint("");
     try {
       const result = await accountClient.startLogin({
         tags: tags.split(",").map(t => t.trim()).filter(Boolean),
@@ -63,6 +138,11 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
         toast.warning(result.warning);
       }
       toast.success("已生成登录链接，请在浏览器中完成授权");
+      if (result.loginId) {
+        void waitForLogin(result.loginId);
+      } else {
+        setLoginHint("未返回登录任务编号，请完成授权后使用手动解析。");
+      }
     } catch (err: unknown) {
       toast.error(`启动登录失败: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -76,6 +156,7 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       return;
     }
     setIsLoading(true);
+    setLoginHint("正在解析回调...");
     try {
       const url = new URL(manualCallback);
       const state = url.searchParams.get("state") || "";
@@ -83,15 +164,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
       const redirectUri = `${url.origin}${url.pathname}`;
       
       await accountClient.completeLogin(state, code, redirectUri);
-      toast.success("登录回调解析成功");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["accounts"] }),
-        queryClient.invalidateQueries({ queryKey: ["usage"] }),
-        queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
-      ]);
-      onOpenChange(false);
-      setManualCallback("");
+      await completeLoginSuccess("登录成功");
     } catch (err: unknown) {
+      setLoginHint(`解析失败: ${err instanceof Error ? err.message : String(err)}`);
       toast.error(`解析失败: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsLoading(false);
@@ -126,7 +201,7 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleDialogOpenChange}>
       <DialogContent className="sm:max-w-[600px] p-0 overflow-hidden glass-card border-none">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <div className="px-6 pt-6 bg-muted/20">
@@ -175,7 +250,7 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
               </div>
 
               <div className="pt-2">
-                <Button onClick={handleStartLogin} disabled={isLoading} className="w-full gap-2">
+                <Button onClick={handleStartLogin} disabled={isLoading || isPollingLogin} className="w-full gap-2">
                   <ExternalLink className="h-4 w-4" /> 登录授权
                 </Button>
                 {loginUrl && (
@@ -186,6 +261,9 @@ export function AddAccountModal({ open, onOpenChange }: AddAccountModalProps) {
                     </Button>
                   </div>
                 )}
+                {loginHint ? (
+                  <p className="mt-2 text-xs text-muted-foreground">{loginHint}</p>
+                ) : null}
               </div>
 
               <div className="space-y-3 pt-4 border-t">

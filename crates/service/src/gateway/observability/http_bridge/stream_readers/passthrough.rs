@@ -45,11 +45,9 @@ impl PassthroughSseUsageReader {
                             || line.starts_with(':')
                     });
                     if !looks_like_sse_frame && !trimmed.is_empty() {
-                        collector.upstream_error_hint = extract_error_hint_from_body(
-                            400,
-                            raw_frame.as_bytes(),
-                        )
-                        .or_else(|| Some(trimmed.to_string()));
+                        collector.upstream_error_hint =
+                            extract_error_hint_from_body(400, raw_frame.as_bytes())
+                                .or_else(|| Some(trimmed.to_string()));
                     }
                 }
                 return;

@@ -64,7 +64,8 @@ pub(crate) fn compute_usage_aggregate_summary(
             }
         }
 
-        if let Some(primary_remain) = usage.and_then(|value| remaining_percent(value.used_percent)) {
+        if let Some(primary_remain) = usage.and_then(|value| remaining_percent(value.used_percent))
+        {
             if primary_belongs_to_secondary {
                 secondary_known_count += 1;
                 secondary_remaining_total += primary_remain;
@@ -230,7 +231,14 @@ mod tests {
         let accounts = vec![account("a1"), account("a2"), account("a3")];
         let usage_items = vec![
             usage_record("a1", Some(20.0), Some(300), None, None, None),
-            usage_record("a2", None, Some(10080), None, None, Some(r#"{"planType":"free"}"#)),
+            usage_record(
+                "a2",
+                None,
+                Some(10080),
+                None,
+                None,
+                Some(r#"{"planType":"free"}"#),
+            ),
         ];
 
         let result = compute_usage_aggregate_summary(&accounts, &usage_items);

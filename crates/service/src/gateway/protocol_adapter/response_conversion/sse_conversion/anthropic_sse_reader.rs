@@ -200,7 +200,10 @@ pub(super) fn convert_anthropic_sse_to_json(
     usage.insert("input_tokens".to_string(), Value::from(input_tokens));
     usage.insert("output_tokens".to_string(), Value::from(output_tokens));
     if let Some(value) = cache_creation_input_tokens {
-        usage.insert("cache_creation_input_tokens".to_string(), Value::from(value));
+        usage.insert(
+            "cache_creation_input_tokens".to_string(),
+            Value::from(value),
+        );
     }
     if let Some(value) = cache_read_input_tokens {
         usage.insert("cache_read_input_tokens".to_string(), Value::from(value));

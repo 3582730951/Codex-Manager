@@ -124,7 +124,8 @@ where
             } else {
                 FallbackBranchResult::Terminal {
                     status_code: 502,
-                    message: "upstream blocked by Cloudflare; set CODEXMANAGER_UPSTREAM_COOKIE".to_string(),
+                    message: "upstream blocked by Cloudflare; set CODEXMANAGER_UPSTREAM_COOKIE"
+                        .to_string(),
                 }
             }
         }

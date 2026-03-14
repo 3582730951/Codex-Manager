@@ -48,6 +48,7 @@ pub(crate) fn read_request_logs(
             response_adapter: item.response_adapter,
             upstream_url: sanitize_upstream_url_for_display(item.upstream_url.as_deref()),
             status_code: item.status_code,
+            duration_ms: item.duration_ms,
             input_tokens: item.input_tokens,
             cached_input_tokens: item.cached_input_tokens,
             output_tokens: item.output_tokens,
@@ -67,8 +68,10 @@ mod tests {
     #[test]
     fn sanitize_upstream_url_masks_official_domains() {
         assert_eq!(
-            sanitize_upstream_url_for_display(Some("https://chatgpt.com/backend-api/codex/responses"))
-                .as_deref(),
+            sanitize_upstream_url_for_display(Some(
+                "https://chatgpt.com/backend-api/codex/responses"
+            ))
+            .as_deref(),
             Some("默认")
         );
         assert_eq!(

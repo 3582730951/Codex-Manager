@@ -45,6 +45,11 @@ pub async fn service_apikey_models(
 }
 
 #[tauri::command]
+pub async fn service_apikey_usage_stats(addr: Option<String>) -> Result<serde_json::Value, String> {
+    rpc_call_in_background("apikey/usageStats", addr, None).await
+}
+
+#[tauri::command]
 pub async fn service_apikey_update_model(
     addr: Option<String>,
     key_id: String,

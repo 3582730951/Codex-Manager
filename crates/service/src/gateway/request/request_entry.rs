@@ -66,6 +66,7 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
                         Some(err.status_code),
                         super::request_log::RequestLogUsage::default(),
                         Some(err.message.as_str()),
+                        None,
                     );
                 }
                 let response = super::error_response::terminal_text_response(

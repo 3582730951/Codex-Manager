@@ -95,7 +95,6 @@ pub(in super::super) fn reload_from_env() {
     let mut cached_base =
         crate::lock_utils::write_recover(upstream_base_url_cell(), "upstream_base_url");
     *cached_base = base;
-
 }
 
 fn ensure_config_loaded() {

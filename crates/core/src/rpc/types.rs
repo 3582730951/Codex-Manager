@@ -163,6 +163,18 @@ pub struct ApiKeyListResult {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ApiKeyUsageStatSummary {
+    pub key_id: String,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiKeyUsageStatListResult {
+    pub items: Vec<ApiKeyUsageStatSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiKeyCreateResult {
     pub id: String,
     pub key: String,
@@ -202,6 +214,7 @@ pub struct RequestLogSummary {
     pub response_adapter: Option<String>,
     pub upstream_url: Option<String>,
     pub status_code: Option<i64>,
+    pub duration_ms: Option<i64>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,

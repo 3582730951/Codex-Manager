@@ -98,6 +98,7 @@ pub(super) fn maybe_respond_local_count_tokens(
                     reasoning_output_tokens: Some(0),
                 },
                 None,
+                None,
             );
             let response = super::error_response::with_trace_id_header(
                 Response::from_string(output)
@@ -136,6 +137,7 @@ pub(super) fn maybe_respond_local_count_tokens(
                 Some(400),
                 super::request_log::RequestLogUsage::default(),
                 Some(err.as_str()),
+                None,
             );
             let response =
                 super::error_response::terminal_text_response(400, err.clone(), Some(trace_id));

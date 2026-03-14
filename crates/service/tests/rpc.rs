@@ -544,11 +544,15 @@ fn rpc_usage_aggregate_returns_backend_summary() {
     let result = v.get("result").expect("result");
 
     assert_eq!(
-        result.get("primaryBucketCount").and_then(|value| value.as_i64()),
+        result
+            .get("primaryBucketCount")
+            .and_then(|value| value.as_i64()),
         Some(1)
     );
     assert_eq!(
-        result.get("primaryRemainPercent").and_then(|value| value.as_i64()),
+        result
+            .get("primaryRemainPercent")
+            .and_then(|value| value.as_i64()),
         Some(90)
     );
     assert_eq!(

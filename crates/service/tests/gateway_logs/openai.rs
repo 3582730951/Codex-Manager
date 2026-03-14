@@ -743,7 +743,8 @@ fn gateway_unauthorized_refreshes_access_token_and_retries_once() {
         "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 }
     });
     let body_401 = serde_json::to_string(&first_response).expect("serialize first response");
-    let body_refresh = serde_json::to_string(&refresh_response).expect("serialize refresh response");
+    let body_refresh =
+        serde_json::to_string(&refresh_response).expect("serialize refresh response");
     let body_200 = serde_json::to_string(&second_response).expect("serialize second response");
     let (upstream_addr, upstream_rx, upstream_join) =
         start_mock_upstream_sequence(vec![(401, body_401), (200, body_refresh), (200, body_200)]);

@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn append_client_version_query_does_not_duplicate_param() {
         let actual = append_client_version_query(
-            "https://example.com/backend-api/codex/models?client_version=0.101.0"
+            "https://example.com/backend-api/codex/models?client_version=0.101.0",
         );
         assert_eq!(
             actual,
