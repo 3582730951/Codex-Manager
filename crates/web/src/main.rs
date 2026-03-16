@@ -18,7 +18,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use rand::RngCore;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, RwLock};
 use tower_http::services::{ServeDir, ServeFile};
 
 const DEFAULT_WEB_ADDR: &str = "localhost:48761";
@@ -27,8 +27,8 @@ const WEB_AUTH_COOKIE_NAME: &str = "codexmanager_web_auth";
 #[derive(Clone)]
 struct AppState {
     client: reqwest::Client,
-    service_rpc_url: String,
-    service_addr: String,
+    service_rpc_url: Arc<RwLock<String>>,
+    service_addr: Arc<RwLock<String>>,
     rpc_token: String,
     web_auth_session_key: String,
     shutdown_tx: watch::Sender<bool>,
@@ -68,6 +68,10 @@ fn resolve_service_addr() -> String {
     read_env_trim("CODEXMANAGER_SERVICE_ADDR")
         .and_then(|v| normalize_addr(&v))
         .unwrap_or_else(|| codexmanager_service::DEFAULT_ADDR.to_string())
+}
+
+fn service_rpc_url(addr: &str) -> String {
+    format!("http://{addr}/rpc")
 }
 
 fn resolve_web_addr() -> String {
@@ -169,12 +173,17 @@ async fn async_main() {
     let web_root = resolve_web_root();
     let index = web_root.join("index.html");
 
-    let rpc_url = format!("http://{service_addr}/rpc");
+    let rpc_url = service_rpc_url(&service_addr);
     let rpc_token = codexmanager_service::rpc_auth_token().to_string();
 
     let spawned_service: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
-    let spawn_err =
-        service_gateway::ensure_service_running(&service_addr, &exe_dir(), &spawned_service).await;
+    let spawn_err = service_gateway::ensure_service_running(
+        &service_addr,
+        &rpc_token,
+        &exe_dir(),
+        &spawned_service,
+    )
+    .await;
 
     let mut missing_detail = format!(
         "web root invalid: {} (index.html missing)",
@@ -192,8 +201,8 @@ async fn async_main() {
             .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new()),
-        service_rpc_url: rpc_url,
-        service_addr: service_addr.clone(),
+        service_rpc_url: Arc::new(RwLock::new(rpc_url)),
+        service_addr: Arc::new(RwLock::new(service_addr.clone())),
         rpc_token,
         web_auth_session_key: auth::generate_web_auth_session_key(),
         shutdown_tx,
@@ -203,6 +212,8 @@ async fn async_main() {
 
     let mut protected_app = Router::new()
         .route("/api/rpc", post(service_gateway::rpc_proxy))
+        .route("/api/service/start", post(service_gateway::start_service))
+        .route("/api/service/stop", post(service_gateway::stop_service))
         .route("/__quit", get(service_gateway::quit));
 
     let disk_ok = ensure_index_file(&index);

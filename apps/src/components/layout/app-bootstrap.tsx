@@ -15,7 +15,6 @@ import {
   STARTUP_SNAPSHOT_STALE_TIME,
 } from "@/lib/api/startup-snapshot";
 import { appClient } from "@/lib/api/app-client";
-import { isTauriRuntime } from "@/lib/api/transport";
 import { Button } from "@/components/ui/button";
 import {
   formatServiceError,
@@ -258,12 +257,6 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   const init = useCallback(async () => {
-    if (!isTauriRuntime()) {
-      setIsInitializing(false);
-      hasInitializedOnce.current = true;
-      return;
-    }
-
     // Only show full screen loading if we haven't initialized once
     if (!hasInitializedOnce.current) {
       setIsInitializing(true);
@@ -280,6 +273,7 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
       }
       
       setAppSettings(settings);
+      applyLowTransparency(settings.lowTransparency);
       
       // CRITICAL: Do not reset status to connected: false if we are already connected
       // This prevents the Header badge from flashing
