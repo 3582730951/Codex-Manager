@@ -3,6 +3,31 @@ use tiny_http::Request;
 use super::super::super::request_log::RequestLogUsage;
 use super::execution_context::GatewayUpstreamExecutionContext;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamBridgeFailure {
+    ExplicitUpstreamError,
+    Timeout,
+    Disconnected,
+    Incomplete,
+    ReadError,
+}
+
+impl StreamBridgeFailure {
+    fn status_for_log(self) -> u16 {
+        match self {
+            Self::Timeout => 504,
+            Self::ExplicitUpstreamError
+            | Self::Disconnected
+            | Self::Incomplete
+            | Self::ReadError => 502,
+        }
+    }
+
+    fn should_mark_network_failure(self) -> bool {
+        matches!(self, Self::Disconnected | Self::ReadError)
+    }
+}
+
 pub(in super::super) fn respond_terminal(
     request: Request,
     status_code: u16,
@@ -26,57 +51,39 @@ fn is_client_disconnect_error(message: &str) -> bool {
         || normalized.contains("os error 104")
 }
 
-fn classify_upstream_hint(hint: &str) -> &'static str {
-    let normalized = hint.trim().to_ascii_lowercase();
-    if normalized.contains("cloudflare")
-        || normalized.contains("安全验证")
-        || normalized.contains("challenge")
-    {
-        "challenge"
-    } else if normalized.contains("html 错误页") || normalized.contains("<html") {
-        "html_error"
-    } else {
-        "upstream_hint"
-    }
-}
-
-fn classify_finalize_error(
-    status_code: u16,
-    upstream_hint: Option<&str>,
-    client_is_stream: bool,
+fn classify_stream_bridge_failure(
     stream_terminal_seen: bool,
     stream_terminal_error: Option<&str>,
-    delivery_error: Option<&str>,
-) -> Option<&'static str> {
-    if let Some(error) = delivery_error {
-        if is_client_disconnect_error(error) {
-            return Some("client_disconnect");
-        }
-        return Some("delivery_error");
+) -> Option<StreamBridgeFailure> {
+    let Some(message) = stream_terminal_error
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return (!stream_terminal_seen).then_some(StreamBridgeFailure::Incomplete);
+    };
+    if stream_terminal_seen {
+        return Some(StreamBridgeFailure::ExplicitUpstreamError);
     }
-    if stream_terminal_error.is_some() {
-        return Some("stream_error");
-    }
-    if client_is_stream && !stream_terminal_seen {
-        return Some("stream_interrupted");
-    }
-    if let Some(hint) = upstream_hint {
-        return Some(classify_upstream_hint(hint));
-    }
-    match status_code {
-        429 => Some("rate_limited"),
-        500..=599 => Some("upstream_5xx"),
-        400..=499 => Some("upstream_4xx"),
-        _ => None,
-    }
-}
 
-fn derived_status_for_bridge_error(error_class: Option<&str>) -> Option<u16> {
-    match error_class {
-        Some("client_disconnect") => Some(499),
-        Some(_) => Some(502),
-        None => None,
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("超时")
+        || normalized.contains("timed out")
+        || normalized.contains("timeout")
+    {
+        return Some(StreamBridgeFailure::Timeout);
     }
+    if normalized.contains("连接中断")
+        || normalized.contains("broken pipe")
+        || normalized.contains("connection reset")
+        || normalized.contains("connection aborted")
+        || normalized.contains("forcibly closed")
+    {
+        return Some(StreamBridgeFailure::Disconnected);
+    }
+    if normalized.contains("中途中断") || normalized.contains("未正常结束") {
+        return Some(StreamBridgeFailure::Incomplete);
+    }
+    Some(StreamBridgeFailure::ReadError)
 }
 
 pub(super) fn respond_total_timeout(
@@ -183,6 +190,14 @@ pub(super) fn finalize_upstream_response(
     }
 
     let bridge_ok = bridge.is_ok(client_is_stream);
+    let stream_failure = if client_is_stream {
+        classify_stream_bridge_failure(
+            bridge.stream_terminal_seen,
+            bridge.stream_terminal_error.as_deref(),
+        )
+    } else {
+        None
+    };
     if final_error.is_none() && !bridge_ok {
         final_error = Some(
             bridge
@@ -191,16 +206,6 @@ pub(super) fn finalize_upstream_response(
         );
     }
 
-    let error_class = classify_finalize_error(
-        status_code,
-        bridge.upstream_error_hint.as_deref(),
-        client_is_stream,
-        bridge.stream_terminal_seen,
-        bridge.stream_terminal_error.as_deref(),
-        bridge.delivery_error.as_deref(),
-    );
-    let upstream_stream_failed =
-        client_is_stream && (!bridge.stream_terminal_seen || bridge.stream_terminal_error.is_some());
     let client_delivery_failed = bridge
         .delivery_error
         .as_deref()
@@ -209,41 +214,20 @@ pub(super) fn finalize_upstream_response(
         status_code
     } else if client_delivery_failed {
         499
-    } else if let Some(derived) = derived_status_for_bridge_error(error_class) {
-        derived
+    } else if let Some(stream_failure) = stream_failure {
+        stream_failure.status_for_log()
     } else if bridge_ok {
         status_code
     } else {
         502
     };
 
-    if upstream_stream_failed
-        || matches!(error_class, Some("stream_interrupted" | "stream_error" | "html_error"))
-    {
-        let _ = super::super::super::clear_manual_preferred_account_if(account_id);
+    if stream_failure.is_some_and(StreamBridgeFailure::should_mark_network_failure) {
         super::super::super::mark_account_cooldown(
             account_id,
             super::super::super::CooldownReason::Network,
         );
         super::super::super::record_route_quality(account_id, 502);
-    }
-    if matches!(error_class, Some("challenge")) {
-        let _ = super::super::super::clear_manual_preferred_account_if(account_id);
-        super::super::super::mark_account_cooldown(
-            account_id,
-            super::super::super::CooldownReason::Challenge,
-        );
-        super::super::super::record_route_quality(account_id, 403);
-    }
-    if let Some(class) = error_class {
-        log::warn!(
-            "event=gateway_finalize_error_class trace_id={} account_id={} class={} upstream_status={} final_status={}",
-            trace_id,
-            account_id,
-            class,
-            status_code,
-            status_for_log
-        );
     }
 
     let usage = bridge.usage;
@@ -268,51 +252,47 @@ pub(super) fn finalize_upstream_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_finalize_error, classify_upstream_hint, derived_status_for_bridge_error};
+    use super::{classify_stream_bridge_failure, StreamBridgeFailure};
 
     #[test]
-    fn classify_upstream_hint_detects_challenge_and_html() {
+    fn stream_bridge_failure_treats_seen_terminal_errors_as_explicit_failures() {
         assert_eq!(
-            classify_upstream_hint("Cloudflare 安全验证页（title=Just a moment...）"),
-            "challenge"
-        );
-        assert_eq!(classify_upstream_hint("上游返回 HTML 错误页"), "html_error");
-    }
-
-    #[test]
-    fn classify_finalize_error_detects_hidden_bridge_failures() {
-        assert_eq!(
-            classify_finalize_error(200, Some("Cloudflare 安全验证页"), false, true, None, None),
-            Some("challenge")
-        );
-        assert_eq!(
-            classify_finalize_error(200, Some("上游返回 HTML 错误页"), false, true, None, None),
-            Some("html_error")
-        );
-        assert_eq!(
-            classify_finalize_error(200, None, true, false, None, None),
-            Some("stream_interrupted")
-        );
-        assert_eq!(
-            classify_finalize_error(
-                200,
-                None,
-                false,
-                true,
-                None,
-                Some("broken pipe")
-            ),
-            Some("client_disconnect")
+            classify_stream_bridge_failure(true, Some("model overloaded")),
+            Some(StreamBridgeFailure::ExplicitUpstreamError)
         );
     }
 
     #[test]
-    fn derived_status_for_bridge_error_maps_hidden_failures_to_502() {
-        assert_eq!(derived_status_for_bridge_error(Some("challenge")), Some(502));
+    fn stream_bridge_failure_maps_timeout_messages_to_504_class() {
         assert_eq!(
-            derived_status_for_bridge_error(Some("client_disconnect")),
-            Some(499)
+            classify_stream_bridge_failure(false, Some("上游请求超时")),
+            Some(StreamBridgeFailure::Timeout)
         );
-        assert_eq!(derived_status_for_bridge_error(None), None);
+        assert_eq!(StreamBridgeFailure::Timeout.status_for_log(), 504);
+    }
+
+    #[test]
+    fn stream_bridge_failure_maps_disconnect_and_incomplete_separately() {
+        assert_eq!(
+            classify_stream_bridge_failure(false, Some("上游流读取失败（连接中断）")),
+            Some(StreamBridgeFailure::Disconnected)
+        );
+        assert_eq!(
+            classify_stream_bridge_failure(false, Some("上游流中途中断（未正常结束）")),
+            Some(StreamBridgeFailure::Incomplete)
+        );
+        assert_eq!(
+            classify_stream_bridge_failure(false, None),
+            Some(StreamBridgeFailure::Incomplete)
+        );
+    }
+
+    #[test]
+    fn only_disconnect_like_failures_trigger_network_penalty() {
+        assert!(StreamBridgeFailure::Disconnected.should_mark_network_failure());
+        assert!(StreamBridgeFailure::ReadError.should_mark_network_failure());
+        assert!(!StreamBridgeFailure::Timeout.should_mark_network_failure());
+        assert!(!StreamBridgeFailure::ExplicitUpstreamError.should_mark_network_failure());
+        assert!(!StreamBridgeFailure::Incomplete.should_mark_network_failure());
     }
 }

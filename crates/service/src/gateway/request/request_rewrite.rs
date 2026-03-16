@@ -292,6 +292,9 @@ pub(super) fn apply_request_overrides(
                 if responses::ensure_input_list(path, obj) {
                     changed = true;
                 }
+                if responses::normalize_input_items(path, obj) {
+                    changed = true;
+                }
                 if !responses::is_compact_path(path) {
                     let had_stream_passthrough = obj.contains_key("stream_passthrough");
                     let stream_passthrough = responses::take_stream_passthrough_flag(path, obj);

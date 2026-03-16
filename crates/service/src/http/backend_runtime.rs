@@ -5,7 +5,7 @@ use std::panic::AssertUnwindSafe;
 use std::thread;
 use std::time::Duration;
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, SendTimeoutError, Sender};
 use tiny_http::Request;
 use tiny_http::Server;
 
@@ -17,6 +17,7 @@ const HTTP_QUEUE_FACTOR: usize = 4;
 const HTTP_QUEUE_MIN: usize = 32;
 const HTTP_STREAM_QUEUE_FACTOR: usize = 2;
 const HTTP_STREAM_QUEUE_MIN: usize = 16;
+const DEFAULT_HTTP_ENQUEUE_WAIT_TIMEOUT_MS: u64 = 25;
 const ENV_HTTP_WORKER_FACTOR: &str = "CODEXMANAGER_HTTP_WORKER_FACTOR";
 const ENV_HTTP_WORKER_MIN: &str = "CODEXMANAGER_HTTP_WORKER_MIN";
 const ENV_HTTP_STREAM_WORKER_FACTOR: &str = "CODEXMANAGER_HTTP_STREAM_WORKER_FACTOR";
@@ -25,10 +26,28 @@ const ENV_HTTP_QUEUE_FACTOR: &str = "CODEXMANAGER_HTTP_QUEUE_FACTOR";
 const ENV_HTTP_QUEUE_MIN: &str = "CODEXMANAGER_HTTP_QUEUE_MIN";
 const ENV_HTTP_STREAM_QUEUE_FACTOR: &str = "CODEXMANAGER_HTTP_STREAM_QUEUE_FACTOR";
 const ENV_HTTP_STREAM_QUEUE_MIN: &str = "CODEXMANAGER_HTTP_STREAM_QUEUE_MIN";
+const ENV_HTTP_ENQUEUE_WAIT_TIMEOUT_MS: &str = "CODEXMANAGER_HTTP_ENQUEUE_WAIT_TIMEOUT_MS";
 
 pub(crate) struct BackendServer {
     pub(crate) addr: String,
     pub(crate) join: thread::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpQueueKind {
+    Normal,
+    Stream,
+}
+
+impl HttpQueueKind {
+    fn is_stream(self) -> bool {
+        matches!(self, Self::Stream)
+    }
+}
+
+enum EnqueueError<T> {
+    Overloaded(T, HttpQueueKind),
+    Unavailable(T, HttpQueueKind),
 }
 
 fn http_worker_count() -> usize {
@@ -70,6 +89,22 @@ fn env_usize_or(name: &str, default: usize) -> usize {
         .filter(|value| !value.is_empty())
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(default)
+}
+
+fn env_u64_or(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn http_enqueue_wait_timeout() -> Duration {
+    Duration::from_millis(env_u64_or(
+        ENV_HTTP_ENQUEUE_WAIT_TIMEOUT_MS,
+        DEFAULT_HTTP_ENQUEUE_WAIT_TIMEOUT_MS,
+    ))
 }
 
 fn spawn_request_workers(worker_count: usize, rx: Receiver<Request>, is_stream_queue: bool) {
@@ -121,37 +156,77 @@ fn request_is_stream_like(request: &Request) -> bool {
     request_accept_header(request).is_some_and(|value| value.contains("text/event-stream"))
 }
 
+fn enqueue_isolated<T>(
+    item: T,
+    queue_kind: HttpQueueKind,
+    normal_tx: &Sender<T>,
+    stream_tx: &Sender<T>,
+    wait_timeout: Duration,
+) -> Result<(), EnqueueError<T>> {
+    let target = if queue_kind.is_stream() {
+        stream_tx
+    } else {
+        normal_tx
+    };
+    match target.send_timeout(item, wait_timeout) {
+        Ok(()) => Ok(()),
+        Err(SendTimeoutError::Timeout(item)) => Err(EnqueueError::Overloaded(item, queue_kind)),
+        Err(SendTimeoutError::Disconnected(item)) => {
+            Err(EnqueueError::Unavailable(item, queue_kind))
+        }
+    }
+}
+
 fn enqueue_request(
     request: Request,
     normal_tx: &Sender<Request>,
     stream_tx: &Sender<Request>,
-) -> Result<(), ()> {
-    let prefer_stream = request_is_stream_like(&request);
-    if prefer_stream {
-        match stream_tx.send(request) {
-            Ok(()) => {
-                crate::gateway::record_http_queue_enqueue(true);
-                Ok(())
-            }
-            Err(err) => {
-                normal_tx.send(err.into_inner()).map_err(|_| ())?;
-                crate::gateway::record_http_queue_enqueue(false);
-                Ok(())
-            }
-        }
+) -> Result<(), EnqueueError<Request>> {
+    let queue_kind = if request_is_stream_like(&request) {
+        HttpQueueKind::Stream
     } else {
-        match normal_tx.send(request) {
-            Ok(()) => {
-                crate::gateway::record_http_queue_enqueue(false);
-                Ok(())
-            }
-            Err(err) => {
-                stream_tx.send(err.into_inner()).map_err(|_| ())?;
-                crate::gateway::record_http_queue_enqueue(true);
-                Ok(())
-            }
+        HttpQueueKind::Normal
+    };
+    enqueue_isolated(
+        request,
+        queue_kind,
+        normal_tx,
+        stream_tx,
+        http_enqueue_wait_timeout(),
+    )?;
+    crate::gateway::record_http_queue_enqueue(queue_kind.is_stream());
+    Ok(())
+}
+
+fn respond_queue_unavailable(request: Request, queue_kind: HttpQueueKind, overloaded: bool) {
+    let message = if overloaded {
+        if queue_kind.is_stream() {
+            "gateway stream queue is saturated; retry this Codex stream shortly"
+        } else {
+            "gateway request queue is saturated; retry shortly"
         }
+    } else if queue_kind.is_stream() {
+        "gateway stream workers are unavailable"
+    } else {
+        "gateway request workers are unavailable"
+    };
+
+    let mut response = tiny_http::Response::from_string(format!(
+        "{{\"error\":{{\"message\":\"{message}\",\"type\":\"server_error\",\"code\":\"gateway_queue_saturated\"}}}}"
+    ))
+    .with_status_code(503);
+    if let Ok(content_type) = tiny_http::Header::from_bytes(
+        b"Content-Type".as_slice(),
+        b"application/json; charset=utf-8".as_slice(),
+    ) {
+        response.add_header(content_type);
     }
+    if let Ok(retry_after) =
+        tiny_http::Header::from_bytes(b"Retry-After".as_slice(), b"1".as_slice())
+    {
+        response.add_header(retry_after);
+    }
+    let _ = request.respond(response);
 }
 
 fn run_backend_server(server: Server) {
@@ -170,9 +245,16 @@ fn run_backend_server(server: Server) {
             let _ = request.respond(tiny_http::Response::from_string("shutdown"));
             break;
         }
-        if enqueue_request(request, &normal_tx, &stream_tx).is_err() {
-            crate::gateway::record_http_queue_enqueue_failure();
-            break;
+        match enqueue_request(request, &normal_tx, &stream_tx) {
+            Ok(()) => {}
+            Err(EnqueueError::Overloaded(request, queue_kind)) => {
+                crate::gateway::record_http_queue_enqueue_failure();
+                respond_queue_unavailable(request, queue_kind, true);
+            }
+            Err(EnqueueError::Unavailable(request, queue_kind)) => {
+                crate::gateway::record_http_queue_enqueue_failure();
+                respond_queue_unavailable(request, queue_kind, false);
+            }
         }
     }
 }

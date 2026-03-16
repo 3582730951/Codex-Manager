@@ -45,6 +45,7 @@ fn reload_from_env_updates_timeout_and_cookie() {
     let _cookie_guard = EnvGuard::set(ENV_UPSTREAM_COOKIE, "cookie=abc");
     let _cpa_mode_guard = EnvGuard::set(ENV_CPA_NO_COOKIE_HEADER_MODE, "1");
     let _strict_allowlist_guard = EnvGuard::set(ENV_STRICT_REQUEST_PARAM_ALLOWLIST, "0");
+    let _request_compression_guard = EnvGuard::set(ENV_ENABLE_REQUEST_COMPRESSION, "0");
     let _client_id_guard = EnvGuard::set(ENV_TOKEN_EXCHANGE_CLIENT_ID, "client-id-123");
     let _issuer_guard = EnvGuard::set(ENV_TOKEN_EXCHANGE_ISSUER, "https://issuer.example");
     let _proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "socks5://127.0.0.1:7890");
@@ -57,6 +58,7 @@ fn reload_from_env_updates_timeout_and_cookie() {
     assert_eq!(upstream_cookie().as_deref(), Some("cookie=abc"));
     assert!(cpa_no_cookie_header_mode_enabled());
     assert!(!strict_request_param_allowlist_enabled());
+    assert!(!request_compression_enabled());
     assert_eq!(token_exchange_client_id(), "client-id-123");
     assert_eq!(
         token_exchange_default_issuer(),
@@ -72,10 +74,14 @@ fn reload_from_env_updates_timeout_and_cookie() {
 fn reload_from_env_defaults_account_max_inflight_to_one() {
     let _guard = test_guard();
     let _guard = EnvGuard::clear(ENV_ACCOUNT_MAX_INFLIGHT);
+    let _request_compression_guard = EnvGuard::clear(ENV_ENABLE_REQUEST_COMPRESSION);
+    let _stream_timeout_guard = EnvGuard::clear(ENV_UPSTREAM_STREAM_TIMEOUT_MS);
 
     reload_from_env();
 
     assert_eq!(account_max_inflight_limit(), 1);
+    assert!(request_compression_enabled());
+    assert_eq!(current_upstream_stream_timeout_ms(), 7_200_000);
 }
 
 #[test]
@@ -181,4 +187,66 @@ fn normalize_model_slug_maps_legacy_gpt_5_4_pro_to_gpt_5_4() {
     let actual = normalize_model_slug("gpt-5.4-pro").expect("normalize model");
 
     assert_eq!(actual, "gpt-5.4");
+}
+
+#[test]
+fn set_originator_updates_env_and_dynamic_user_agent() {
+    let _guard = test_guard();
+    let _guard = EnvGuard::set(ENV_ORIGINATOR, "codex_cli_rs");
+
+    let applied = set_originator("codex_cli_rs_windows").expect("set originator");
+
+    assert_eq!(applied, "codex_cli_rs_windows");
+    assert_eq!(current_originator(), "codex_cli_rs_windows");
+    assert_eq!(
+        std::env::var(ENV_ORIGINATOR).ok().as_deref(),
+        Some("codex_cli_rs_windows")
+    );
+    assert!(current_codex_user_agent().contains("codex_cli_rs_windows/0.101.0"));
+}
+
+#[test]
+fn set_residency_requirement_updates_env_and_cache() {
+    let _guard = test_guard();
+    let _guard = EnvGuard::clear(ENV_RESIDENCY_REQUIREMENT);
+
+    let applied = set_residency_requirement(Some("us")).expect("set residency requirement");
+    assert_eq!(applied.as_deref(), Some("us"));
+    assert_eq!(current_residency_requirement().as_deref(), Some("us"));
+    assert_eq!(
+        std::env::var(ENV_RESIDENCY_REQUIREMENT).ok().as_deref(),
+        Some("us")
+    );
+
+    let cleared = set_residency_requirement(None).expect("clear residency requirement");
+    assert!(cleared.is_none());
+    assert_eq!(current_residency_requirement(), None);
+    assert_eq!(std::env::var(ENV_RESIDENCY_REQUIREMENT).ok(), None);
+}
+
+#[test]
+fn set_request_compression_enabled_updates_env_and_cache() {
+    let _guard = test_guard();
+    let _guard = EnvGuard::set(ENV_ENABLE_REQUEST_COMPRESSION, "1");
+
+    let applied = set_request_compression_enabled(false);
+
+    assert!(!applied);
+    assert!(!request_compression_enabled());
+    assert_eq!(
+        std::env::var(ENV_ENABLE_REQUEST_COMPRESSION)
+            .ok()
+            .as_deref(),
+        Some("0")
+    );
+
+    let reapplied = set_request_compression_enabled(true);
+    assert!(reapplied);
+    assert!(request_compression_enabled());
+    assert_eq!(
+        std::env::var(ENV_ENABLE_REQUEST_COMPRESSION)
+            .ok()
+            .as_deref(),
+        Some("1")
+    );
 }

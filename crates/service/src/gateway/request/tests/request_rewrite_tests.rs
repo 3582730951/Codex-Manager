@@ -463,6 +463,54 @@ fn responses_compact_uses_codex_compat_rewrite() {
 }
 
 #[test]
+fn responses_compact_normalizes_deep_compaction_item_aliases() {
+    let mut input = Vec::new();
+    for idx in 0..18 {
+        input.push(json!({
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": format!("item-{idx}") }]
+        }));
+    }
+    input.push(json!({
+        "type": "compact",
+        "encrypted_content": "legacy_compact_blob"
+    }));
+    input.push(json!({
+        "type": "compaction_summary",
+        "encrypted_content": "alias_compact_blob"
+    }));
+    input.push(serde_json::Value::String("tail text".to_string()));
+
+    let body = json!({
+        "model": "gpt-5.3-codex",
+        "input": input,
+        "stream": false,
+        "store": true
+    });
+    let out = apply_request_overrides(
+        "/v1/responses/compact",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    let input = value["input"].as_array().expect("input array");
+    assert_eq!(input.len(), 21);
+    assert_eq!(input[18]["type"], "compaction");
+    assert_eq!(input[18]["encrypted_content"], "legacy_compact_blob");
+    assert_eq!(input[19]["type"], "compaction");
+    assert_eq!(input[19]["encrypted_content"], "alias_compact_blob");
+    assert_eq!(input[20]["type"], "message");
+    assert_eq!(input[20]["role"], "user");
+    assert_eq!(input[20]["content"][0]["type"], "input_text");
+    assert_eq!(input[20]["content"][0]["text"], "tail text");
+    assert!(value.get("stream").is_none());
+    assert!(value.get("store").is_none());
+}
+
+#[test]
 fn responses_passthrough_for_non_codex_upstream() {
     let body = json!({
         "model": "gpt-4.1",

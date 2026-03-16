@@ -38,18 +38,7 @@ pub(super) fn ensure_input_list(path: &str, obj: &mut serde_json::Map<String, Va
     };
     match input {
         Value::String(text) => {
-            let mut content_part = serde_json::Map::new();
-            content_part.insert("type".to_string(), Value::String("input_text".to_string()));
-            content_part.insert("text".to_string(), Value::String(text.clone()));
-
-            let mut message_item = serde_json::Map::new();
-            message_item.insert("type".to_string(), Value::String("message".to_string()));
-            message_item.insert("role".to_string(), Value::String("user".to_string()));
-            message_item.insert(
-                "content".to_string(),
-                Value::Array(vec![Value::Object(content_part)]),
-            );
-            *input = Value::Array(vec![Value::Object(message_item)]);
+            *input = Value::Array(vec![build_input_text_message_item(text)]);
             true
         }
         Value::Object(_) => {
@@ -58,6 +47,65 @@ pub(super) fn ensure_input_list(path: &str, obj: &mut serde_json::Map<String, Va
         }
         _ => false,
     }
+}
+
+fn build_input_text_message_item(text: &str) -> Value {
+    let mut content_part = serde_json::Map::new();
+    content_part.insert("type".to_string(), Value::String("input_text".to_string()));
+    content_part.insert("text".to_string(), Value::String(text.to_string()));
+
+    let mut message_item = serde_json::Map::new();
+    message_item.insert("type".to_string(), Value::String("message".to_string()));
+    message_item.insert("role".to_string(), Value::String("user".to_string()));
+    message_item.insert(
+        "content".to_string(),
+        Value::Array(vec![Value::Object(content_part)]),
+    );
+    Value::Object(message_item)
+}
+
+fn normalize_input_item(item: &mut Value) -> bool {
+    match item {
+        Value::String(text) => {
+            *item = build_input_text_message_item(text);
+            true
+        }
+        Value::Object(map) => {
+            let Some(item_type) = map.get("type").and_then(Value::as_str).map(str::trim) else {
+                return false;
+            };
+            match item_type {
+                // 中文注释：对齐 openai/codex 当前协议，客户端历史别名统一改成 wire canonical
+                // `compaction`，避免 `/responses/compact` 在数组输入深索引处触发 invalid item type。
+                "compact" | "compaction_summary" => {
+                    map.insert("type".to_string(), Value::String("compaction".to_string()));
+                    true
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+pub(super) fn normalize_input_items(
+    path: &str,
+    obj: &mut serde_json::Map<String, Value>,
+) -> bool {
+    if !is_responses_path(path) {
+        return false;
+    }
+    let Some(Value::Array(items)) = obj.get_mut("input") else {
+        return false;
+    };
+
+    let mut changed = false;
+    for item in items.iter_mut() {
+        if normalize_input_item(item) {
+            changed = true;
+        }
+    }
+    changed
 }
 
 pub(super) fn ensure_stream_true(path: &str, obj: &mut serde_json::Map<String, Value>) -> bool {

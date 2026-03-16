@@ -204,6 +204,20 @@ pub(super) struct CapturedUpstreamRequest {
     pub(super) body: Vec<u8>,
 }
 
+pub(super) fn captured_request_body_utf8(captured: &CapturedUpstreamRequest) -> String {
+    let body = if captured
+        .headers
+        .get("content-encoding")
+        .is_some_and(|value| value.eq_ignore_ascii_case("zstd"))
+    {
+        zstd::stream::decode_all(std::io::Cursor::new(captured.body.as_slice()))
+            .expect("decode zstd request body")
+    } else {
+        captured.body.clone()
+    };
+    String::from_utf8(body).expect("captured request body utf8")
+}
+
 fn try_read_http_request_once(stream: &mut TcpStream) -> Option<CapturedUpstreamRequest> {
     // 中文注释：部分测试会命中 reqwest keep-alive 复用，下一轮 mock listener 可能先收到
     // 一个“已建立但没有发任何 HTTP 头”的残留连接；这里把它视作噪声并忽略。

@@ -1,3 +1,4 @@
+use codexmanager_core::auth::DEFAULT_ORIGINATOR;
 use codexmanager_core::auth::{DEFAULT_CLIENT_ID, DEFAULT_ISSUER};
 use reqwest::blocking::Client;
 use reqwest::Proxy;
@@ -22,20 +23,27 @@ static ACCOUNT_MAX_INFLIGHT: AtomicUsize = AtomicUsize::new(DEFAULT_ACCOUNT_MAX_
 static CPA_NO_COOKIE_HEADER_MODE: AtomicBool = AtomicBool::new(DEFAULT_CPA_NO_COOKIE_HEADER_MODE);
 static STRICT_REQUEST_PARAM_ALLOWLIST: AtomicBool =
     AtomicBool::new(DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST);
+static ENABLE_REQUEST_COMPRESSION: AtomicBool = AtomicBool::new(DEFAULT_ENABLE_REQUEST_COMPRESSION);
 static UPSTREAM_COOKIE: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static UPSTREAM_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static FREE_ACCOUNT_MAX_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
+static ORIGINATOR: OnceLock<RwLock<String>> = OnceLock::new();
+static RESIDENCY_REQUIREMENT: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static TOKEN_EXCHANGE_CLIENT_ID: OnceLock<RwLock<String>> = OnceLock::new();
 static TOKEN_EXCHANGE_ISSUER: OnceLock<RwLock<String>> = OnceLock::new();
 
 pub(crate) const DEFAULT_GATEWAY_DEBUG: bool = false;
 const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS: u64 = 120_000;
-const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 1_800_000;
+// 中文注释：Codex CLI 的测试/推理会话可能长时间无业务 token，
+// 默认 30 分钟容易把“仍在思考的长流”误判成超时；这里抬高到 2 小时，
+// 具体环境仍可通过 CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS 覆盖。
+const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 7_200_000;
 // 中文注释：默认把单账号并发收紧到 1，避免多个长连接 Codex 会话同时压到同一账号上。
 const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 1;
 const DEFAULT_CPA_NO_COOKIE_HEADER_MODE: bool = false;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = true;
+const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 300;
 const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -51,11 +59,15 @@ const ENV_UPSTREAM_STREAM_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_STREAM_TIMEO
 const ENV_ACCOUNT_MAX_INFLIGHT: &str = "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT";
 const ENV_CPA_NO_COOKIE_HEADER_MODE: &str = "CODEXMANAGER_CPA_NO_COOKIE_HEADER_MODE";
 const ENV_STRICT_REQUEST_PARAM_ALLOWLIST: &str = "CODEXMANAGER_STRICT_REQUEST_PARAM_ALLOWLIST";
+const ENV_ENABLE_REQUEST_COMPRESSION: &str = "CODEXMANAGER_ENABLE_REQUEST_COMPRESSION";
 const ENV_TOKEN_EXCHANGE_CLIENT_ID: &str = "CODEXMANAGER_CLIENT_ID";
 const ENV_TOKEN_EXCHANGE_ISSUER: &str = "CODEXMANAGER_ISSUER";
 const ENV_PROXY_LIST: &str = "CODEXMANAGER_PROXY_LIST";
 const ENV_UPSTREAM_PROXY_URL: &str = "CODEXMANAGER_UPSTREAM_PROXY_URL";
 const ENV_FREE_ACCOUNT_MAX_MODEL: &str = "CODEXMANAGER_FREE_ACCOUNT_MAX_MODEL";
+const ENV_ORIGINATOR: &str = "CODEXMANAGER_ORIGINATOR";
+const ENV_RESIDENCY_REQUIREMENT: &str = "CODEXMANAGER_RESIDENCY_REQUIREMENT";
+pub(crate) const RESIDENCY_HEADER_NAME: &str = "x-openai-internal-codex-residency";
 
 #[derive(Default, Clone)]
 struct UpstreamClientPool {
@@ -166,6 +178,11 @@ pub(crate) fn current_upstream_stream_timeout_ms() -> u64 {
     UPSTREAM_STREAM_TIMEOUT_MS.load(Ordering::Relaxed)
 }
 
+pub(crate) fn request_compression_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    ENABLE_REQUEST_COMPRESSION.load(Ordering::Relaxed)
+}
+
 pub(crate) fn account_max_inflight_limit() -> usize {
     ensure_runtime_config_loaded();
     ACCOUNT_MAX_INFLIGHT.load(Ordering::Relaxed)
@@ -216,6 +233,51 @@ pub(crate) fn current_free_account_max_model() -> String {
     crate::lock_utils::read_recover(free_account_max_model_cell(), "free_account_max_model").clone()
 }
 
+pub(crate) fn current_originator() -> String {
+    ensure_runtime_config_loaded();
+    crate::lock_utils::read_recover(originator_cell(), "originator").clone()
+}
+
+pub(crate) fn set_originator(originator: &str) -> Result<String, String> {
+    ensure_runtime_config_loaded();
+    let normalized = normalize_originator(originator)?;
+    std::env::set_var(ENV_ORIGINATOR, normalized.as_str());
+    let mut cached = crate::lock_utils::write_recover(originator_cell(), "originator");
+    *cached = normalized.clone();
+    Ok(normalized)
+}
+
+pub(crate) fn current_codex_user_agent() -> String {
+    ensure_runtime_config_loaded();
+    let originator = current_originator();
+    format!(
+        "{}/{} ({}; {}) CodexManagerGateway",
+        originator,
+        "0.101.0",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    )
+}
+
+pub(crate) fn current_residency_requirement() -> Option<String> {
+    ensure_runtime_config_loaded();
+    crate::lock_utils::read_recover(residency_requirement_cell(), "residency_requirement").clone()
+}
+
+pub(crate) fn set_residency_requirement(value: Option<&str>) -> Result<Option<String>, String> {
+    ensure_runtime_config_loaded();
+    let normalized = normalize_residency_requirement(value)?;
+    if let Some(value) = normalized.as_deref() {
+        std::env::set_var(ENV_RESIDENCY_REQUIREMENT, value);
+    } else {
+        std::env::remove_var(ENV_RESIDENCY_REQUIREMENT);
+    }
+    let mut cached =
+        crate::lock_utils::write_recover(residency_requirement_cell(), "residency_requirement");
+    *cached = normalized.clone();
+    Ok(normalized)
+}
+
 pub(crate) fn set_free_account_max_model(model: &str) -> Result<String, String> {
     ensure_runtime_config_loaded();
     let normalized = normalize_model_slug(model)?;
@@ -224,6 +286,16 @@ pub(crate) fn set_free_account_max_model(model: &str) -> Result<String, String> 
         crate::lock_utils::write_recover(free_account_max_model_cell(), "free_account_max_model");
     *cached = normalized.clone();
     Ok(normalized)
+}
+
+pub(crate) fn set_request_compression_enabled(enabled: bool) -> bool {
+    ensure_runtime_config_loaded();
+    ENABLE_REQUEST_COMPRESSION.store(enabled, Ordering::Relaxed);
+    std::env::set_var(
+        ENV_ENABLE_REQUEST_COMPRESSION,
+        if enabled { "1" } else { "0" },
+    );
+    enabled
 }
 
 pub(super) fn set_upstream_proxy_url(proxy_url: Option<&str>) -> Result<Option<String>, String> {
@@ -323,6 +395,13 @@ pub(super) fn reload_from_env() {
         ),
         Ordering::Relaxed,
     );
+    ENABLE_REQUEST_COMPRESSION.store(
+        env_bool_or(
+            ENV_ENABLE_REQUEST_COMPRESSION,
+            DEFAULT_ENABLE_REQUEST_COMPRESSION,
+        ),
+        Ordering::Relaxed,
+    );
 
     let cookie = env_non_empty(ENV_UPSTREAM_COOKIE);
     let mut cached_cookie =
@@ -367,6 +446,21 @@ pub(super) fn reload_from_env() {
         crate::lock_utils::write_recover(free_account_max_model_cell(), "free_account_max_model");
     *cached_free_account_max_model = free_account_max_model;
     drop(cached_free_account_max_model);
+
+    let originator = env_non_empty(ENV_ORIGINATOR)
+        .and_then(|value| normalize_originator(value.as_str()).ok())
+        .unwrap_or_else(|| DEFAULT_ORIGINATOR.to_string());
+    let mut cached_originator = crate::lock_utils::write_recover(originator_cell(), "originator");
+    *cached_originator = originator;
+    drop(cached_originator);
+
+    let residency_requirement = env_non_empty(ENV_RESIDENCY_REQUIREMENT)
+        .and_then(|value| normalize_residency_requirement(Some(value.as_str())).ok())
+        .flatten();
+    let mut cached_residency =
+        crate::lock_utils::write_recover(residency_requirement_cell(), "residency_requirement");
+    *cached_residency = residency_requirement;
+    drop(cached_residency);
 
     refresh_upstream_clients_from_runtime_config();
 }
@@ -444,6 +538,14 @@ fn free_account_max_model_cell() -> &'static RwLock<String> {
     FREE_ACCOUNT_MAX_MODEL.get_or_init(|| RwLock::new(DEFAULT_FREE_ACCOUNT_MAX_MODEL.to_string()))
 }
 
+fn originator_cell() -> &'static RwLock<String> {
+    ORIGINATOR.get_or_init(|| RwLock::new(DEFAULT_ORIGINATOR.to_string()))
+}
+
+fn residency_requirement_cell() -> &'static RwLock<Option<String>> {
+    RESIDENCY_REQUIREMENT.get_or_init(|| RwLock::new(None))
+}
+
 fn current_upstream_proxy_url() -> Option<String> {
     crate::lock_utils::read_recover(upstream_proxy_url_cell(), "upstream_proxy_url").clone()
 }
@@ -501,6 +603,27 @@ fn normalize_model_slug(raw: &str) -> Result<String, String> {
         return Err("freeAccountMaxModel contains unsupported characters".to_string());
     }
     Ok(normalized)
+}
+
+fn normalize_originator(raw: &str) -> Result<String, String> {
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        return Err("originator is required".to_string());
+    }
+    if normalized.chars().any(|ch| ch.is_ascii_control()) {
+        return Err("originator contains control characters".to_string());
+    }
+    Ok(normalized.to_string())
+}
+
+fn normalize_residency_requirement(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "us" => Ok(Some("us".to_string())),
+        _ => Err("residencyRequirement only supports 'us' or empty".to_string()),
+    }
 }
 
 fn rewrite_socks_proxy_url(proxy_url: &str) -> String {
