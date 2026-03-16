@@ -18,6 +18,7 @@
 /apps/.turbo/
 # Build outputs
 /portable/
+/run.sh
 
 # Worktrees
 /.worktrees/
