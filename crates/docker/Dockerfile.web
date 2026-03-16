@@ -4,8 +4,13 @@ WORKDIR /src/apps
 
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 
-COPY apps/package.json apps/pnpm-lock.yaml ./
-COPY apps/next.config.ts apps/postcss.config.mjs apps/tsconfig.json apps/components.json ./
+COPY apps/package.json ./
+COPY apps/pnpm-lock.yaml ./
+COPY apps/tsconfig.json ./
+COPY apps/next.config.ts ./
+COPY apps/postcss.config.mjs ./
+COPY apps/next-env.d.ts ./
+COPY apps/components.json ./
 COPY apps/public ./public
 COPY apps/src ./src
 

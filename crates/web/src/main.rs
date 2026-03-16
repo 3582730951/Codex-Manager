@@ -19,10 +19,16 @@ use axum::routing::{get, post};
 use axum::Router;
 use rand::RngCore;
 use tokio::sync::{watch, Mutex, RwLock};
-use tower_http::services::{ServeDir, ServeFile};
 
 const DEFAULT_WEB_ADDR: &str = "localhost:48761";
 const WEB_AUTH_COOKIE_NAME: &str = "codexmanager_web_auth";
+
+#[derive(Clone)]
+enum UiSource {
+    Disk(PathBuf),
+    Embedded,
+    Missing,
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -34,6 +40,7 @@ struct AppState {
     shutdown_tx: watch::Sender<bool>,
     spawned_service: Arc<Mutex<bool>>,
     missing_ui_html: Arc<String>,
+    ui_source: UiSource,
 }
 
 fn read_env_trim(name: &str) -> Option<String> {
@@ -172,6 +179,8 @@ async fn async_main() {
     let web_addr = resolve_web_addr();
     let web_root = resolve_web_root();
     let index = web_root.join("index.html");
+    let disk_ok = ensure_index_file(&index);
+    let using_explicit_root = read_env_trim("CODEXMANAGER_WEB_ROOT").is_some();
 
     let rpc_url = service_rpc_url(&service_addr);
     let rpc_token = codexmanager_service::rpc_auth_token().to_string();
@@ -193,6 +202,17 @@ async fn async_main() {
         missing_detail = format!("{missing_detail}; {err}");
     }
     let missing_ui_html = Arc::new(ui_assets::builtin_missing_ui_html(&missing_detail));
+    let ui_source = if using_explicit_root || disk_ok {
+        if disk_ok {
+            UiSource::Disk(web_root.clone())
+        } else {
+            UiSource::Missing
+        }
+    } else if embedded_ui::has_embedded_ui() {
+        UiSource::Embedded
+    } else {
+        UiSource::Missing
+    };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -208,34 +228,16 @@ async fn async_main() {
         shutdown_tx,
         spawned_service: spawned_service.clone(),
         missing_ui_html,
+        ui_source,
     });
 
-    let mut protected_app = Router::new()
+    let protected_app = Router::new()
         .route("/api/rpc", post(service_gateway::rpc_proxy))
         .route("/api/service/start", post(service_gateway::start_service))
         .route("/api/service/stop", post(service_gateway::stop_service))
-        .route("/__quit", get(service_gateway::quit));
-
-    let disk_ok = ensure_index_file(&index);
-    let using_explicit_root = read_env_trim("CODEXMANAGER_WEB_ROOT").is_some();
-    if using_explicit_root || disk_ok {
-        if disk_ok {
-            let static_service = ServeDir::new(&web_root).not_found_service(ServeFile::new(index));
-            protected_app = protected_app.fallback_service(static_service);
-        } else {
-            protected_app = protected_app
-                .route("/", get(ui_assets::serve_missing_ui))
-                .route("/{*path}", get(ui_assets::serve_missing_ui));
-        }
-    } else if embedded_ui::has_embedded_ui() {
-        protected_app = protected_app
-            .route("/", get(ui_assets::serve_embedded_index))
-            .route("/{*path}", get(ui_assets::serve_embedded_asset));
-    } else {
-        protected_app = protected_app
-            .route("/", get(ui_assets::serve_missing_ui))
-            .route("/{*path}", get(ui_assets::serve_missing_ui));
-    }
+        .route("/__quit", get(service_gateway::quit))
+        .route("/", get(ui_assets::serve_ui_root))
+        .route("/{*path}", get(ui_assets::serve_ui_asset));
 
     let protected_app = protected_app.layer(axum::middleware::from_fn_with_state(
         state.clone(),

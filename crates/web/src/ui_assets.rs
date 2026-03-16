@@ -34,39 +34,141 @@ pub(super) fn builtin_missing_ui_html(detail: &str) -> String {
     )
 }
 
-pub(super) async fn serve_missing_ui(State(state): State<Arc<AppState>>) -> Html<String> {
-    Html((*state.missing_ui_html).clone())
+pub(super) async fn serve_ui_root(State(state): State<Arc<AppState>>) -> Response {
+    serve_ui_path(state.as_ref(), "")
 }
 
-pub(super) async fn serve_embedded_index() -> Response {
-    serve_embedded_path("index.html")
-}
-
-pub(super) async fn serve_embedded_asset(
+pub(super) async fn serve_ui_asset(
+    State(state): State<Arc<AppState>>,
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> Response {
-    serve_embedded_path(&path)
+    serve_ui_path(state.as_ref(), &path)
+}
+
+fn serve_ui_path(state: &AppState, path: &str) -> Response {
+    match &state.ui_source {
+        UiSource::Disk(root) => serve_disk_path(root, path),
+        UiSource::Embedded => serve_embedded_path(path),
+        UiSource::Missing => Html((*state.missing_ui_html).clone()).into_response(),
+    }
 }
 
 fn serve_embedded_path(path: &str) -> Response {
-    let raw = path.trim_start_matches('/');
-    if raw.contains("..") {
+    let Some(candidates) = ui_asset_candidates(path) else {
         return (StatusCode::BAD_REQUEST, "bad path").into_response();
+    };
+
+    for candidate in &candidates {
+        if let Some(bytes) = embedded_ui::read_asset_bytes(candidate) {
+            return build_asset_response(StatusCode::OK, bytes.to_vec(), candidate);
+        }
     }
 
-    let wanted = if raw.is_empty() { "index.html" } else { raw };
-    let bytes = embedded_ui::read_asset_bytes(wanted)
-        .or_else(|| embedded_ui::read_asset_bytes("index.html"));
-    let Some(bytes) = bytes else {
-        return (StatusCode::NOT_FOUND, "missing ui").into_response();
-    };
-    let mime = embedded_ui::guess_mime(wanted);
+    fallback_not_found_response(&candidates, |candidate| {
+        embedded_ui::read_asset_bytes(candidate).map(|bytes| bytes.to_vec())
+    })
+}
 
+fn serve_disk_path(root: &std::path::Path, path: &str) -> Response {
+    let Some(candidates) = ui_asset_candidates(path) else {
+        return (StatusCode::BAD_REQUEST, "bad path").into_response();
+    };
+
+    for candidate in &candidates {
+        if let Some(bytes) = read_disk_asset(root, candidate) {
+            return build_asset_response(StatusCode::OK, bytes, candidate);
+        }
+    }
+
+    fallback_not_found_response(&candidates, |candidate| read_disk_asset(root, candidate))
+}
+
+fn fallback_not_found_response<F>(candidates: &[String], mut read_asset: F) -> Response
+where
+    F: FnMut(&str) -> Option<Vec<u8>>,
+{
+    if candidates.first().is_some_and(|candidate| is_html_route(candidate)) {
+        for fallback in ["404.html", "_not-found.html", "index.html"] {
+            if let Some(bytes) = read_asset(fallback) {
+                let status = if fallback == "index.html" {
+                    StatusCode::OK
+                } else {
+                    StatusCode::NOT_FOUND
+                };
+                return build_asset_response(status, bytes, fallback);
+            }
+        }
+    }
+
+    (StatusCode::NOT_FOUND, "missing ui").into_response()
+}
+
+fn build_asset_response(status: StatusCode, bytes: Vec<u8>, path: &str) -> Response {
+    let mime = embedded_ui::guess_mime(path);
     let mut out = Response::new(axum::body::Body::from(bytes));
+    *out.status_mut() = status;
     out.headers_mut().insert(
         "content-type",
         axum::http::HeaderValue::from_str(&mime)
             .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
     );
     out
+}
+
+fn read_disk_asset(root: &std::path::Path, relative: &str) -> Option<Vec<u8>> {
+    let full = root.join(relative);
+    std::fs::read(full).ok()
+}
+
+fn ui_asset_candidates(path: &str) -> Option<Vec<String>> {
+    let raw = path.trim_start_matches('/');
+    if raw.contains("..") {
+        return None;
+    }
+
+    let normalized = raw.trim_matches('/');
+    if normalized.is_empty() {
+        return Some(vec!["index.html".to_string()]);
+    }
+
+    let mut candidates = vec![normalized.to_string()];
+    if is_html_route(normalized) {
+        candidates.push(format!("{normalized}.html"));
+        candidates.push(format!("{normalized}/index.html"));
+    }
+    candidates.dedup();
+    Some(candidates)
+}
+
+fn is_html_route(path: &str) -> bool {
+    let last = path.rsplit('/').next().unwrap_or(path);
+    !last.contains('.')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ui_asset_candidates_map_next_export_routes() {
+        assert_eq!(ui_asset_candidates("").unwrap(), vec!["index.html"]);
+        assert_eq!(
+            ui_asset_candidates("/accounts").unwrap(),
+            vec![
+                "accounts".to_string(),
+                "accounts.html".to_string(),
+                "accounts/index.html".to_string()
+            ]
+        );
+        assert_eq!(
+            ui_asset_candidates("/_next/static/app.js").unwrap(),
+            vec!["_next/static/app.js".to_string()]
+        );
+    }
+
+    #[test]
+    fn ui_asset_candidates_reject_parent_segments() {
+        assert!(ui_asset_candidates("../secret").is_none());
+        assert!(ui_asset_candidates("/foo/../../bar").is_none());
+    }
 }
