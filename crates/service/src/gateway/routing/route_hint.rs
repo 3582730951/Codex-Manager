@@ -13,17 +13,26 @@ const ROUTE_STRATEGY_BALANCED: &str = "balanced";
 const ROUTE_HEALTH_P2C_ENABLED_ENV: &str = "CODEXMANAGER_ROUTE_HEALTH_P2C_ENABLED";
 const ROUTE_HEALTH_P2C_ORDERED_WINDOW_ENV: &str = "CODEXMANAGER_ROUTE_HEALTH_P2C_ORDERED_WINDOW";
 const ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV: &str = "CODEXMANAGER_ROUTE_HEALTH_P2C_BALANCED_WINDOW";
+const ROUTE_LOAD_AWARE_ENABLED_ENV: &str = "CODEXMANAGER_ROUTE_LOAD_AWARE_ENABLED";
+const ROUTE_LOAD_ORDERED_WINDOW_ENV: &str = "CODEXMANAGER_ROUTE_LOAD_ORDERED_WINDOW";
+const ROUTE_LOAD_BALANCED_WINDOW_ENV: &str = "CODEXMANAGER_ROUTE_LOAD_BALANCED_WINDOW";
 const ROUTE_STATE_TTL_SECS_ENV: &str = "CODEXMANAGER_ROUTE_STATE_TTL_SECS";
 const ROUTE_STATE_CAPACITY_ENV: &str = "CODEXMANAGER_ROUTE_STATE_CAPACITY";
 const DEFAULT_ROUTE_HEALTH_P2C_ENABLED: bool = true;
 const DEFAULT_ROUTE_HEALTH_P2C_ORDERED_WINDOW: usize = 3;
 // 中文注释：balanced 默认应严格轮询所有可用账号；仅在显式调大窗口时才启用健康度换头。
 const DEFAULT_ROUTE_HEALTH_P2C_BALANCED_WINDOW: usize = 1;
+const DEFAULT_ROUTE_LOAD_AWARE_ENABLED: bool = true;
+const DEFAULT_ROUTE_LOAD_ORDERED_WINDOW: usize = 3;
+const DEFAULT_ROUTE_LOAD_BALANCED_WINDOW: usize = 2;
 // 中文注释：Route 状态（按 key_id + model 维度）用于 round-robin 起点与 P2C nonce。
 // 为避免 key/model 高基数导致 HashMap 无限增长，默认增加 TTL + 容量上限；不会影响“短时间内连续请求”的既有语义。
 const DEFAULT_ROUTE_STATE_TTL_SECS: u64 = 6 * 60 * 60;
 const DEFAULT_ROUTE_STATE_CAPACITY: usize = 4096;
 const ROUTE_STATE_MAINTENANCE_EVERY: u64 = 64;
+const ROUTE_LOAD_SWAP_MARGIN: i32 = 8;
+const ROUTE_INFLIGHT_PENALTY_PER_REQUEST: i32 = 18;
+const ROUTE_INFLIGHT_PENALTY_CAP: usize = 4;
 
 static ROUTE_MODE: AtomicU8 = AtomicU8::new(ROUTE_MODE_BALANCED_ROUND_ROBIN);
 static ROUTE_HEALTH_P2C_ENABLED: AtomicBool = AtomicBool::new(DEFAULT_ROUTE_HEALTH_P2C_ENABLED);
@@ -31,6 +40,11 @@ static ROUTE_HEALTH_P2C_ORDERED_WINDOW: AtomicUsize =
     AtomicUsize::new(DEFAULT_ROUTE_HEALTH_P2C_ORDERED_WINDOW);
 static ROUTE_HEALTH_P2C_BALANCED_WINDOW: AtomicUsize =
     AtomicUsize::new(DEFAULT_ROUTE_HEALTH_P2C_BALANCED_WINDOW);
+static ROUTE_LOAD_AWARE_ENABLED: AtomicBool = AtomicBool::new(DEFAULT_ROUTE_LOAD_AWARE_ENABLED);
+static ROUTE_LOAD_ORDERED_WINDOW: AtomicUsize =
+    AtomicUsize::new(DEFAULT_ROUTE_LOAD_ORDERED_WINDOW);
+static ROUTE_LOAD_BALANCED_WINDOW: AtomicUsize =
+    AtomicUsize::new(DEFAULT_ROUTE_LOAD_BALANCED_WINDOW);
 static ROUTE_STATE_TTL_SECS: AtomicU64 = AtomicU64::new(DEFAULT_ROUTE_STATE_TTL_SECS);
 static ROUTE_STATE_CAPACITY: AtomicUsize = AtomicUsize::new(DEFAULT_ROUTE_STATE_CAPACITY);
 static ROUTE_STATE: OnceLock<Mutex<RouteRoundRobinState>> = OnceLock::new();
@@ -79,6 +93,7 @@ pub(crate) fn apply_route_strategy(
     }
 
     apply_health_p2c(candidates, key_id, model, mode);
+    apply_load_aware_swap(candidates, mode);
 }
 
 fn rotate_to_manual_preferred_account(candidates: &mut [(Account, Token)]) -> bool {
@@ -243,6 +258,65 @@ fn apply_health_p2c(
     }
 }
 
+fn apply_load_aware_swap(candidates: &mut [(Account, Token)], mode: u8) {
+    if !route_load_aware_enabled() {
+        return;
+    }
+    let window = route_load_window(mode).min(candidates.len());
+    if window <= 1 {
+        return;
+    }
+
+    let head_account_id = candidates[0].0.id.as_str();
+    let head_score = candidate_dynamic_score(head_account_id);
+    let head_penalty = candidate_load_penalty(head_account_id);
+    let mut best_idx = None;
+    let mut best_score = head_score;
+    let mut best_penalty = head_penalty;
+
+    for idx in 1..window {
+        let account_id = candidates[idx].0.id.as_str();
+        let score = candidate_dynamic_score(account_id);
+        let penalty = candidate_load_penalty(account_id);
+        if score > best_score || (score == best_score && penalty < best_penalty) {
+            best_idx = Some(idx);
+            best_score = score;
+            best_penalty = penalty;
+        }
+    }
+
+    let Some(best_idx) = best_idx else {
+        return;
+    };
+    if should_swap_head_for_load(head_score, head_penalty, best_score, best_penalty) {
+        candidates.swap(0, best_idx);
+    }
+}
+
+fn candidate_dynamic_score(account_id: &str) -> i32 {
+    route_health_score(account_id) - candidate_load_penalty(account_id)
+}
+
+fn candidate_load_penalty(account_id: &str) -> i32 {
+    super::selection::candidate_usage_pressure_penalty(account_id)
+        + inflight_penalty(crate::gateway::account_inflight_count(account_id))
+}
+
+fn inflight_penalty(inflight_count: usize) -> i32 {
+    inflight_count.min(ROUTE_INFLIGHT_PENALTY_CAP) as i32 * ROUTE_INFLIGHT_PENALTY_PER_REQUEST
+}
+
+fn should_swap_head_for_load(
+    head_score: i32,
+    head_penalty: i32,
+    challenger_score: i32,
+    challenger_penalty: i32,
+) -> bool {
+    head_penalty >= ROUTE_INFLIGHT_PENALTY_PER_REQUEST
+        && challenger_penalty + ROUTE_LOAD_SWAP_MARGIN <= head_penalty
+        && challenger_score + ROUTE_LOAD_SWAP_MARGIN >= head_score
+}
+
 fn p2c_challenger_index(
     key_id: &str,
     model: Option<&str>,
@@ -301,6 +375,18 @@ fn route_health_window(mode: u8) -> usize {
         ROUTE_HEALTH_P2C_BALANCED_WINDOW.load(Ordering::Relaxed)
     } else {
         ROUTE_HEALTH_P2C_ORDERED_WINDOW.load(Ordering::Relaxed)
+    }
+}
+
+fn route_load_aware_enabled() -> bool {
+    ROUTE_LOAD_AWARE_ENABLED.load(Ordering::Relaxed)
+}
+
+fn route_load_window(mode: u8) -> usize {
+    if mode == ROUTE_MODE_BALANCED_ROUND_ROBIN {
+        ROUTE_LOAD_BALANCED_WINDOW.load(Ordering::Relaxed)
+    } else {
+        ROUTE_LOAD_ORDERED_WINDOW.load(Ordering::Relaxed)
     }
 }
 
@@ -407,6 +493,21 @@ pub(super) fn reload_from_env() {
         ),
         Ordering::Relaxed,
     );
+    ROUTE_LOAD_AWARE_ENABLED.store(
+        env_bool_or(ROUTE_LOAD_AWARE_ENABLED_ENV, DEFAULT_ROUTE_LOAD_AWARE_ENABLED),
+        Ordering::Relaxed,
+    );
+    ROUTE_LOAD_ORDERED_WINDOW.store(
+        env_usize_or(ROUTE_LOAD_ORDERED_WINDOW_ENV, DEFAULT_ROUTE_LOAD_ORDERED_WINDOW),
+        Ordering::Relaxed,
+    );
+    ROUTE_LOAD_BALANCED_WINDOW.store(
+        env_usize_or(
+            ROUTE_LOAD_BALANCED_WINDOW_ENV,
+            DEFAULT_ROUTE_LOAD_BALANCED_WINDOW,
+        ),
+        Ordering::Relaxed,
+    );
     ROUTE_STATE_TTL_SECS.store(
         env_u64_or(ROUTE_STATE_TTL_SECS_ENV, DEFAULT_ROUTE_STATE_TTL_SECS),
         Ordering::Relaxed,
@@ -480,6 +581,7 @@ impl RouteRoundRobinState {
 #[cfg(test)]
 fn clear_route_state_for_tests() {
     super::route_quality::clear_route_quality_for_tests();
+    super::selection::set_candidate_usage_pressure_for_tests(&[]);
     if let Some(lock) = ROUTE_STATE.get() {
         let mut state = crate::lock_utils::lock_recover(lock, "route_state");
         state.next_start_by_key_model.clear();

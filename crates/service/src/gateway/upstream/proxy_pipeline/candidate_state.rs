@@ -48,7 +48,12 @@ impl CandidateExecutionState {
         strip_session_affinity: bool,
         setup: &UpstreamRequestSetup,
     ) -> &'a Bytes {
-        if strip_session_affinity && setup.has_body_encrypted_content {
+        let should_strip_body_affinity = setup.has_body_encrypted_content
+            && (strip_session_affinity || crate::gateway::cpa_no_cookie_header_mode_enabled());
+        if should_strip_body_affinity {
+            // 中文注释：请求头收敛模式会主动移除 turn-state / conversation_id。
+            // 若此时仍把 body 里的 compaction/encrypted_content 原样上送，
+            // upstream 更容易在长历史上报 `input[n] compat`。
             if self.stripped_body.is_none() {
                 self.stripped_body = strip_encrypted_content_from_body(body.as_ref())
                     .map(Bytes::from)

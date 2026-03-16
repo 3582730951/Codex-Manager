@@ -1,4 +1,5 @@
-use codexmanager_core::storage::{now_ts, Account, Storage, Token};
+use codexmanager_core::storage::{now_ts, Account, Storage, Token, UsageSnapshotRecord};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -6,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::usage_account_meta::{derive_account_meta, patch_account_meta_in_place};
 
 static CANDIDATE_SNAPSHOT_CACHE: OnceLock<Mutex<Option<CandidateSnapshotCache>>> = OnceLock::new();
+static CANDIDATE_USAGE_PRESSURE: OnceLock<RwLock<HashMap<String, i32>>> = OnceLock::new();
 static SELECTION_CONFIG_LOADED: OnceLock<()> = OnceLock::new();
 static CANDIDATE_CACHE_TTL_MS: AtomicU64 = AtomicU64::new(DEFAULT_CANDIDATE_CACHE_TTL_MS);
 static CURRENT_DB_PATH: OnceLock<RwLock<String>> = OnceLock::new();
@@ -17,6 +19,12 @@ struct CandidateSnapshotCache {
     db_path: String,
     expires_at: Instant,
     candidates: Vec<(Account, Token)>,
+}
+
+pub(crate) fn candidate_usage_pressure_penalty(account_id: &str) -> i32 {
+    let lock = CANDIDATE_USAGE_PRESSURE.get_or_init(|| RwLock::new(HashMap::new()));
+    let map = crate::lock_utils::read_recover(lock, "candidate_usage_pressure");
+    map.get(account_id).copied().unwrap_or(0)
 }
 
 pub(crate) fn collect_gateway_candidates(
@@ -46,10 +54,60 @@ fn collect_gateway_candidates_uncached(storage: &Storage) -> Result<Vec<(Account
         }
         out.push((candidate_account, token));
     }
+    refresh_candidate_usage_pressure(storage, &out);
     if out.is_empty() {
         log_no_candidates(storage);
     }
     Ok(out)
+}
+
+fn refresh_candidate_usage_pressure(storage: &Storage, candidates: &[(Account, Token)]) {
+    let snapshots = storage.latest_usage_snapshots_by_account().unwrap_or_default();
+    let snapshot_map = snapshots
+        .into_iter()
+        .map(|snap| (snap.account_id.clone(), snap))
+        .collect::<HashMap<_, _>>();
+
+    let mut next = HashMap::with_capacity(candidates.len());
+    for (account, _) in candidates {
+        let penalty = usage_pressure_penalty(snapshot_map.get(account.id.as_str()));
+        next.insert(account.id.clone(), penalty);
+    }
+
+    let lock = CANDIDATE_USAGE_PRESSURE.get_or_init(|| RwLock::new(HashMap::new()));
+    let mut map = crate::lock_utils::write_recover(lock, "candidate_usage_pressure");
+    *map = next;
+}
+
+fn usage_pressure_penalty(snapshot: Option<&UsageSnapshotRecord>) -> i32 {
+    let Some(snapshot) = snapshot else {
+        return 0;
+    };
+    let mut peak = snapshot
+        .used_percent
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0);
+    if let Some(value) = snapshot
+        .secondary_used_percent
+        .filter(|value| value.is_finite())
+    {
+        peak = peak.max(value);
+    }
+    if peak >= 99.0 {
+        80
+    } else if peak >= 97.0 {
+        60
+    } else if peak >= 95.0 {
+        45
+    } else if peak >= 90.0 {
+        30
+    } else if peak >= 85.0 {
+        18
+    } else if peak >= 80.0 {
+        10
+    } else {
+        0
+    }
 }
 
 fn read_candidate_cache() -> Option<Vec<(Account, Token)>> {
@@ -189,11 +247,29 @@ fn clear_candidate_cache() {
         };
         *guard = None;
     }
+    clear_candidate_usage_pressure();
+}
+
+fn clear_candidate_usage_pressure() {
+    if let Some(lock) = CANDIDATE_USAGE_PRESSURE.get() {
+        let mut map = crate::lock_utils::write_recover(lock, "candidate_usage_pressure");
+        map.clear();
+    }
 }
 
 #[cfg(test)]
 fn clear_candidate_cache_for_tests() {
     clear_candidate_cache();
+}
+
+#[cfg(test)]
+pub(super) fn set_candidate_usage_pressure_for_tests(entries: &[(&str, i32)]) {
+    let lock = CANDIDATE_USAGE_PRESSURE.get_or_init(|| RwLock::new(HashMap::new()));
+    let mut map = crate::lock_utils::write_recover(lock, "candidate_usage_pressure");
+    map.clear();
+    map.extend(entries.iter().map(|(account_id, penalty)| {
+        ((*account_id).to_string(), (*penalty).max(0))
+    }));
 }
 
 #[cfg(test)]

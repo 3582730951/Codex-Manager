@@ -23,11 +23,6 @@ where
         // 否则并发流量会继续命中同一故障账号造成雪崩。
         super::super::super::mark_account_cooldown_for_status(account_id, status.as_u16());
     }
-    if status.is_success() {
-        super::super::super::clear_account_cooldown(account_id);
-        log_gateway_result(Some(url), status.as_u16(), None);
-        return UpstreamOutcomeDecision::RespondUpstream;
-    }
     if status.as_u16() == 404 && has_more_candidates {
         // 中文注释：模型/路径 404 在多账号场景下通常是“该账号不可用”，
         // 优先切换候选账号，最后一个候选再透传原始 404 给客户端。
@@ -62,6 +57,11 @@ where
         if has_more_candidates {
             return UpstreamOutcomeDecision::Failover;
         }
+        return UpstreamOutcomeDecision::RespondUpstream;
+    }
+    if status.is_success() {
+        super::super::super::clear_account_cooldown(account_id);
+        log_gateway_result(Some(url), status.as_u16(), None);
         return UpstreamOutcomeDecision::RespondUpstream;
     }
 

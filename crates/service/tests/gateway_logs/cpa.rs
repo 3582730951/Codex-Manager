@@ -232,6 +232,144 @@ fn gateway_cpa_no_cookie_header_mode_binds_prompt_cache_key_to_session_only() {
 }
 
 #[test]
+fn gateway_cpa_no_cookie_header_mode_strips_compaction_affinity_from_body() {
+    let _lock = lock_env();
+    let dir = new_test_dir("codexmanager-gateway-cpa-no-cookie-strip-compaction");
+    let db_path: PathBuf = dir.join("codexmanager.db");
+
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _mode_guard = EnvGuard::set("CODEXMANAGER_CPA_NO_COOKIE_HEADER_MODE", "1");
+    let _cookie_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_COOKIE", "");
+
+    let upstream_response = serde_json::json!({
+        "id": "resp_cpa_strip_compaction",
+        "model": "gpt-5.3-codex",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "ok" }]
+        }],
+        "usage": { "input_tokens": 3, "output_tokens": 2, "total_tokens": 5 }
+    });
+    let upstream_response =
+        serde_json::to_string(&upstream_response).expect("serialize upstream response");
+    let (upstream_addr, upstream_rx, upstream_join) = start_mock_upstream_once(&upstream_response);
+    let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
+    let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init db");
+    let now = now_ts();
+
+    storage
+        .insert_account(&Account {
+            id: "acc_cpa_strip_compaction".to_string(),
+            label: "cpa-strip-compaction".to_string(),
+            issuer: "https://auth.openai.com".to_string(),
+            chatgpt_account_id: Some("chatgpt_acc_cpa_strip_compaction".to_string()),
+            workspace_id: None,
+            group_name: None,
+            sort: 1,
+            status: "active".to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("insert account");
+    storage
+        .insert_token(&Token {
+            account_id: "acc_cpa_strip_compaction".to_string(),
+            id_token: String::new(),
+            access_token: "access_token_cpa_strip_compaction".to_string(),
+            refresh_token: String::new(),
+            api_key_access_token: Some("api_access_token_cpa_strip_compaction".to_string()),
+            last_refresh: now,
+        })
+        .expect("insert token");
+
+    let platform_key = "pk_cpa_strip_compaction";
+    storage
+        .insert_api_key(&ApiKey {
+            id: "gk_cpa_strip_compaction".to_string(),
+            name: Some("cpa-strip-compaction".to_string()),
+            model_slug: Some("gpt-5.3-codex".to_string()),
+            reasoning_effort: None,
+            client_type: "codex".to_string(),
+            protocol_type: "openai_compat".to_string(),
+            auth_scheme: "authorization_bearer".to_string(),
+            upstream_base_url: None,
+            static_headers_json: None,
+            key_hash: hash_platform_key_for_test(platform_key),
+            status: "active".to_string(),
+            created_at: now,
+            last_used_at: None,
+        })
+        .expect("insert api key");
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let req_body = serde_json::json!({
+        "model": "gpt-5.3-codex",
+        "prompt_cache_key": "cache_anchor_123",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            },
+            {
+                "type": "compaction",
+                "encrypted_content": "gAAA_compaction_blob"
+            }
+        ],
+        "stream": false
+    })
+    .to_string();
+    let (status, response_body) = post_http_raw(
+        &server.addr,
+        "/v1/responses",
+        &req_body,
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", &format!("Bearer {platform_key}")),
+            ("Session_id", "legacy_session_should_be_overridden"),
+            (
+                "Conversation_id",
+                "legacy_conversation_should_be_overridden",
+            ),
+            ("x-codex-turn-state", "legacy_turn_state_should_be_dropped"),
+        ],
+    );
+    server.join();
+    assert_eq!(status, 200, "gateway response: {response_body}");
+
+    let captured = upstream_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive upstream request");
+    upstream_join.join().expect("join upstream");
+
+    assert_eq!(
+        captured.headers.get("session_id").map(String::as_str),
+        Some("cache_anchor_123")
+    );
+    assert!(!captured.headers.contains_key("conversation_id"));
+    assert!(!captured.headers.contains_key("x-codex-turn-state"));
+
+    let upstream_payload: serde_json::Value =
+        serde_json::from_slice(&captured.body).expect("parse upstream payload");
+    assert_eq!(upstream_payload["prompt_cache_key"], "cache_anchor_123");
+    assert_eq!(
+        upstream_payload["input"]
+            .as_array()
+            .map(|items| items.len()),
+        Some(1)
+    );
+    assert_eq!(upstream_payload["input"][0]["type"], "message");
+    assert!(
+        !String::from_utf8_lossy(&captured.body).contains("\"encrypted_content\""),
+        "cpa no-cookie mode should strip body session-affinity blobs together with converged headers"
+    );
+}
+
+#[test]
 fn gateway_cpa_no_cookie_header_mode_skips_post_retries_on_404() {
     let _lock = lock_env();
     let dir = new_test_dir("codexmanager-gateway-cpa-no-cookie-no-post-retry");
@@ -268,7 +406,7 @@ fn gateway_cpa_no_cookie_header_mode_skips_post_retries_on_404() {
                 serde_json::to_string(&ok_body).expect("serialize 200 body"),
             ),
         ],
-        Duration::from_millis(350),
+        Duration::from_secs(2),
     );
     let upstream_base = format!("http://{upstream_addr}/backend-api/codex");
     let _upstream_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &upstream_base);

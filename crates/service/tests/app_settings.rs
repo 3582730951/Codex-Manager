@@ -46,23 +46,38 @@ fn reset_runtime_defaults() {
     })));
 }
 
+struct TempDbGuard {
+    db_path: PathBuf,
+    previous_db_path: Option<String>,
+}
+
+impl Drop for TempDbGuard {
+    fn drop(&mut self) {
+        reset_runtime_defaults();
+        if let Some(value) = self.previous_db_path.as_deref() {
+            std::env::set_var("CODEXMANAGER_DB_PATH", value);
+        } else {
+            std::env::remove_var("CODEXMANAGER_DB_PATH");
+        }
+        let _ = std::fs::remove_file(&self.db_path);
+    }
+}
+
 fn with_temp_db(test: impl FnOnce(&PathBuf)) {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let db_path = unique_temp_db_path();
     let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
     std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
     codexmanager_service::initialize_storage_if_needed().expect("init storage");
     reset_runtime_defaults();
+    let _cleanup = TempDbGuard {
+        db_path: db_path.clone(),
+        previous_db_path,
+    };
 
     test(&db_path);
-
-    reset_runtime_defaults();
-    if let Some(value) = previous_db_path {
-        std::env::set_var("CODEXMANAGER_DB_PATH", value);
-    } else {
-        std::env::remove_var("CODEXMANAGER_DB_PATH");
-    }
-    let _ = std::fs::remove_file(&db_path);
 }
 
 struct EnvRestore(Vec<(String, Option<OsString>)>);

@@ -399,3 +399,80 @@ fn balanced_mode_keeps_strict_round_robin_by_default() {
     }
     reload_from_env();
 }
+
+#[test]
+fn balanced_mode_prefers_less_loaded_candidate_when_head_is_busy() {
+    let _guard = route_strategy_test_guard();
+    let prev_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    let prev_load_enabled = std::env::var(ROUTE_LOAD_AWARE_ENABLED_ENV).ok();
+    let prev_load_window = std::env::var(ROUTE_LOAD_BALANCED_WINDOW_ENV).ok();
+
+    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    std::env::set_var(ROUTE_LOAD_AWARE_ENABLED_ENV, "1");
+    std::env::set_var(ROUTE_LOAD_BALANCED_WINDOW_ENV, "2");
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    let _g1 = crate::gateway::acquire_account_inflight("acc-a");
+    let _g2 = crate::gateway::acquire_account_inflight("acc-a");
+
+    let mut candidates = candidate_list();
+    apply_route_strategy(&mut candidates, "gk-load-aware", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&candidates)[0], "acc-b");
+
+    if let Some(value) = prev_strategy {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    if let Some(value) = prev_load_enabled {
+        std::env::set_var(ROUTE_LOAD_AWARE_ENABLED_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_LOAD_AWARE_ENABLED_ENV);
+    }
+    if let Some(value) = prev_load_window {
+        std::env::set_var(ROUTE_LOAD_BALANCED_WINDOW_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_LOAD_BALANCED_WINDOW_ENV);
+    }
+    reload_from_env();
+}
+
+#[test]
+fn balanced_mode_prefers_lower_quota_pressure_candidate() {
+    let _guard = route_strategy_test_guard();
+    let prev_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
+    let prev_load_enabled = std::env::var(ROUTE_LOAD_AWARE_ENABLED_ENV).ok();
+    let prev_load_window = std::env::var(ROUTE_LOAD_BALANCED_WINDOW_ENV).ok();
+
+    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    std::env::set_var(ROUTE_LOAD_AWARE_ENABLED_ENV, "1");
+    std::env::set_var(ROUTE_LOAD_BALANCED_WINDOW_ENV, "2");
+    reload_from_env();
+    clear_route_state_for_tests();
+    super::super::selection::set_candidate_usage_pressure_for_tests(&[
+        ("acc-a", 45),
+        ("acc-b", 0),
+    ]);
+
+    let mut candidates = candidate_list();
+    apply_route_strategy(&mut candidates, "gk-usage-aware", Some("gpt-5.3-codex"));
+    assert_eq!(account_ids(&candidates)[0], "acc-b");
+
+    if let Some(value) = prev_strategy {
+        std::env::set_var(ROUTE_STRATEGY_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    }
+    if let Some(value) = prev_load_enabled {
+        std::env::set_var(ROUTE_LOAD_AWARE_ENABLED_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_LOAD_AWARE_ENABLED_ENV);
+    }
+    if let Some(value) = prev_load_window {
+        std::env::set_var(ROUTE_LOAD_BALANCED_WINDOW_ENV, value);
+    } else {
+        std::env::remove_var(ROUTE_LOAD_BALANCED_WINDOW_ENV);
+    }
+    reload_from_env();
+}
