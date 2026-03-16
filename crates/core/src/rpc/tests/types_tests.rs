@@ -63,6 +63,8 @@ fn request_log_summary_serialization_includes_trace_route_fields() {
         trace_id: Some("trc_1".to_string()),
         key_id: Some("gk_1".to_string()),
         account_id: Some("acc_1".to_string()),
+        initial_account_id: Some("acc_free".to_string()),
+        attempted_account_ids: vec!["acc_free".to_string(), "acc_1".to_string()],
         request_path: "/v1/responses".to_string(),
         original_path: Some("/v1/chat/completions".to_string()),
         adapted_path: Some("/v1/responses".to_string()),
@@ -87,6 +89,8 @@ fn request_log_summary_serialization_includes_trace_route_fields() {
     let obj = value.as_object().expect("request log summary object");
     for key in [
         "traceId",
+        "initialAccountId",
+        "attemptedAccountIds",
         "originalPath",
         "adaptedPath",
         "responseAdapter",
@@ -115,6 +119,8 @@ fn request_log_list_result_serialization_includes_pagination_fields() {
             trace_id: Some("trc_1".to_string()),
             key_id: Some("gk_1".to_string()),
             account_id: Some("acc_1".to_string()),
+            initial_account_id: Some("acc_free".to_string()),
+            attempted_account_ids: vec!["acc_free".to_string(), "acc_1".to_string()],
             request_path: "/v1/responses".to_string(),
             original_path: Some("/v1/chat/completions".to_string()),
             adapted_path: Some("/v1/responses".to_string()),

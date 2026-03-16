@@ -123,8 +123,33 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         usage: super::super::super::request_log::RequestLogUsage,
         error: Option<&str>,
         elapsed_ms: u128,
+        attempted_account_ids: Option<&[String]>,
     ) {
-        super::super::super::write_request_log(
+        self.log_final_result_with_model(
+            final_account_id,
+            upstream_url,
+            self.model_for_log,
+            status_code,
+            usage,
+            error,
+            elapsed_ms,
+            attempted_account_ids,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in super::super) fn log_final_result_with_model(
+        &self,
+        final_account_id: Option<&str>,
+        upstream_url: Option<&str>,
+        model_for_log: Option<&str>,
+        status_code: u16,
+        usage: super::super::super::request_log::RequestLogUsage,
+        error: Option<&str>,
+        elapsed_ms: u128,
+        attempted_account_ids: Option<&[String]>,
+    ) {
+        super::super::super::request_log::write_request_log_with_attempts(
             self.storage,
             super::super::super::request_log::RequestLogTraceContext {
                 trace_id: Some(self.trace_id),
@@ -136,13 +161,14 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             final_account_id,
             self.path,
             self.request_method,
-            self.model_for_log,
+            model_for_log,
             self.reasoning_for_log,
             upstream_url,
             Some(status_code),
             usage,
             error,
             Some(elapsed_ms),
+            attempted_account_ids,
         );
         super::super::super::trace_log::log_request_final(
             self.trace_id,

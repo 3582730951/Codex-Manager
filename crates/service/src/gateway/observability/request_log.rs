@@ -131,8 +131,49 @@ pub(super) fn write_request_log(
     error: Option<&str>,
     duration_ms: Option<u128>,
 ) {
+    write_request_log_with_attempts(
+        storage,
+        trace_context,
+        key_id,
+        account_id,
+        request_path,
+        method,
+        model,
+        reasoning_effort,
+        upstream_url,
+        status_code,
+        usage,
+        error,
+        duration_ms,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn write_request_log_with_attempts(
+    storage: &Storage,
+    trace_context: RequestLogTraceContext<'_>,
+    key_id: Option<&str>,
+    account_id: Option<&str>,
+    request_path: &str,
+    method: &str,
+    model: Option<&str>,
+    reasoning_effort: Option<&str>,
+    upstream_url: Option<&str>,
+    status_code: Option<u16>,
+    usage: RequestLogUsage,
+    error: Option<&str>,
+    duration_ms: Option<u128>,
+    attempted_account_ids: Option<&[String]>,
+) {
     let original_path = trace_context.original_path.unwrap_or(request_path);
     let adapted_path = trace_context.adapted_path.unwrap_or(request_path);
+    let initial_account_id = attempted_account_ids
+        .and_then(|items| items.first())
+        .map(String::as_str);
+    let attempted_account_ids_json = attempted_account_ids
+        .filter(|items| !items.is_empty())
+        .and_then(|items| serde_json::to_string(items).ok());
     let input_tokens = normalize_token(usage.input_tokens);
     let cached_input_tokens = normalize_token(usage.cached_input_tokens);
     let output_tokens = normalize_token(usage.output_tokens);
@@ -189,6 +230,8 @@ pub(super) fn write_request_log(
             trace_id: trace_context.trace_id.map(|v| v.to_string()),
             key_id: key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
+            initial_account_id: initial_account_id.map(str::to_string),
+            attempted_account_ids_json,
             request_path: request_path.to_string(),
             original_path: Some(original_path.to_string()),
             adapted_path: Some(adapted_path.to_string()),

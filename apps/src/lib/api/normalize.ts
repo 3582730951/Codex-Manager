@@ -332,6 +332,10 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     traceId,
     keyId,
     accountId,
+    initialAccountId: asString(source.initialAccountId ?? source.initial_account_id),
+    attemptedAccountIds: asArray(source.attemptedAccountIds ?? source.attempted_account_ids)
+      .map((value) => asString(value))
+      .filter((value) => value.length > 0),
     requestPath,
     originalPath: asString(source.originalPath ?? source.original_path),
     adaptedPath: asString(source.adaptedPath ?? source.adapted_path),

@@ -892,6 +892,8 @@ fn rpc_requestlog_list_and_summary_support_pagination() {
                 trace_id: Some(format!("trc-page-{index}")),
                 key_id: Some("gk-page".to_string()),
                 account_id: Some("acc-page".to_string()),
+                initial_account_id: Some("acc-free".to_string()),
+                attempted_account_ids_json: Some(r#"["acc-free","acc-page"]"#.to_string()),
                 request_path: "/v1/responses".to_string(),
                 original_path: Some("/v1/responses".to_string()),
                 adapted_path: Some("/v1/responses".to_string()),
@@ -966,6 +968,19 @@ fn rpc_requestlog_list_and_summary_support_pagination() {
     assert_eq!(
         items[0].get("traceId").and_then(|value| value.as_str()),
         Some("trc-page-2")
+    );
+    assert_eq!(
+        items[0]
+            .get("initialAccountId")
+            .and_then(|value| value.as_str()),
+        Some("acc-free")
+    );
+    assert_eq!(
+        items[0]
+            .get("attemptedAccountIds")
+            .and_then(|value| value.as_array())
+            .map(|items| items.len()),
+        Some(2)
     );
 
     let summary_server = codexmanager_service::start_one_shot_server().expect("start server");

@@ -93,6 +93,8 @@ export interface RequestLog {
   traceId: string;
   keyId: string;
   accountId: string;
+  initialAccountId: string;
+  attemptedAccountIds: string[];
   requestPath: string;
   originalPath: string;
   adaptedPath: string;

@@ -476,3 +476,19 @@ fn balanced_mode_prefers_lower_quota_pressure_candidate() {
     }
     reload_from_env();
 }
+
+#[test]
+fn manual_preferred_account_is_preserved_when_current_candidates_do_not_include_it() {
+    let _guard = route_strategy_test_guard();
+    clear_route_state_for_tests();
+    set_manual_preferred_account("acc-missing").expect("set manual preferred");
+
+    let mut candidates = candidate_list();
+    apply_route_strategy(&mut candidates, "gk-manual-missing", Some("gpt-5.3-codex"));
+
+    assert_eq!(
+        get_manual_preferred_account().as_deref(),
+        Some("acc-missing")
+    );
+    assert_eq!(account_ids(&candidates)[0], "acc-a");
+}

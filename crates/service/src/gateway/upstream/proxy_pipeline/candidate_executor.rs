@@ -4,6 +4,7 @@ use std::time::Instant;
 use tiny_http::Request;
 
 use super::super::attempt_flow::candidate_flow::CandidateUpstreamDecision;
+use super::super::support::candidates::free_account_model_override;
 use super::super::support::deadline;
 use super::candidate_attempt::{
     run_candidate_attempt, CandidateAttemptParams, CandidateAttemptTrace,
@@ -70,24 +71,40 @@ pub(in super::super) fn execute_candidate_sequence(
     } = params;
     let mut request = Some(request);
     let mut state = CandidateExecutionState::default();
+    let mut attempted_account_ids = Vec::new();
     for (idx, (account, mut token)) in candidates.into_iter().enumerate() {
         if deadline::is_expired(request_deadline) {
             let request = request
                 .take()
                 .expect("request should be available before timeout response");
-            respond_total_timeout(request, context, trace_id, started_at)?;
+            respond_total_timeout(
+                request,
+                context,
+                trace_id,
+                started_at,
+                model_for_log,
+                Some(attempted_account_ids.as_slice()),
+            )?;
             return Ok(CandidateExecutionResult::Handled);
         }
 
         let strip_session_affinity =
             state.strip_session_affinity(&account, idx, setup.anthropic_has_prompt_cache_key);
-        let body_for_attempt = state.body_for_attempt(body, strip_session_affinity, setup);
+        let attempt_model_override = free_account_model_override(storage, &account, &token);
+        let attempt_model_for_log = attempt_model_override.as_deref().or(model_for_log);
+        let body_for_attempt = state.body_for_attempt(
+            path,
+            body,
+            strip_session_affinity,
+            setup,
+            attempt_model_override.as_deref(),
+        );
         context.log_candidate_start(&account.id, idx, strip_session_affinity);
         if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx) {
             context.log_candidate_skip(&account.id, idx, skip_reason);
-            let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
             continue;
         }
+        attempted_account_ids.push(account.id.clone());
 
         let request_ref = request
             .as_ref()
@@ -107,7 +124,7 @@ pub(in super::super) fn execute_candidate_sequence(
             None,
             request_shape,
             body_for_attempt.len(),
-            model_for_log,
+            attempt_model_for_log,
         );
 
         let mut inflight_guard = Some(super::super::super::acquire_account_inflight(&account.id));
@@ -117,7 +134,7 @@ pub(in super::super) fn execute_candidate_sequence(
             method,
             request: request_ref,
             incoming_headers,
-            body: body_for_attempt,
+            body: &body_for_attempt,
             upstream_is_stream,
             path,
             request_deadline,
@@ -135,7 +152,6 @@ pub(in super::super) fn execute_candidate_sequence(
 
         match decision {
             CandidateUpstreamDecision::Failover => {
-                let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
                 super::super::super::record_gateway_failover_attempt();
                 continue;
             }
@@ -143,7 +159,6 @@ pub(in super::super) fn execute_candidate_sequence(
                 status_code,
                 message,
             } => {
-                let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
                 let request = request
                     .take()
                     .expect("request should be available before terminal response");
@@ -156,22 +171,24 @@ pub(in super::super) fn execute_candidate_sequence(
                     message,
                     trace_id,
                     started_at,
+                    attempt_model_for_log,
+                    Some(attempted_account_ids.as_slice()),
                 )?;
                 return Ok(CandidateExecutionResult::Handled);
             }
             CandidateUpstreamDecision::RespondUpstream(mut resp) => {
-                let mut status_code = resp.status().as_u16();
-                if status_code == 400
+                if resp.status().as_u16() == 400
                     && !strip_session_affinity
                     && (incoming_turn_state.is_some() || setup.has_body_encrypted_content)
                 {
-                    let retry_body = state.retry_body(body, setup);
+                    let retry_body =
+                        state.retry_body(path, body, setup, attempt_model_override.as_deref());
                     let retry_decision = run_candidate_attempt(CandidateAttemptParams {
                         storage,
                         method,
                         request: request_ref,
                         incoming_headers,
-                        body: retry_body,
+                        body: &retry_body,
                         upstream_is_stream,
                         path,
                         request_deadline,
@@ -190,11 +207,8 @@ pub(in super::super) fn execute_candidate_sequence(
                     match retry_decision {
                         CandidateUpstreamDecision::RespondUpstream(retry_resp) => {
                             resp = retry_resp;
-                            status_code = resp.status().as_u16();
                         }
                         CandidateUpstreamDecision::Failover => {
-                            let _ =
-                                super::super::super::clear_manual_preferred_account_if(&account.id);
                             super::super::super::record_gateway_failover_attempt();
                             continue;
                         }
@@ -202,8 +216,6 @@ pub(in super::super) fn execute_candidate_sequence(
                             status_code,
                             message,
                         } => {
-                            let _ =
-                                super::super::super::clear_manual_preferred_account_if(&account.id);
                             let request = request
                                 .take()
                                 .expect("request should be available before terminal response");
@@ -216,14 +228,12 @@ pub(in super::super) fn execute_candidate_sequence(
                                 message,
                                 trace_id,
                                 started_at,
+                                attempt_model_for_log,
+                                Some(attempted_account_ids.as_slice()),
                             )?;
                             return Ok(CandidateExecutionResult::Handled);
                         }
                     }
-                }
-
-                if status_code >= 400 {
-                    let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
                 }
                 let request = request
                     .take()
@@ -245,6 +255,8 @@ pub(in super::super) fn execute_candidate_sequence(
                     path,
                     trace_id,
                     started_at,
+                    attempt_model_for_log,
+                    Some(attempted_account_ids.as_slice()),
                 )?;
                 return Ok(CandidateExecutionResult::Handled);
             }

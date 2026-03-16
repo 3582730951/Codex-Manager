@@ -525,7 +525,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="grid gap-2">
-                <Label>Free 账号最高模型</Label>
+                <Label>Free 账号使用模型</Label>
                 <Select
                   value={snapshot.freeAccountMaxModel || "gpt-5.2"}
                   onValueChange={(value) =>
@@ -533,7 +533,7 @@ export default function SettingsPage() {
                   }
                 >
                   <SelectTrigger className="w-full md:w-[300px]">
-                    <SelectValue placeholder="选择最高模型" />
+                    <SelectValue placeholder="选择 free 账号使用模型" />
                   </SelectTrigger>
                   <SelectContent>
                     {(snapshot.freeAccountMaxModelOptions?.length
@@ -547,7 +547,8 @@ export default function SettingsPage() {
                   </SelectContent>
                 </Select>
                 <p className="text-[10px] text-muted-foreground">
-                  当请求模型高于这个上限时，free 账号不会进入候选池，避免自动切换后被上游拒绝。
+                  所有 free / 7天单窗口账号命中候选时，都会按这里的模型发给上游；
+                  即使原始请求模型更高，也会统一改写成这里配置的模型，避免在 free 账号上继续带着高模型失败。
                 </p>
               </div>
 

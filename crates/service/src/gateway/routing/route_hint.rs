@@ -98,7 +98,7 @@ pub(crate) fn apply_route_strategy(
 
 fn rotate_to_manual_preferred_account(candidates: &mut [(Account, Token)]) -> bool {
     let lock = ROUTE_STATE.get_or_init(|| Mutex::new(RouteRoundRobinState::default()));
-    let mut state = crate::lock_utils::lock_recover(lock, "route_state");
+    let state = crate::lock_utils::lock_recover(lock, "route_state");
     let Some(account_id) = state.manual_preferred_account_id.as_deref() else {
         return false;
     };
@@ -106,8 +106,8 @@ fn rotate_to_manual_preferred_account(candidates: &mut [(Account, Token)]) -> bo
         .iter()
         .position(|(account, _)| account.id.eq(account_id))
     else {
-        // 中文注释：手动指定账号已不在可用候选池（可能用尽/不可用），自动回退到常规轮转。
-        state.manual_preferred_account_id = None;
+        // 中文注释：手动优先是用户显式选择；当前轮次未命中候选池时保持该状态，
+        // 避免一次过滤/暂时不可用就把用户设置静默清掉。
         return false;
     };
     if index > 0 {

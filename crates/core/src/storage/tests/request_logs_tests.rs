@@ -57,6 +57,8 @@ fn insert_request_log_with_token_stat_is_visible_via_join() {
         trace_id: Some("trc-1".to_string()),
         key_id: Some("gk_1".to_string()),
         account_id: Some("acc_1".to_string()),
+        initial_account_id: Some("acc_1".to_string()),
+        attempted_account_ids_json: Some(r#"["acc_1"]"#.to_string()),
         request_path: "/v1/responses".to_string(),
         original_path: Some("/v1/chat/completions".to_string()),
         adapted_path: Some("/v1/responses".to_string()),
@@ -102,6 +104,11 @@ fn insert_request_log_with_token_stat_is_visible_via_join() {
     assert_eq!(logs.len(), 1);
     let row = &logs[0];
     assert_eq!(row.trace_id.as_deref(), Some("trc-1"));
+    assert_eq!(row.initial_account_id.as_deref(), Some("acc_1"));
+    assert_eq!(
+        row.attempted_account_ids_json.as_deref(),
+        Some(r#"["acc_1"]"#)
+    );
     assert_eq!(row.request_path, log.request_path);
     assert_eq!(row.original_path.as_deref(), Some("/v1/chat/completions"));
     assert_eq!(row.adapted_path.as_deref(), Some("/v1/responses"));
@@ -130,6 +137,8 @@ fn token_stat_failure_still_commits_request_log() {
         trace_id: Some("trc-2".to_string()),
         key_id: Some("gk_1".to_string()),
         account_id: Some("acc_1".to_string()),
+        initial_account_id: Some("acc_1".to_string()),
+        attempted_account_ids_json: Some(r#"["acc_1"]"#.to_string()),
         request_path: "/v1/responses".to_string(),
         original_path: Some("/v1/responses".to_string()),
         adapted_path: Some("/v1/responses".to_string()),
@@ -198,6 +207,8 @@ fn request_logs_support_backend_pagination_and_status_filters() {
                 trace_id: Some(format!("trc-{index}")),
                 key_id: Some("gk-log".to_string()),
                 account_id: Some("acc-log".to_string()),
+                initial_account_id: Some("acc-log".to_string()),
+                attempted_account_ids_json: Some(r#"["acc-log"]"#.to_string()),
                 request_path: format!("/v1/responses/{index}"),
                 original_path: Some("/v1/responses".to_string()),
                 adapted_path: Some("/v1/responses".to_string()),
@@ -263,6 +274,8 @@ fn request_logs_filtered_summary_aggregates_counts_and_tokens() {
                 trace_id: Some(format!("trc-sum-{index}")),
                 key_id: Some("gk-sum".to_string()),
                 account_id: Some("acc-sum".to_string()),
+                initial_account_id: Some("acc-sum".to_string()),
+                attempted_account_ids_json: Some(r#"["acc-sum"]"#.to_string()),
                 request_path: "/v1/responses".to_string(),
                 original_path: Some("/v1/responses".to_string()),
                 adapted_path: Some("/v1/responses".to_string()),

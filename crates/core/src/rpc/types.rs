@@ -205,6 +205,9 @@ pub struct RequestLogSummary {
     pub trace_id: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub initial_account_id: Option<String>,
+    #[serde(default)]
+    pub attempted_account_ids: Vec<String>,
     pub request_path: String,
     pub original_path: Option<String>,
     pub adapted_path: Option<String>,

@@ -176,6 +176,7 @@ pub(in super::super) fn proxy_validated_request(
         RequestLogUsage::default(),
         Some("no available account"),
         started_at.elapsed().as_millis(),
+        None,
     );
     respond_terminal(
         request,

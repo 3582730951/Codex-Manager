@@ -197,6 +197,19 @@ function resolveAccountDisplayName(
   return fallbackAccountDisplayFromKey(log.keyId);
 }
 
+function resolveAccountDisplayNameById(
+  accountId: string,
+  accountNameMap: Map<string, string>,
+): string {
+  const normalized = String(accountId || "").trim();
+  if (!normalized) return "";
+  return (
+    accountNameMap.get(normalized) ||
+    fallbackAccountNameFromId(normalized) ||
+    normalized
+  );
+}
+
 function formatModelEffortDisplay(log: RequestLog): string {
   const model = String(log.model || "").trim();
   const effort = String(log.reasoningEffort || "").trim();
@@ -209,15 +222,28 @@ function formatModelEffortDisplay(log: RequestLog): string {
 function AccountKeyInfoCell({
   log,
   accountLabel,
+  accountNameMap,
 }: {
   log: RequestLog;
   accountLabel: string;
+  accountNameMap: Map<string, string>;
 }) {
   const displayAccount = accountLabel || log.accountId || "-";
   const hasNamedAccount =
     Boolean(accountLabel) &&
     accountLabel.trim() !== "" &&
     accountLabel !== log.accountId;
+  const attemptedAccountLabels = log.attemptedAccountIds
+    .map((accountId) => resolveAccountDisplayNameById(accountId, accountNameMap))
+    .filter((value) => value.trim().length > 0);
+  const initialAccountLabel = resolveAccountDisplayNameById(
+    log.initialAccountId,
+    accountNameMap,
+  );
+  const showAttemptHint =
+    attemptedAccountLabels.length > 1 &&
+    initialAccountLabel &&
+    initialAccountLabel !== displayAccount;
 
   return (
     <Tooltip>
@@ -233,10 +259,31 @@ function AccountKeyInfoCell({
               {formatCompactKeyLabel(log.keyId)}
             </span>
           </div>
+          {showAttemptHint ? (
+            <div className="text-[9px] text-amber-500">
+              先试 {initialAccountLabel}
+            </div>
+          ) : null}
         </div>
       </TooltipTrigger>
       <TooltipContent className="max-w-sm">
         <div className="flex min-w-[240px] flex-col gap-2">
+          {initialAccountLabel ? (
+            <div className="space-y-0.5">
+              <div className="text-[10px] text-background/70">首尝试账号</div>
+              <div className="break-all font-mono text-[11px]">
+                {initialAccountLabel}
+              </div>
+            </div>
+          ) : null}
+          {attemptedAccountLabels.length > 1 ? (
+            <div className="space-y-0.5">
+              <div className="text-[10px] text-background/70">尝试链路</div>
+              <div className="break-all font-mono text-[11px]">
+                {attemptedAccountLabels.join(" -> ")}
+              </div>
+            </div>
+          ) : null}
           {hasNamedAccount ? (
             <div className="space-y-0.5">
               <div className="text-[10px] text-background/70">邮箱 / 名称</div>
@@ -701,6 +748,7 @@ function LogsPageContent() {
                           log,
                           accountNameMap,
                         )}
+                        accountNameMap={accountNameMap}
                       />
                     </TableCell>
                     <TableCell className="px-4 py-3 align-top">

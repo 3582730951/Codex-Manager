@@ -78,6 +78,8 @@ pub struct RequestLog {
     pub trace_id: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
+    pub initial_account_id: Option<String>,
+    pub attempted_account_ids_json: Option<String>,
     pub request_path: String,
     pub original_path: Option<String>,
     pub adapted_path: Option<String>,
@@ -328,6 +330,11 @@ impl Storage {
             "031_request_logs_duration_ms",
             include_str!("../../migrations/031_request_logs_duration_ms.sql"),
             |s| s.ensure_request_log_duration_column(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "032_request_logs_attempt_chain",
+            include_str!("../../migrations/032_request_logs_attempt_chain.sql"),
+            |s| s.ensure_request_log_attempt_chain_columns(),
         )?;
         self.ensure_request_token_stats_table()?;
         Ok(())
