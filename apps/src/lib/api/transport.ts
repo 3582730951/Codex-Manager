@@ -4,6 +4,7 @@ import { useAppStore } from "../store/useAppStore";
 
 const WEB_RPC_TIMEOUT_MS = 60_000;
 const WEB_SERVICE_CONTROL_TIMEOUT_MS = 15_000;
+let webAuthRedirectPending = false;
 
 interface FileSystemWritableFileStreamLike {
   write(data: string | Blob): Promise<void>;
@@ -536,26 +537,55 @@ function normalizeWebAppSettingsPayload(payload: unknown): unknown {
   };
 }
 
-function readResponseErrorMessage(status: number, body: string): string {
+function readResponseError(status: number, body: string): {
+  message: string;
+  errorCode: string;
+} {
   const trimmed = body.trim();
   if (!trimmed) {
-    return `请求失败（HTTP ${status}）`;
+    return {
+      message: `请求失败（HTTP ${status}）`,
+      errorCode: "",
+    };
   }
 
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     const source = asRecord(parsed);
+    const errorCode =
+      typeof source?.error === "string"
+        ? source.error.trim()
+        : typeof source?.code === "string"
+          ? source.code.trim()
+          : "";
     if (source?.error && typeof source.error === "string") {
-      return source.error;
+      return {
+        message: source.error,
+        errorCode,
+      };
     }
     if (source?.message && typeof source.message === "string") {
-      return source.message;
+      return {
+        message: source.message,
+        errorCode,
+      };
     }
   } catch {
     // ignore invalid JSON and fall back to raw text
   }
 
-  return trimmed;
+  return {
+    message: trimmed,
+    errorCode: "",
+  };
+}
+
+function redirectToWebLogin(): Promise<never> {
+  if (typeof window !== "undefined" && !webAuthRedirectPending) {
+    webAuthRedirectPending = true;
+    window.location.replace("/__login?force=1");
+  }
+  return new Promise<never>(() => {});
 }
 
 async function callWebRpcMethod<T>(
@@ -583,7 +613,11 @@ async function callWebRpcMethod<T>(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(readResponseErrorMessage(response.status, text));
+    const error = readResponseError(response.status, text);
+    if (response.status === 401 && error.errorCode === "web_auth_required") {
+      return redirectToWebLogin();
+    }
+    throw new Error(error.message);
   }
 
   const payload = (await response.json()) as unknown;
@@ -621,7 +655,11 @@ async function callWebServiceControl<T>(
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(readResponseErrorMessage(response.status, text));
+    const error = readResponseError(response.status, text);
+    if (response.status === 401 && error.errorCode === "web_auth_required") {
+      return redirectToWebLogin();
+    }
+    throw new Error(error.message);
   }
 
   const payload = text ? (JSON.parse(text) as unknown) : {};
