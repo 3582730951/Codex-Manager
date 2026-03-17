@@ -1,7 +1,6 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { 
   LayoutDashboard, 
   Users, 
@@ -14,7 +13,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/lib/store/useAppStore";
-import { memo, useEffect, useMemo } from "react";
+import { memo, MouseEvent, useMemo } from "react";
 
 const NAV_ITEMS = [
   { name: "仪表盘", href: "/", icon: LayoutDashboard },
@@ -24,54 +23,49 @@ const NAV_ITEMS = [
   { name: "设置", href: "/settings", icon: Settings },
 ];
 
-const NavItem = memo(({ item, isActive, isSidebarOpen }: { item: typeof NAV_ITEMS[0], isActive: boolean, isSidebarOpen: boolean }) => (
-  <Link
-    href={item.href}
-    prefetch={true}
-    className={cn(
-      "flex items-center gap-3 rounded-lg px-3 py-2 transition-all duration-200 hover:bg-accent hover:text-accent-foreground",
-      isActive ? "bg-accent text-accent-foreground" : "text-muted-foreground"
-    )}
-  >
-    <item.icon className="h-4 w-4 shrink-0" />
-    {isSidebarOpen && <span className="text-sm truncate">{item.name}</span>}
-  </Link>
-));
+const NavItem = memo(({ item, isActive, isSidebarOpen }: { item: typeof NAV_ITEMS[0], isActive: boolean, isSidebarOpen: boolean }) => {
+  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+
+    if (isActive) {
+      event.preventDefault();
+      return;
+    }
+
+    // 中文注释：嵌入式静态 Web 壳中的客户端路由在部分导航上会卡住，这里强制走文档跳转以保证侧栏可用。
+    event.preventDefault();
+    window.location.assign(item.href);
+  };
+
+  return (
+    <a
+      href={item.href}
+      onClick={handleClick}
+      className={cn(
+        "flex items-center gap-3 rounded-lg px-3 py-2 transition-all duration-200 hover:bg-accent hover:text-accent-foreground",
+        isActive ? "bg-accent text-accent-foreground" : "text-muted-foreground"
+      )}
+    >
+      <item.icon className="h-4 w-4 shrink-0" />
+      {isSidebarOpen && <span className="text-sm truncate">{item.name}</span>}
+    </a>
+  );
+});
 
 NavItem.displayName = "NavItem";
 
 export function Sidebar() {
   const pathname = usePathname();
-  const router = useRouter();
   const { isSidebarOpen, toggleSidebar } = useAppStore();
-
-  useEffect(() => {
-    const runtime = globalThis as typeof globalThis & {
-      requestIdleCallback?: (
-        callback: IdleRequestCallback,
-        options?: IdleRequestOptions,
-      ) => number;
-      cancelIdleCallback?: (handle: number) => void;
-    };
-
-    const prefetchRoutes = () => {
-      for (const item of NAV_ITEMS) {
-        if (item.href !== pathname) {
-          router.prefetch(item.href);
-        }
-      }
-    };
-
-    if (runtime.requestIdleCallback) {
-      const idleId = runtime.requestIdleCallback(() => prefetchRoutes(), {
-        timeout: 1200,
-      });
-      return () => runtime.cancelIdleCallback?.(idleId);
-    }
-
-    const timer = globalThis.setTimeout(prefetchRoutes, 120);
-    return () => globalThis.clearTimeout(timer);
-  }, [pathname, router]);
 
   const renderedItems = useMemo(() => 
     NAV_ITEMS.map((item) => (

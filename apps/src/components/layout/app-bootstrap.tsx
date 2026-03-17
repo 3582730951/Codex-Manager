@@ -175,6 +175,18 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
     [queryClient, router]
   );
 
+  const warmupAfterConnect = useCallback(
+    (addr: string) => {
+      void (async () => {
+        await Promise.allSettled([
+          prefetchStartupSnapshot(addr),
+          warmupPrimaryPages(addr),
+        ]);
+      })();
+    },
+    [prefetchStartupSnapshot, warmupPrimaryPages]
+  );
+
   const warmupDevRouteTransitions = useCallback(() => {
     if (process.env.NODE_ENV !== "development") {
       return () => {};
@@ -293,10 +305,9 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
           connected: true,
           version: initializeResult.version,
         });
-        await prefetchStartupSnapshot(addr);
-        await warmupPrimaryPages(addr);
-        setIsInitializing(false);
         hasInitializedOnce.current = true;
+        setIsInitializing(false);
+        warmupAfterConnect(addr);
       } catch (serviceError: unknown) {
         if (!hasInitializedOnce.current) {
            setServiceStatus({ addr, connected: false, version: "" });
@@ -314,12 +325,11 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
     // and use hasInitializedOnce ref for stability
   }, [
     initializeService,
-    prefetchStartupSnapshot,
-    warmupPrimaryPages,
     setAppSettings,
     setServiceStatus,
     setTheme,
     startAndInitializeService,
+    warmupAfterConnect,
   ]);
 
   const handleForceStart = async () => {
@@ -341,10 +351,10 @@ export function AppBootstrap({ children }: { children: React.ReactNode }) {
         connected: true,
         version: initializeResult.version,
       });
-      await prefetchStartupSnapshot(addr);
-      await warmupPrimaryPages(addr);
       applyLowTransparency(settings.lowTransparency);
+      hasInitializedOnce.current = true;
       setIsInitializing(false);
+      warmupAfterConnect(addr);
       toast.success("服务已启动");
     } catch (startError: unknown) {
       setServiceStatus({ connected: false, version: "" });
