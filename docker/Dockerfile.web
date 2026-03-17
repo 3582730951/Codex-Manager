@@ -1,0 +1,45 @@
+FROM node:20-bookworm-slim AS ui
+
+WORKDIR /src/apps
+
+RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+
+COPY apps/package.json apps/pnpm-lock.yaml ./
+COPY apps/next.config.ts apps/postcss.config.mjs apps/tsconfig.json apps/components.json ./
+COPY apps/public ./public
+COPY apps/src ./src
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm run build:desktop
+
+FROM rust:1-bookworm AS builder
+
+WORKDIR /src
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+COPY --from=ui /src/apps/out ./apps/out
+
+RUN cargo build -p codexmanager-web --release --features embedded-ui
+
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/target/release/codexmanager-web /usr/local/bin/codexmanager-web
+
+ENV CODEXMANAGER_WEB_ADDR=0.0.0.0:48761
+ENV CODEXMANAGER_WEB_NO_SPAWN_SERVICE=1
+ENV CODEXMANAGER_WEB_NO_OPEN=1
+# 默认值适配 docker-compose 的服务名；单独运行时可覆盖为外部 service 的地址。
+ENV CODEXMANAGER_SERVICE_ADDR=codexmanager-service:48760
+ENV CODEXMANAGER_DB_PATH=/data/codexmanager.db
+ENV CODEXMANAGER_RPC_TOKEN_FILE=/data/codexmanager.rpc-token
+
+VOLUME ["/data"]
+EXPOSE 48761
+
+CMD ["codexmanager-web"]
