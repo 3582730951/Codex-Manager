@@ -13,6 +13,16 @@ pub(in super::super) enum AltPathRetryResult {
     Terminal { status_code: u16, message: String },
 }
 
+fn classify_preheader_error(err: &reqwest::Error) -> (&'static str, u16, bool) {
+    if err.is_timeout() {
+        return ("upstream_preheader_timeout", 504, true);
+    }
+    if err.is_connect() {
+        return ("upstream_connect_failure", 502, true);
+    }
+    ("upstream_connect_failure", 502, false)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in super::super) fn retry_with_alternate_path<F>(
     client: &reqwest::blocking::Client,
@@ -83,20 +93,22 @@ where
     ) {
         Ok(response) => AltPathRetryResult::Upstream(response),
         Err(err) => {
-            let err_msg = err.to_string();
-            super::super::super::mark_account_cooldown(
-                &account.id,
-                super::super::super::CooldownReason::Network,
-            );
-            log_gateway_result(Some(alt_url), 502, Some(err_msg.as_str()));
+            let (error_code, status_code, should_cooldown) = classify_preheader_error(&err);
+            if should_cooldown {
+                super::super::super::mark_account_cooldown(
+                    &account.id,
+                    super::super::super::CooldownReason::Network,
+                );
+            }
+            log_gateway_result(Some(alt_url), status_code, Some(error_code));
             // 中文注释：alt 路径失败时若还有候选账号必须优先切换，
             // 不这样做会把单账号路径差异放大成整次请求失败。
             if has_more_candidates {
                 AltPathRetryResult::Failover
             } else {
                 AltPathRetryResult::Terminal {
-                    status_code: 502,
-                    message: format!("upstream error: {err}"),
+                    status_code,
+                    message: error_code.to_string(),
                 }
             }
         }

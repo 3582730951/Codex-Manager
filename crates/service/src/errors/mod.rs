@@ -14,13 +14,19 @@ pub(crate) enum ErrorCode {
     RequestBodyTooLarge,
     BackendProxyError,
     BuildResponseFailed,
+    QueueShed,
+    GateRejected,
     UpstreamTimeout,
+    UpstreamConnectFailure,
+    UpstreamPreheaderTimeout,
     UpstreamChallengeBlocked,
     UpstreamRateLimited,
     UpstreamNotFound,
     UpstreamNonSuccess,
     NoAvailableAccount,
     CandidateResolveFailed,
+    ClientCancelled,
+    GatewayBridgeError,
     ResponseWriteFailed,
     StreamInterrupted,
 }
@@ -36,13 +42,19 @@ impl ErrorCode {
             Self::RequestBodyTooLarge => "request_body_too_large",
             Self::BackendProxyError => "backend_proxy_error",
             Self::BuildResponseFailed => "build_response_failed",
+            Self::QueueShed => "queue_shed",
+            Self::GateRejected => "gate_rejected",
             Self::UpstreamTimeout => "upstream_timeout",
+            Self::UpstreamConnectFailure => "upstream_connect_failure",
+            Self::UpstreamPreheaderTimeout => "upstream_preheader_timeout",
             Self::UpstreamChallengeBlocked => "upstream_challenge_blocked",
             Self::UpstreamRateLimited => "upstream_rate_limited",
             Self::UpstreamNotFound => "upstream_not_found",
             Self::UpstreamNonSuccess => "upstream_non_success",
             Self::NoAvailableAccount => "no_available_account",
             Self::CandidateResolveFailed => "candidate_resolve_failed",
+            Self::ClientCancelled => "client_cancelled",
+            Self::GatewayBridgeError => "gateway_bridge_error",
             Self::ResponseWriteFailed => "response_write_failed",
             Self::StreamInterrupted => "stream_interrupted",
         }
@@ -70,8 +82,20 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized.starts_with("build response failed:") {
         return ErrorCode::BuildResponseFailed;
     }
+    if normalized.contains("queue is saturated") || normalized.contains("workers are unavailable") {
+        return ErrorCode::QueueShed;
+    }
+    if normalized == "request gate rejected" {
+        return ErrorCode::GateRejected;
+    }
     if normalized == "upstream total timeout exceeded" {
         return ErrorCode::UpstreamTimeout;
+    }
+    if normalized == "upstream_connect_failure" {
+        return ErrorCode::UpstreamConnectFailure;
+    }
+    if normalized == "upstream_preheader_timeout" {
+        return ErrorCode::UpstreamPreheaderTimeout;
     }
     if normalized == "上游请求超时" || normalized.contains("连接超时") {
         return ErrorCode::UpstreamTimeout;
@@ -99,8 +123,17 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized == "no available account" {
         return ErrorCode::NoAvailableAccount;
     }
+    if normalized == "candidate exhausted" {
+        return ErrorCode::NoAvailableAccount;
+    }
     if normalized.starts_with("candidate resolve failed:") {
         return ErrorCode::CandidateResolveFailed;
+    }
+    if normalized == "client_cancelled" {
+        return ErrorCode::ClientCancelled;
+    }
+    if normalized == "gateway_bridge_error" {
+        return ErrorCode::GatewayBridgeError;
     }
     if normalized.starts_with("response write failed:") {
         return ErrorCode::ResponseWriteFailed;
@@ -211,6 +244,38 @@ mod tests {
         assert_eq!(
             classify_message("模型不支持（gpt-5.4）"),
             ErrorCode::UpstreamNonSuccess
+        );
+        assert_eq!(
+            classify_message("queue is saturated, try again later"),
+            ErrorCode::QueueShed
+        );
+        assert_eq!(
+            classify_message("workers are unavailable"),
+            ErrorCode::QueueShed
+        );
+        assert_eq!(
+            classify_message("request gate rejected"),
+            ErrorCode::GateRejected
+        );
+        assert_eq!(
+            classify_message("upstream_connect_failure"),
+            ErrorCode::UpstreamConnectFailure
+        );
+        assert_eq!(
+            classify_message("upstream_preheader_timeout"),
+            ErrorCode::UpstreamPreheaderTimeout
+        );
+        assert_eq!(
+            classify_message("candidate exhausted"),
+            ErrorCode::NoAvailableAccount
+        );
+        assert_eq!(
+            classify_message("client_cancelled"),
+            ErrorCode::ClientCancelled
+        );
+        assert_eq!(
+            classify_message("gateway_bridge_error"),
+            ErrorCode::GatewayBridgeError
         );
     }
 }

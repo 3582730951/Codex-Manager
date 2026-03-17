@@ -15,6 +15,7 @@ pub(super) struct LocalValidationResult {
     pub(super) body: Bytes,
     pub(super) is_stream: bool,
     pub(super) has_prompt_cache_key: bool,
+    pub(super) prompt_cache_key: Option<String>,
     pub(super) request_shape: Option<String>,
     pub(super) protocol_type: String,
     pub(super) upstream_base_url: Option<String>,

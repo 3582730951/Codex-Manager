@@ -52,6 +52,18 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         idx + 1 < self.candidate_count
     }
 
+    pub(super) fn trace_id(&self) -> &str {
+        self.trace_id
+    }
+
+    pub(super) fn key_id(&self) -> &str {
+        self.key_id
+    }
+
+    pub(super) fn model_for_log(&self) -> Option<&str> {
+        self.model_for_log
+    }
+
     pub(super) fn should_skip_candidate(
         &self,
         account_id: &str,

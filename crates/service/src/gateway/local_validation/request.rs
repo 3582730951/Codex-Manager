@@ -90,6 +90,7 @@ pub(super) fn build_local_validation_result(
         .or(api_key.reasoning_effort.clone());
     let is_stream = client_request_meta.is_stream;
     let has_prompt_cache_key = client_request_meta.has_prompt_cache_key;
+    let prompt_cache_key = client_request_meta.prompt_cache_key.clone();
     let request_shape = client_request_meta.request_shape;
 
     Ok(LocalValidationResult {
@@ -101,6 +102,7 @@ pub(super) fn build_local_validation_result(
         body: Bytes::from(body),
         is_stream,
         has_prompt_cache_key,
+        prompt_cache_key,
         request_shape,
         protocol_type: api_key.protocol_type,
         upstream_base_url: api_key.upstream_base_url,

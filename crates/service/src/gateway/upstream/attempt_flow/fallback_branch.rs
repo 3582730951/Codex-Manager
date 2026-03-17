@@ -110,30 +110,17 @@ where
             }
         }
         Ok(None) => {
-            super::super::super::mark_account_cooldown(
-                &account.id,
-                super::super::super::CooldownReason::Network,
-            );
-            log_gateway_result(
-                Some(fallback_base),
-                502,
-                Some("upstream fallback unavailable"),
-            );
+            log_gateway_result(Some(fallback_base), 502, Some("upstream_connect_failure"));
             if has_more_candidates {
                 FallbackBranchResult::Failover
             } else {
                 FallbackBranchResult::Terminal {
                     status_code: 502,
-                    message: "upstream blocked by Cloudflare; set CODEXMANAGER_UPSTREAM_COOKIE"
-                        .to_string(),
+                    message: "upstream_connect_failure".to_string(),
                 }
             }
         }
         Err(err) => {
-            super::super::super::mark_account_cooldown(
-                &account.id,
-                super::super::super::CooldownReason::Network,
-            );
             log_gateway_result(Some(fallback_base), 502, Some(err.as_str()));
             if has_more_candidates {
                 FallbackBranchResult::Failover

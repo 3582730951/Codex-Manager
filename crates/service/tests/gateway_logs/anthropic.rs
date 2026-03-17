@@ -182,6 +182,8 @@ fn gateway_claude_failover_cross_workspace_strips_session_affinity_headers() {
     let db_path: PathBuf = dir.join("codexmanager.db");
 
     let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_strategy_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "ordered");
+    let _ordered_window_guard = EnvGuard::set("CODEXMANAGER_ROUTE_ORDERED_PREFIX_WINDOW", "1");
 
     let first_response = serde_json::json!({
         "error": {
@@ -373,6 +375,8 @@ fn gateway_claude_failover_same_workspace_preserves_session_affinity_headers() {
     let db_path: PathBuf = dir.join("codexmanager.db");
 
     let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+    let _route_strategy_guard = EnvGuard::set("CODEXMANAGER_ROUTE_STRATEGY", "ordered");
+    let _ordered_window_guard = EnvGuard::set("CODEXMANAGER_ROUTE_ORDERED_PREFIX_WINDOW", "1");
 
     let first_response = serde_json::json!({
         "error": {

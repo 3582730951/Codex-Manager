@@ -8,7 +8,6 @@ use super::proxy_pipeline::candidate_executor::{
     execute_candidate_sequence, CandidateExecutionResult, CandidateExecutorParams,
 };
 use super::proxy_pipeline::execution_context::GatewayUpstreamExecutionContext;
-use super::proxy_pipeline::request_gate::acquire_request_gate;
 use super::proxy_pipeline::request_setup::prepare_request_setup;
 use super::proxy_pipeline::response_finalize::respond_terminal;
 use super::support::precheck::{prepare_candidates_for_proxy, CandidatePrecheckResult};
@@ -27,6 +26,7 @@ pub(in super::super) fn proxy_validated_request(
         body,
         is_stream,
         has_prompt_cache_key,
+        prompt_cache_key,
         request_shape,
         protocol_type,
         upstream_base_url,
@@ -106,6 +106,7 @@ pub(in super::super) fn proxy_validated_request(
         path.as_str(),
         protocol_type.as_str(),
         has_prompt_cache_key,
+        prompt_cache_key.as_deref(),
         &incoming_headers,
         &body,
         &mut candidates,
@@ -129,17 +130,10 @@ pub(in super::super) fn proxy_validated_request(
         setup.candidate_count,
         setup.account_max_inflight,
     );
-    let allow_openai_fallback = setup.upstream_fallback_base.is_some();
+    let allow_openai_fallback = false;
     let disable_challenge_stateless_retry = !(protocol_type == PROTOCOL_ANTHROPIC_NATIVE
         && body.len() <= 2 * 1024)
         && !path.starts_with("/v1/responses");
-    let _request_gate_guard = acquire_request_gate(
-        trace_id.as_str(),
-        key_id.as_str(),
-        path.as_str(),
-        model_for_log.as_deref(),
-        request_deadline,
-    );
     let request = match execute_candidate_sequence(
         request,
         candidates,
@@ -174,7 +168,7 @@ pub(in super::super) fn proxy_validated_request(
         Some(base),
         503,
         RequestLogUsage::default(),
-        Some("no available account"),
+        Some("candidate exhausted"),
         started_at.elapsed().as_millis(),
         None,
     );

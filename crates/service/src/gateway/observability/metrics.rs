@@ -376,6 +376,13 @@ pub(crate) fn acquire_account_inflight(account_id: &str) -> AccountInFlightGuard
     }
 }
 
+#[cfg(test)]
+pub(crate) fn clear_account_inflight_for_tests() {
+    let lock = ACCOUNT_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = crate::lock_utils::lock_recover(lock, "account_inflight");
+    map.clear();
+}
+
 fn atomic_dec_saturating(value: &AtomicUsize) {
     let mut current = value.load(Ordering::Relaxed);
     loop {

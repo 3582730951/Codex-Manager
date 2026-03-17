@@ -1,5 +1,34 @@
 use super::*;
 
+struct EnvGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+
+    fn clear(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.original {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
 fn candidate_list() -> Vec<(Account, Token)> {
     vec![
         (
@@ -78,123 +107,165 @@ fn account_ids(candidates: &[(Account, Token)]) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn defaults_to_balanced_strategy() {
-    let _guard = route_strategy_test_guard();
-    let previous = std::env::var(ROUTE_STRATEGY_ENV).ok();
-    std::env::remove_var(ROUTE_STRATEGY_ENV);
-    reload_from_env();
-    clear_route_state_for_tests();
-
-    let mut candidates = candidate_list();
-    apply_route_strategy(&mut candidates, "gk_1", Some("gpt-5.3-codex"));
-    assert_eq!(
-        account_ids(&candidates),
-        vec![
-            "acc-a".to_string(),
-            "acc-b".to_string(),
-            "acc-c".to_string()
-        ]
-    );
-
-    let mut second = candidate_list();
-    apply_route_strategy(&mut second, "gk_1", Some("gpt-5.3-codex"));
-    assert_eq!(
-        account_ids(&second),
-        vec![
-            "acc-b".to_string(),
-            "acc-c".to_string(),
-            "acc-a".to_string()
-        ]
-    );
-
-    if let Some(value) = previous {
-        std::env::set_var(ROUTE_STRATEGY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STRATEGY_ENV);
-    }
-    reload_from_env();
+fn selection(flow_key: &'static str) -> RouteSelectionContext<'static> {
+    RouteSelectionContext::new("gk_1", Some("gpt-5.3-codex"), flow_key)
 }
 
 #[test]
-fn balanced_round_robin_rotates_start_by_key_and_model() {
+fn defaults_to_balanced_strategy() {
     let _guard = route_strategy_test_guard();
-    let previous = std::env::var(ROUTE_STRATEGY_ENV).ok();
-    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    let _route_strategy = EnvGuard::clear(ROUTE_STRATEGY_ENV);
+    let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", "inst-route-default");
     reload_from_env();
     clear_route_state_for_tests();
 
     let mut first = candidate_list();
-    apply_route_strategy(&mut first, "gk_1", Some("gpt-5.3-codex"));
-    assert_eq!(
-        account_ids(&first),
-        vec![
-            "acc-a".to_string(),
-            "acc-b".to_string(),
-            "acc-c".to_string()
-        ]
-    );
+    apply_route_strategy(&mut first, selection("flow-stable-1"));
 
     let mut second = candidate_list();
-    apply_route_strategy(&mut second, "gk_1", Some("gpt-5.3-codex"));
-    assert_eq!(
-        account_ids(&second),
-        vec![
-            "acc-b".to_string(),
-            "acc-c".to_string(),
-            "acc-a".to_string()
-        ]
-    );
+    apply_route_strategy(&mut second, selection("flow-stable-1"));
 
-    let mut third = candidate_list();
-    apply_route_strategy(&mut third, "gk_1", Some("gpt-5.3-codex"));
-    assert_eq!(
-        account_ids(&third),
-        vec![
-            "acc-c".to_string(),
-            "acc-a".to_string(),
-            "acc-b".to_string()
-        ]
-    );
-
-    if let Some(value) = previous {
-        std::env::set_var(ROUTE_STRATEGY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STRATEGY_ENV);
-    }
-    reload_from_env();
+    assert_eq!(account_ids(&first), account_ids(&second));
 }
 
 #[test]
-fn balanced_round_robin_isolated_by_key_and_model() {
+fn balanced_strategy_changes_head_when_flow_key_changes() {
     let _guard = route_strategy_test_guard();
-    let previous = std::env::var(ROUTE_STRATEGY_ENV).ok();
-    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
+    let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "balanced");
+    let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", "inst-route-flow");
     reload_from_env();
     clear_route_state_for_tests();
 
-    let mut gpt_first = candidate_list();
-    apply_route_strategy(&mut gpt_first, "gk_1", Some("gpt-5.3-codex"));
-    assert_eq!(account_ids(&gpt_first)[0], "acc-a");
-
-    let mut gpt_second = candidate_list();
-    apply_route_strategy(&mut gpt_second, "gk_1", Some("gpt-5.3-codex"));
-    assert_eq!(account_ids(&gpt_second)[0], "acc-b");
-
-    let mut o3_first = candidate_list();
-    apply_route_strategy(&mut o3_first, "gk_1", Some("o3"));
-    assert_eq!(account_ids(&o3_first)[0], "acc-a");
-
-    let mut other_key_first = candidate_list();
-    apply_route_strategy(&mut other_key_first, "gk_2", Some("gpt-5.3-codex"));
-    assert_eq!(account_ids(&other_key_first)[0], "acc-a");
-
-    if let Some(value) = previous {
-        std::env::set_var(ROUTE_STRATEGY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STRATEGY_ENV);
+    let mut heads = std::collections::BTreeSet::new();
+    for flow_key in ["flow-a", "flow-b", "flow-c", "flow-d"] {
+        let mut candidates = candidate_list();
+        apply_route_strategy(&mut candidates, selection(flow_key));
+        heads.insert(account_ids(&candidates)[0].clone());
     }
+
+    assert!(heads.len() > 1);
+}
+
+#[test]
+fn balanced_prefers_lower_burn_within_rendezvous_window() {
+    let _guard = route_strategy_test_guard();
+    let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "balanced");
+    let _window = EnvGuard::set(ROUTE_RENDEZVOUS_TOP_K_ENV, "3");
+    let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", "inst-route-burn");
     reload_from_env();
+    clear_route_state_for_tests();
+
+    super::super::local_burn::record_request_usage(
+        "acc-a",
+        super::super::request_log::RequestLogUsage {
+            total_tokens: Some(10_000),
+            ..Default::default()
+        },
+    );
+    super::super::local_burn::record_request_usage(
+        "acc-b",
+        super::super::request_log::RequestLogUsage {
+            total_tokens: Some(2_000),
+            ..Default::default()
+        },
+    );
+
+    let mut candidates = candidate_list();
+    apply_route_strategy(&mut candidates, selection("flow-burn"));
+
+    assert_eq!(account_ids(&candidates)[0], "acc-c");
+}
+
+#[test]
+fn balanced_filters_cooldown_and_inflight_before_selection() {
+    let _guard = route_strategy_test_guard();
+    let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "balanced");
+    let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", "inst-route-filter");
+    reload_from_env();
+    clear_route_state_for_tests();
+    super::super::cooldown::mark_account_cooldown(
+        "acc-a",
+        super::super::cooldown::CooldownReason::RateLimited,
+    );
+    let inflight_guard = super::super::metrics::acquire_account_inflight("acc-b");
+
+    let mut candidates = candidate_list();
+    apply_route_strategy(&mut candidates, selection("flow-filter"));
+
+    drop(inflight_guard);
+    super::super::metrics::clear_account_inflight_for_tests();
+    super::super::cooldown::clear_runtime_state();
+
+    assert_eq!(account_ids(&candidates), vec!["acc-c".to_string()]);
+}
+
+#[test]
+fn ordered_only_reorders_within_small_prefix_window() {
+    let _guard = route_strategy_test_guard();
+    let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "ordered");
+    let _window = EnvGuard::set(ROUTE_ORDERED_PREFIX_WINDOW_ENV, "2");
+    let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", "inst-route-ordered");
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    let mut candidates = candidate_list();
+    apply_route_strategy(&mut candidates, selection("flow-ordered"));
+
+    let ids = account_ids(&candidates);
+    assert_ne!(ids[0], "acc-c");
+    assert_eq!(ids[2], "acc-c");
+}
+
+#[test]
+fn instance_id_salt_changes_balanced_head_across_instances() {
+    let _guard = route_strategy_test_guard();
+    let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "balanced");
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    let mut heads = std::collections::BTreeSet::new();
+    for instance_id in ["inst-a", "inst-b", "inst-c", "inst-d"] {
+        let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", instance_id);
+        super::super::instance_id::reload_from_env();
+        let mut candidates = candidate_list();
+        apply_route_strategy(&mut candidates, selection("same-flow"));
+        heads.insert(account_ids(&candidates)[0].clone());
+    }
+
+    assert!(heads.len() > 1);
+}
+
+#[test]
+fn balanced_multi_instance_simulation_spreads_heads_without_single_hotspot() {
+    let _guard = route_strategy_test_guard();
+    let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "balanced");
+    let _window = EnvGuard::set(ROUTE_RENDEZVOUS_TOP_K_ENV, "2");
+    reload_from_env();
+    clear_route_state_for_tests();
+
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for instance_idx in 0..8 {
+        let instance_id = format!("inst-sim-{instance_idx}");
+        let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", instance_id.as_str());
+        super::super::instance_id::reload_from_env();
+        for flow_idx in 0..240 {
+            let flow_key = format!("flow-sim-{flow_idx}");
+            let mut candidates = candidate_list();
+            apply_route_strategy(
+                &mut candidates,
+                RouteSelectionContext::new("gk_1", Some("gpt-5.3-codex"), flow_key.as_str()),
+            );
+            *counts
+                .entry(account_ids(&candidates)[0].clone())
+                .or_default() += 1;
+        }
+    }
+
+    let min = counts.values().copied().min().expect("min head count");
+    let max = counts.values().copied().max().expect("max head count");
+    assert_eq!(counts.len(), 3, "counts={counts:?}");
+    assert!(min >= 400, "counts={counts:?}");
+    assert!(max - min <= 240, "counts={counts:?}");
 }
 
 #[test]
@@ -214,281 +285,21 @@ fn set_route_strategy_accepts_aliases_and_reports_canonical_name() {
 }
 
 #[test]
-fn route_state_ttl_expires_per_key_state() {
-    let _guard = route_strategy_test_guard();
-    let prev_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
-    let prev_ttl = std::env::var(ROUTE_STATE_TTL_SECS_ENV).ok();
-    let prev_cap = std::env::var(ROUTE_STATE_CAPACITY_ENV).ok();
-
-    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
-    std::env::set_var(ROUTE_STATE_TTL_SECS_ENV, "1");
-    std::env::set_var(ROUTE_STATE_CAPACITY_ENV, "100");
-    reload_from_env();
-    clear_route_state_for_tests();
-
-    let key = key_model_key("gk_ttl", Some("m1"));
-    let lock = ROUTE_STATE.get_or_init(|| Mutex::new(RouteRoundRobinState::default()));
-    let now = Instant::now();
-    {
-        let mut state = lock.lock().expect("route state");
-        state.next_start_by_key_model.insert(
-            key.clone(),
-            RouteStateEntry::new(2, now - Duration::from_secs(5)),
-        );
-        state.p2c_nonce_by_key_model.insert(
-            key.clone(),
-            RouteStateEntry::new(9, now - Duration::from_secs(5)),
-        );
-    }
-
-    // 中文注释：过期后应视为“无状态”，从 0 开始轮询。
-    assert_eq!(next_start_index("gk_ttl", Some("m1"), 3), 0);
-
-    // 中文注释：nonce 过期后应重置；第一次调用后 value=1（从 0 自增）。
-    let _ = p2c_challenger_index("gk_ttl", Some("m1"), 3);
-    {
-        let state = lock.lock().expect("route state");
-        let entry = state
-            .p2c_nonce_by_key_model
-            .get(key.as_str())
-            .expect("nonce entry");
-        assert_eq!(entry.value, 1);
-    }
-
-    if let Some(value) = prev_strategy {
-        std::env::set_var(ROUTE_STRATEGY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STRATEGY_ENV);
-    }
-    if let Some(value) = prev_ttl {
-        std::env::set_var(ROUTE_STATE_TTL_SECS_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STATE_TTL_SECS_ENV);
-    }
-    if let Some(value) = prev_cap {
-        std::env::set_var(ROUTE_STATE_CAPACITY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STATE_CAPACITY_ENV);
-    }
-    reload_from_env();
-}
-
-#[test]
-fn route_state_capacity_evicts_lru_and_keeps_maps_in_sync() {
-    let _guard = route_strategy_test_guard();
-    let prev_ttl = std::env::var(ROUTE_STATE_TTL_SECS_ENV).ok();
-    let prev_cap = std::env::var(ROUTE_STATE_CAPACITY_ENV).ok();
-
-    // 中文注释：禁用 TTL，单测只验证容量淘汰逻辑。
-    std::env::set_var(ROUTE_STATE_TTL_SECS_ENV, "0");
-    std::env::set_var(ROUTE_STATE_CAPACITY_ENV, "2");
-    reload_from_env();
-    clear_route_state_for_tests();
-
-    let k1 = key_model_key("k1", None);
-    let k2 = key_model_key("k2", None);
-    let k3 = key_model_key("k3", None);
-
-    let _ = next_start_index("k1", None, 3);
-    let _ = next_start_index("k2", None, 3);
-
-    // 中文注释：预填充另一张 map，用于验证“同 key 联动清理”。
-    let lock = ROUTE_STATE.get_or_init(|| Mutex::new(RouteRoundRobinState::default()));
-    {
-        let mut state = lock.lock().expect("route state");
-        let now = Instant::now();
-        state
-            .p2c_nonce_by_key_model
-            .insert(k1.clone(), RouteStateEntry::new(0, now));
-        state
-            .p2c_nonce_by_key_model
-            .insert(k2.clone(), RouteStateEntry::new(0, now));
-    }
-
-    let _ = next_start_index("k3", None, 3);
-
-    {
-        let state = lock.lock().expect("route state");
-        assert_eq!(state.next_start_by_key_model.len(), 2);
-        assert!(!state.next_start_by_key_model.contains_key(k1.as_str()));
-        assert!(state.next_start_by_key_model.contains_key(k2.as_str()));
-        assert!(state.next_start_by_key_model.contains_key(k3.as_str()));
-
-        assert!(!state.p2c_nonce_by_key_model.contains_key(k1.as_str()));
-    }
-
-    if let Some(value) = prev_ttl {
-        std::env::set_var(ROUTE_STATE_TTL_SECS_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STATE_TTL_SECS_ENV);
-    }
-    if let Some(value) = prev_cap {
-        std::env::set_var(ROUTE_STATE_CAPACITY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STATE_CAPACITY_ENV);
-    }
-    reload_from_env();
-}
-
-#[test]
-fn health_p2c_promotes_healthier_candidate_in_ordered_mode() {
-    let _guard = route_strategy_test_guard();
-    super::super::route_quality::clear_route_quality_for_tests();
-    std::env::set_var(ROUTE_HEALTH_P2C_ENABLED_ENV, "1");
-    // 中文注释：窗口=2 时挑战者固定为 index=1，确保测试稳定可复现。
-    std::env::set_var(ROUTE_HEALTH_P2C_ORDERED_WINDOW_ENV, "2");
-    std::env::set_var(ROUTE_STRATEGY_ENV, "ordered");
-    reload_from_env();
-    clear_route_state_for_tests();
-
-    for _ in 0..4 {
-        super::super::route_quality::record_route_quality("acc-a", 429);
-        super::super::route_quality::record_route_quality("acc-b", 200);
-    }
-
-    let mut candidates = candidate_list();
-    apply_route_strategy(&mut candidates, "gk-health-1", Some("gpt-5.3-codex"));
-    assert_eq!(account_ids(&candidates)[0], "acc-b");
-
-    std::env::remove_var(ROUTE_HEALTH_P2C_ENABLED_ENV);
-    std::env::remove_var(ROUTE_HEALTH_P2C_ORDERED_WINDOW_ENV);
-    std::env::remove_var(ROUTE_STRATEGY_ENV);
-    reload_from_env();
-}
-
-#[test]
-fn balanced_mode_keeps_strict_round_robin_by_default() {
-    let _guard = route_strategy_test_guard();
-    let prev_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
-    let prev_p2c = std::env::var(ROUTE_HEALTH_P2C_ENABLED_ENV).ok();
-    let prev_balanced_window = std::env::var(ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV).ok();
-
-    std::env::set_var(ROUTE_HEALTH_P2C_ENABLED_ENV, "1");
-    std::env::remove_var(ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV);
-    std::env::remove_var(ROUTE_STRATEGY_ENV);
-    reload_from_env();
-    clear_route_state_for_tests();
-
-    for _ in 0..4 {
-        super::super::route_quality::record_route_quality("acc-a", 429);
-        super::super::route_quality::record_route_quality("acc-b", 200);
-    }
-
-    let mut first = candidate_list();
-    apply_route_strategy(&mut first, "gk-strict-default", Some("gpt-5.3-codex"));
-    assert_eq!(account_ids(&first)[0], "acc-a");
-
-    let mut second = candidate_list();
-    apply_route_strategy(&mut second, "gk-strict-default", Some("gpt-5.3-codex"));
-    assert_eq!(account_ids(&second)[0], "acc-b");
-
-    if let Some(value) = prev_strategy {
-        std::env::set_var(ROUTE_STRATEGY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STRATEGY_ENV);
-    }
-    if let Some(value) = prev_p2c {
-        std::env::set_var(ROUTE_HEALTH_P2C_ENABLED_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_HEALTH_P2C_ENABLED_ENV);
-    }
-    if let Some(value) = prev_balanced_window {
-        std::env::set_var(ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_HEALTH_P2C_BALANCED_WINDOW_ENV);
-    }
-    reload_from_env();
-}
-
-#[test]
-fn balanced_mode_prefers_less_loaded_candidate_when_head_is_busy() {
-    let _guard = route_strategy_test_guard();
-    let prev_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
-    let prev_load_enabled = std::env::var(ROUTE_LOAD_AWARE_ENABLED_ENV).ok();
-    let prev_load_window = std::env::var(ROUTE_LOAD_BALANCED_WINDOW_ENV).ok();
-
-    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
-    std::env::set_var(ROUTE_LOAD_AWARE_ENABLED_ENV, "1");
-    std::env::set_var(ROUTE_LOAD_BALANCED_WINDOW_ENV, "2");
-    reload_from_env();
-    clear_route_state_for_tests();
-
-    let _g1 = crate::gateway::acquire_account_inflight("acc-a");
-    let _g2 = crate::gateway::acquire_account_inflight("acc-a");
-
-    let mut candidates = candidate_list();
-    apply_route_strategy(&mut candidates, "gk-load-aware", Some("gpt-5.3-codex"));
-    assert_eq!(account_ids(&candidates)[0], "acc-b");
-
-    if let Some(value) = prev_strategy {
-        std::env::set_var(ROUTE_STRATEGY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STRATEGY_ENV);
-    }
-    if let Some(value) = prev_load_enabled {
-        std::env::set_var(ROUTE_LOAD_AWARE_ENABLED_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_LOAD_AWARE_ENABLED_ENV);
-    }
-    if let Some(value) = prev_load_window {
-        std::env::set_var(ROUTE_LOAD_BALANCED_WINDOW_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_LOAD_BALANCED_WINDOW_ENV);
-    }
-    reload_from_env();
-}
-
-#[test]
-fn balanced_mode_prefers_lower_quota_pressure_candidate() {
-    let _guard = route_strategy_test_guard();
-    let prev_strategy = std::env::var(ROUTE_STRATEGY_ENV).ok();
-    let prev_load_enabled = std::env::var(ROUTE_LOAD_AWARE_ENABLED_ENV).ok();
-    let prev_load_window = std::env::var(ROUTE_LOAD_BALANCED_WINDOW_ENV).ok();
-
-    std::env::set_var(ROUTE_STRATEGY_ENV, "balanced");
-    std::env::set_var(ROUTE_LOAD_AWARE_ENABLED_ENV, "1");
-    std::env::set_var(ROUTE_LOAD_BALANCED_WINDOW_ENV, "2");
-    reload_from_env();
-    clear_route_state_for_tests();
-    super::super::selection::set_candidate_usage_pressure_for_tests(&[
-        ("acc-a", 45),
-        ("acc-b", 0),
-    ]);
-
-    let mut candidates = candidate_list();
-    apply_route_strategy(&mut candidates, "gk-usage-aware", Some("gpt-5.3-codex"));
-    assert_eq!(account_ids(&candidates)[0], "acc-b");
-
-    if let Some(value) = prev_strategy {
-        std::env::set_var(ROUTE_STRATEGY_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_STRATEGY_ENV);
-    }
-    if let Some(value) = prev_load_enabled {
-        std::env::set_var(ROUTE_LOAD_AWARE_ENABLED_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_LOAD_AWARE_ENABLED_ENV);
-    }
-    if let Some(value) = prev_load_window {
-        std::env::set_var(ROUTE_LOAD_BALANCED_WINDOW_ENV, value);
-    } else {
-        std::env::remove_var(ROUTE_LOAD_BALANCED_WINDOW_ENV);
-    }
-    reload_from_env();
-}
-
-#[test]
 fn manual_preferred_account_is_preserved_when_current_candidates_do_not_include_it() {
     let _guard = route_strategy_test_guard();
     clear_route_state_for_tests();
+
+    let mut expected = candidate_list();
+    apply_route_strategy(&mut expected, selection("flow-manual"));
+
     set_manual_preferred_account("acc-missing").expect("set manual preferred");
 
     let mut candidates = candidate_list();
-    apply_route_strategy(&mut candidates, "gk-manual-missing", Some("gpt-5.3-codex"));
+    apply_route_strategy(&mut candidates, selection("flow-manual"));
 
     assert_eq!(
         get_manual_preferred_account().as_deref(),
         Some("acc-missing")
     );
-    assert_eq!(account_ids(&candidates)[0], "acc-a");
+    assert_eq!(account_ids(&candidates), account_ids(&expected));
 }

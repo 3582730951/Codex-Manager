@@ -8,8 +8,8 @@ enum StreamBridgeFailure {
     ExplicitUpstreamError,
     Timeout,
     Disconnected,
-    Incomplete,
-    ReadError,
+    IncompleteUnknown,
+    GatewayBridgeError,
 }
 
 impl StreamBridgeFailure {
@@ -18,13 +18,27 @@ impl StreamBridgeFailure {
             Self::Timeout => 504,
             Self::ExplicitUpstreamError
             | Self::Disconnected
-            | Self::Incomplete
-            | Self::ReadError => 502,
+            | Self::IncompleteUnknown
+            | Self::GatewayBridgeError => 502,
+        }
+    }
+
+    fn error_label(self) -> &'static str {
+        match self {
+            Self::ExplicitUpstreamError => "upstream_http_error",
+            Self::Timeout => "upstream_preheader_timeout",
+            Self::Disconnected => "upstream_disconnect_before_terminal",
+            Self::IncompleteUnknown => "stream_incomplete_unknown",
+            Self::GatewayBridgeError => "gateway_bridge_error",
         }
     }
 
     fn should_mark_network_failure(self) -> bool {
-        matches!(self, Self::Disconnected | Self::ReadError)
+        matches!(self, Self::Timeout)
+    }
+
+    fn should_mark_local_incomplete_strike(self) -> bool {
+        matches!(self, Self::IncompleteUnknown)
     }
 }
 
@@ -59,7 +73,7 @@ fn classify_stream_bridge_failure(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return (!stream_terminal_seen).then_some(StreamBridgeFailure::Incomplete);
+        return (!stream_terminal_seen).then_some(StreamBridgeFailure::IncompleteUnknown);
     };
     if stream_terminal_seen {
         return Some(StreamBridgeFailure::ExplicitUpstreamError);
@@ -81,9 +95,9 @@ fn classify_stream_bridge_failure(
         return Some(StreamBridgeFailure::Disconnected);
     }
     if normalized.contains("中途中断") || normalized.contains("未正常结束") {
-        return Some(StreamBridgeFailure::Incomplete);
+        return Some(StreamBridgeFailure::IncompleteUnknown);
     }
-    Some(StreamBridgeFailure::ReadError)
+    Some(StreamBridgeFailure::GatewayBridgeError)
 }
 
 pub(super) fn respond_total_timeout(
@@ -198,18 +212,25 @@ pub(super) fn finalize_upstream_response(
     } else {
         None
     };
-    if final_error.is_none() && !bridge_ok {
-        final_error = Some(
-            bridge
-                .error_message(client_is_stream)
-                .unwrap_or_else(|| "upstream response incomplete".to_string()),
-        );
-    }
-
     let client_delivery_failed = bridge
         .delivery_error
         .as_deref()
         .is_some_and(is_client_disconnect_error);
+    if final_error.is_none() {
+        if client_delivery_failed {
+            final_error = Some("client_cancelled".to_string());
+        } else if let Some(stream_failure) = stream_failure {
+            final_error = Some(stream_failure.error_label().to_string());
+        } else if bridge.delivery_error.is_some() {
+            final_error = Some("gateway_bridge_error".to_string());
+        } else if !bridge_ok {
+            final_error = Some(
+                bridge
+                    .error_message(client_is_stream)
+                    .unwrap_or_else(|| "gateway_bridge_error".to_string()),
+            );
+        }
+    }
     let status_for_log = if status_code >= 400 {
         status_code
     } else if client_delivery_failed {
@@ -229,20 +250,31 @@ pub(super) fn finalize_upstream_response(
         );
         super::super::super::record_route_quality(account_id, 502);
     }
+    if stream_failure.is_some_and(StreamBridgeFailure::should_mark_local_incomplete_strike)
+        && super::super::super::local_burn::record_stream_incomplete_unknown(account_id)
+    {
+        super::super::super::mark_account_cooldown(
+            account_id,
+            super::super::super::CooldownReason::Network,
+        );
+        super::super::super::record_route_quality(account_id, 502);
+    }
 
     let usage = bridge.usage;
+    let usage_for_log = RequestLogUsage {
+        input_tokens: usage.input_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        reasoning_output_tokens: usage.reasoning_output_tokens,
+    };
+    super::super::super::local_burn::record_request_usage(account_id, usage_for_log);
     context.log_final_result_with_model(
         Some(account_id),
         last_attempt_url,
         model_for_log,
         status_for_log,
-        RequestLogUsage {
-            input_tokens: usage.input_tokens,
-            cached_input_tokens: usage.cached_input_tokens,
-            output_tokens: usage.output_tokens,
-            total_tokens: usage.total_tokens,
-            reasoning_output_tokens: usage.reasoning_output_tokens,
-        },
+        usage_for_log,
         final_error.as_deref(),
         started_at.elapsed().as_millis(),
         attempted_account_ids,
@@ -279,20 +311,20 @@ mod tests {
         );
         assert_eq!(
             classify_stream_bridge_failure(false, Some("上游流中途中断（未正常结束）")),
-            Some(StreamBridgeFailure::Incomplete)
+            Some(StreamBridgeFailure::IncompleteUnknown)
         );
         assert_eq!(
             classify_stream_bridge_failure(false, None),
-            Some(StreamBridgeFailure::Incomplete)
+            Some(StreamBridgeFailure::IncompleteUnknown)
         );
     }
 
     #[test]
     fn only_disconnect_like_failures_trigger_network_penalty() {
-        assert!(StreamBridgeFailure::Disconnected.should_mark_network_failure());
-        assert!(StreamBridgeFailure::ReadError.should_mark_network_failure());
-        assert!(!StreamBridgeFailure::Timeout.should_mark_network_failure());
+        assert!(!StreamBridgeFailure::Disconnected.should_mark_network_failure());
+        assert!(!StreamBridgeFailure::GatewayBridgeError.should_mark_network_failure());
+        assert!(StreamBridgeFailure::Timeout.should_mark_network_failure());
         assert!(!StreamBridgeFailure::ExplicitUpstreamError.should_mark_network_failure());
-        assert!(!StreamBridgeFailure::Incomplete.should_mark_network_failure());
+        assert!(!StreamBridgeFailure::IncompleteUnknown.should_mark_network_failure());
     }
 }

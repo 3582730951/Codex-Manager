@@ -9,6 +9,10 @@ mod failover;
 mod http_bridge;
 #[path = "request/incoming_headers.rs"]
 mod incoming_headers;
+#[path = "routing/instance_id.rs"]
+mod instance_id;
+#[path = "routing/local_burn.rs"]
+mod local_burn;
 #[path = "request/local_count_tokens.rs"]
 mod local_count_tokens;
 #[path = "request/local_models.rs"]
@@ -101,7 +105,6 @@ use cooldown::{
 };
 #[cfg(test)]
 pub(super) use failover::should_failover_after_refresh;
-use failover::should_failover_from_cached_snapshot;
 use http_bridge::respond_with_upstream;
 pub(super) use incoming_headers::IncomingHeaderSnapshot;
 use local_count_tokens::maybe_respond_local_count_tokens;
@@ -112,6 +115,7 @@ pub(crate) use request_entry::handle_gateway_request;
 use request_gate::{request_gate_lock, RequestGateAcquireError};
 use request_log::write_request_log;
 use route_hint::apply_route_strategy;
+pub(crate) use route_hint::RouteSelectionContext;
 use route_quality::record_route_quality;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
 use runtime_config::{
@@ -128,6 +132,8 @@ use upstream::proxy::proxy_validated_request;
 
 pub(crate) fn reload_runtime_config_from_env() {
     runtime_config::reload_from_env();
+    instance_id::reload_from_env();
+    local_burn::reload_from_env();
     selection::reload_from_env();
     request_gate::clear_runtime_state();
     cooldown::clear_runtime_state();
@@ -153,8 +159,36 @@ pub(crate) fn current_free_account_max_model() -> String {
     runtime_config::current_free_account_max_model()
 }
 
+pub(crate) fn request_compression_enabled() -> bool {
+    runtime_config::request_compression_enabled()
+}
+
+pub(crate) fn current_originator() -> String {
+    runtime_config::current_originator()
+}
+
+pub(crate) fn set_originator(originator: &str) -> Result<String, String> {
+    runtime_config::set_originator(originator)
+}
+
+pub(crate) fn current_residency_requirement() -> Option<String> {
+    runtime_config::current_residency_requirement()
+}
+
+pub(crate) fn set_residency_requirement(value: Option<&str>) -> Result<Option<String>, String> {
+    runtime_config::set_residency_requirement(value)
+}
+
+pub(crate) fn current_codex_user_agent() -> String {
+    runtime_config::current_codex_user_agent()
+}
+
 pub(crate) fn set_free_account_max_model(model: &str) -> Result<String, String> {
     runtime_config::set_free_account_max_model(model)
+}
+
+pub(crate) fn set_request_compression_enabled(enabled: bool) -> bool {
+    runtime_config::set_request_compression_enabled(enabled)
 }
 
 pub(crate) fn cpa_no_cookie_header_mode_enabled() -> bool {

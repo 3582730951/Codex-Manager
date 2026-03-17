@@ -20,6 +20,10 @@ static UPSTREAM_CONNECT_TIMEOUT_SECS: AtomicU64 =
 static UPSTREAM_TOTAL_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS);
 static UPSTREAM_STREAM_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS);
 static ACCOUNT_MAX_INFLIGHT: AtomicUsize = AtomicUsize::new(DEFAULT_ACCOUNT_MAX_INFLIGHT);
+static UPSTREAM_POOL_MAX_IDLE_PER_HOST: AtomicUsize =
+    AtomicUsize::new(DEFAULT_UPSTREAM_POOL_MAX_IDLE_PER_HOST);
+static UPSTREAM_POOL_IDLE_TIMEOUT_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_UPSTREAM_POOL_IDLE_TIMEOUT_SECS);
 static CPA_NO_COOKIE_HEADER_MODE: AtomicBool = AtomicBool::new(DEFAULT_CPA_NO_COOKIE_HEADER_MODE);
 static STRICT_REQUEST_PARAM_ALLOWLIST: AtomicBool =
     AtomicBool::new(DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST);
@@ -41,6 +45,8 @@ const DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 7_200_000;
 // 中文注释：默认把单账号并发收紧到 1，避免多个长连接 Codex 会话同时压到同一账号上。
 const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 1;
+const DEFAULT_UPSTREAM_POOL_MAX_IDLE_PER_HOST: usize = 8;
+const DEFAULT_UPSTREAM_POOL_IDLE_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_CPA_NO_COOKIE_HEADER_MODE: bool = false;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = true;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
@@ -57,6 +63,8 @@ const ENV_UPSTREAM_CONNECT_TIMEOUT_SECS: &str = "CODEXMANAGER_UPSTREAM_CONNECT_T
 const ENV_UPSTREAM_TOTAL_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS";
 const ENV_UPSTREAM_STREAM_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS";
 const ENV_ACCOUNT_MAX_INFLIGHT: &str = "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT";
+const ENV_UPSTREAM_POOL_MAX_IDLE_PER_HOST: &str = "CODEXMANAGER_UPSTREAM_POOL_MAX_IDLE_PER_HOST";
+const ENV_UPSTREAM_POOL_IDLE_TIMEOUT_SECS: &str = "CODEXMANAGER_UPSTREAM_POOL_IDLE_TIMEOUT_SECS";
 const ENV_CPA_NO_COOKIE_HEADER_MODE: &str = "CODEXMANAGER_CPA_NO_COOKIE_HEADER_MODE";
 const ENV_STRICT_REQUEST_PARAM_ALLOWLIST: &str = "CODEXMANAGER_STRICT_REQUEST_PARAM_ALLOWLIST";
 const ENV_ENABLE_REQUEST_COMPRESSION: &str = "CODEXMANAGER_ENABLE_REQUEST_COMPRESSION";
@@ -130,8 +138,16 @@ fn build_upstream_client_with_proxy(proxy_url: Option<&str>) -> Client {
         .timeout(None::<Duration>)
         // 中文注释：连接阶段设置超时，避免网络异常时线程长期卡死占满并发槽位。
         .connect_timeout(upstream_connect_timeout_cached())
-        .pool_max_idle_per_host(32)
-        .pool_idle_timeout(Some(Duration::from_secs(90)))
+        .pool_max_idle_per_host(
+            UPSTREAM_POOL_MAX_IDLE_PER_HOST
+                .load(Ordering::Relaxed)
+                .max(1),
+        )
+        .pool_idle_timeout(Some(Duration::from_secs(
+            UPSTREAM_POOL_IDLE_TIMEOUT_SECS
+                .load(Ordering::Relaxed)
+                .max(1),
+        )))
         .tcp_keepalive(Some(Duration::from_secs(30)));
     if let Some(proxy_url) = proxy_url {
         let proxy = match Proxy::all(proxy_url) {
@@ -379,6 +395,22 @@ pub(super) fn reload_from_env() {
     );
     ACCOUNT_MAX_INFLIGHT.store(
         env_usize_or(ENV_ACCOUNT_MAX_INFLIGHT, DEFAULT_ACCOUNT_MAX_INFLIGHT),
+        Ordering::Relaxed,
+    );
+    UPSTREAM_POOL_MAX_IDLE_PER_HOST.store(
+        env_usize_or(
+            ENV_UPSTREAM_POOL_MAX_IDLE_PER_HOST,
+            DEFAULT_UPSTREAM_POOL_MAX_IDLE_PER_HOST,
+        )
+        .max(1),
+        Ordering::Relaxed,
+    );
+    UPSTREAM_POOL_IDLE_TIMEOUT_SECS.store(
+        env_u64_or(
+            ENV_UPSTREAM_POOL_IDLE_TIMEOUT_SECS,
+            DEFAULT_UPSTREAM_POOL_IDLE_TIMEOUT_SECS,
+        )
+        .max(1),
         Ordering::Relaxed,
     );
     CPA_NO_COOKIE_HEADER_MODE.store(

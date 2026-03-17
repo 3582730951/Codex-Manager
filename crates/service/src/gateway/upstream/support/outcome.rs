@@ -18,15 +18,14 @@ pub(in super::super) fn decide_upstream_outcome<F>(
 where
     F: FnMut(Option<&str>, u16, Option<&str>),
 {
-    if matches!(status.as_u16(), 429 | 500..=599) {
-        // 中文注释：即使当前响应会回给客户端，也要先标记冷却，
-        // 否则并发流量会继续命中同一故障账号造成雪崩。
-        super::super::super::mark_account_cooldown_for_status(account_id, status.as_u16());
+    if status.is_success() {
+        super::super::super::clear_account_cooldown(account_id);
+        log_gateway_result(Some(url), status.as_u16(), None);
+        return UpstreamOutcomeDecision::RespondUpstream;
     }
     if status.as_u16() == 404 && has_more_candidates {
         // 中文注释：模型/路径 404 在多账号场景下通常是“该账号不可用”，
         // 优先切换候选账号，最后一个候选再透传原始 404 给客户端。
-        super::super::super::mark_account_cooldown_for_status(account_id, status.as_u16());
         log_gateway_result(
             Some(url),
             status.as_u16(),
@@ -35,6 +34,10 @@ where
         return UpstreamOutcomeDecision::Failover;
     }
     if status.as_u16() == 429 {
+        super::super::super::mark_account_cooldown(
+            account_id,
+            super::super::super::CooldownReason::RateLimited,
+        );
         log_gateway_result(Some(url), status.as_u16(), Some("upstream rate-limited"));
         if has_more_candidates {
             return UpstreamOutcomeDecision::Failover;
@@ -59,23 +62,20 @@ where
         }
         return UpstreamOutcomeDecision::RespondUpstream;
     }
-    if status.is_success() {
-        super::super::super::clear_account_cooldown(account_id);
-        log_gateway_result(Some(url), status.as_u16(), None);
+
+    if status.is_server_error() {
+        super::super::super::mark_account_cooldown(
+            account_id,
+            super::super::super::CooldownReason::Upstream5xx,
+        );
+        log_gateway_result(Some(url), status.as_u16(), Some("upstream_http_error"));
+        if has_more_candidates {
+            return UpstreamOutcomeDecision::Failover;
+        }
         return UpstreamOutcomeDecision::RespondUpstream;
     }
-
-    let _ = crate::usage_refresh::enqueue_usage_refresh_for_account(account_id);
-    let should_failover =
-        super::super::super::should_failover_from_cached_snapshot(storage, account_id);
-    if should_failover {
-        super::super::super::mark_account_cooldown_for_status(account_id, status.as_u16());
-    }
-    log_gateway_result(Some(url), status.as_u16(), Some("upstream non-success"));
-    if should_failover && has_more_candidates {
-        return UpstreamOutcomeDecision::Failover;
-    }
-
+    let _ = storage;
+    log_gateway_result(Some(url), status.as_u16(), Some("upstream_http_error"));
     UpstreamOutcomeDecision::RespondUpstream
 }
 

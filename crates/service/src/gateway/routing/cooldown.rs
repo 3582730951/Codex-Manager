@@ -98,13 +98,11 @@ fn decay_offense_count_for_success(
     }
 }
 
-pub(super) fn cooldown_reason_for_status(status: u16) -> CooldownReason {
+pub(super) fn cooldown_reason_for_status(status: u16) -> Option<CooldownReason> {
     match status {
-        429 => CooldownReason::RateLimited,
-        500..=599 => CooldownReason::Upstream5xx,
-        401 | 403 => CooldownReason::Challenge,
-        400..=499 => CooldownReason::Upstream4xx,
-        _ => CooldownReason::Default,
+        429 => Some(CooldownReason::RateLimited),
+        500..=599 => Some(CooldownReason::Upstream5xx),
+        _ => None,
     }
 }
 
@@ -151,7 +149,9 @@ pub(super) fn mark_account_cooldown(account_id: &str, reason: CooldownReason) {
 }
 
 pub(super) fn mark_account_cooldown_for_status(account_id: &str, status: u16) {
-    mark_account_cooldown(account_id, cooldown_reason_for_status(status));
+    if let Some(reason) = cooldown_reason_for_status(status) {
+        mark_account_cooldown(account_id, reason);
+    }
 }
 
 pub(super) fn clear_account_cooldown(account_id: &str) {

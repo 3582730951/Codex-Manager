@@ -37,11 +37,17 @@ fn apply_request_overrides_maps_extra_high_to_xhigh() {
 
 #[test]
 fn cooldown_reason_maps_status() {
-    assert_eq!(cooldown_reason_for_status(429), CooldownReason::RateLimited);
-    assert_eq!(cooldown_reason_for_status(503), CooldownReason::Upstream5xx);
-    assert_eq!(cooldown_reason_for_status(403), CooldownReason::Challenge);
-    assert_eq!(cooldown_reason_for_status(400), CooldownReason::Upstream4xx);
-    assert_eq!(cooldown_reason_for_status(200), CooldownReason::Default);
+    assert_eq!(
+        cooldown_reason_for_status(429),
+        Some(CooldownReason::RateLimited)
+    );
+    assert_eq!(
+        cooldown_reason_for_status(503),
+        Some(CooldownReason::Upstream5xx)
+    );
+    assert_eq!(cooldown_reason_for_status(403), None);
+    assert_eq!(cooldown_reason_for_status(400), None);
+    assert_eq!(cooldown_reason_for_status(200), None);
 }
 
 #[test]

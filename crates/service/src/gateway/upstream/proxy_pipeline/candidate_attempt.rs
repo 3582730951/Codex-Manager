@@ -60,7 +60,27 @@ pub(super) fn run_candidate_attempt(
         trace,
     } = params;
 
-    process_candidate_upstream_flow(
+    let gate_guard = super::request_gate::acquire_request_gate(
+        context.trace_id(),
+        context.key_id(),
+        path,
+        context.model_for_log(),
+        request_deadline,
+    );
+    if gate_guard.is_none() {
+        if super::super::support::deadline::is_expired(request_deadline) {
+            return CandidateUpstreamDecision::Terminal {
+                status_code: 504,
+                message: "upstream total timeout exceeded".to_string(),
+            };
+        }
+        return CandidateUpstreamDecision::Terminal {
+            status_code: 503,
+            message: "request gate rejected".to_string(),
+        };
+    }
+
+    let decision = process_candidate_upstream_flow(
         storage,
         method,
         request,
@@ -87,5 +107,7 @@ pub(super) fn run_candidate_attempt(
             super::super::super::record_route_quality(&account.id, status_code);
             context.log_attempt_result(&account.id, upstream_url, status_code, error);
         },
-    )
+    );
+    drop(gate_guard);
+    decision
 }
