@@ -3,12 +3,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { accountClient } from "@/lib/api/account-client";
+import { getAppErrorMessage } from "@/lib/api/transport";
 
 type ApiKeyPayload = Parameters<typeof accountClient.createApiKey>[0];
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error || "");
-}
 
 export function useApiKeys() {
   const queryClient = useQueryClient();
@@ -41,7 +38,7 @@ export function useApiKeys() {
       toast.success("密钥已创建");
     },
     onError: (error: unknown) => {
-      toast.error(`创建失败: ${getErrorMessage(error)}`);
+      toast.error(`创建失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -52,7 +49,7 @@ export function useApiKeys() {
       toast.success("密钥已删除");
     },
     onError: (error: unknown) => {
-      toast.error(`删除失败: ${getErrorMessage(error)}`);
+      toast.error(`删除失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -64,7 +61,7 @@ export function useApiKeys() {
       toast.success("密钥配置已更新");
     },
     onError: (error: unknown) => {
-      toast.error(`更新失败: ${getErrorMessage(error)}`);
+      toast.error(`更新失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -76,7 +73,7 @@ export function useApiKeys() {
       toast.success("状态已更新");
     },
     onError: (error: unknown) => {
-      toast.error(`更新状态失败: ${getErrorMessage(error)}`);
+      toast.error(`更新状态失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -88,14 +85,14 @@ export function useApiKeys() {
       toast.success("模型列表已刷新");
     },
     onError: (error: unknown) => {
-      toast.error(`刷新模型失败: ${getErrorMessage(error)}`);
+      toast.error(`刷新模型失败: ${getAppErrorMessage(error)}`);
     },
   });
 
   const readSecretMutation = useMutation({
     mutationFn: (id: string) => accountClient.readApiKeySecret(id),
     onError: (error: unknown) => {
-      toast.error(`读取密钥失败: ${getErrorMessage(error)}`);
+      toast.error(`读取密钥失败: ${getAppErrorMessage(error)}`);
     },
   });
 

@@ -123,7 +123,10 @@ fn summarize_fallback_non_success(
         })
         .unwrap_or_else(|| "unknown error".to_string());
 
-    let mut details = vec![format!("kind={kind}"), format!("primary_status={primary_status}")];
+    let mut details = vec![
+        format!("kind={kind}"),
+        format!("primary_status={primary_status}"),
+    ];
     if let Some(request_id) = request_id {
         details.push(format!("request_id={request_id}"));
     }
@@ -163,7 +166,10 @@ fn summarize_fallback_non_success_headers_only(
         identity_error_code.as_deref(),
     );
 
-    let mut details = vec![format!("kind={kind}"), format!("primary_status={primary_status}")];
+    let mut details = vec![
+        format!("kind={kind}"),
+        format!("primary_status={primary_status}"),
+    ];
     if let Some(request_id) = request_id {
         details.push(format!("request_id={request_id}"));
     }

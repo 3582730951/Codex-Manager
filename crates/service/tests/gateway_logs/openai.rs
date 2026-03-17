@@ -1649,7 +1649,7 @@ fn gateway_chatgpt_primary_drops_turn_state_without_thread_anchor() {
 }
 
 #[test]
-fn gateway_chatgpt_primary_uses_prompt_cache_anchor_for_session_and_client_request_id() {
+fn gateway_chatgpt_primary_uses_prompt_cache_anchor_for_session_without_inventing_request_id() {
     let _lock = lock_env();
     let dir = new_test_dir("codexmanager-gateway-chatgpt-primary-prompt-cache-anchor");
     let db_path: PathBuf = dir.join("codexmanager.db");
@@ -1732,7 +1732,6 @@ fn gateway_chatgpt_primary_uses_prompt_cache_anchor_for_session_and_client_reque
             ("Authorization", &format!("Bearer {platform_key}")),
             ("Conversation_id", "conv_anchor_primary"),
             ("Session_id", "legacy_session_should_not_win"),
-            ("x-client-request-id", "legacy_request_id_should_not_win"),
             ("x-codex-turn-state", "legacy_turn_state_should_not_win"),
         ],
     );
@@ -1748,13 +1747,7 @@ fn gateway_chatgpt_primary_uses_prompt_cache_anchor_for_session_and_client_reque
         captured.headers.get("session_id").map(String::as_str),
         Some("conv_anchor_primary")
     );
-    assert_eq!(
-        captured
-            .headers
-            .get("x-client-request-id")
-            .map(String::as_str),
-        Some("conv_anchor_primary")
-    );
+    assert!(!captured.headers.contains_key("x-client-request-id"));
     assert!(!captured.headers.contains_key("x-codex-turn-state"));
     assert!(!captured.headers.contains_key("conversation_id"));
 

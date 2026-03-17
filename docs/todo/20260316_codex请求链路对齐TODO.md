@@ -62,6 +62,7 @@
 - [x] 浏览器授权 `scope` 对齐官方 connectors scope
 - [x] 授权码换 token 与 id_token 换 API key 的请求头已收回到官方登录服务器形状，不再额外挂 `Originator / User-Agent / Residency`
 - [x] refresh token 请求体改成官方 `application/json` 形状
+- [x] refresh token 默认 URL 收回到官方 `https://auth.openai.com/oauth/token`，仅对自定义 issuer / 显式 override 保留兼容分支
 - [x] usage endpoint 请求头统一到 `ChatGPT-Account-ID` 语义，并对 challenge / HTML 失败输出稳定摘要
 - [x] `CPA no cookie` 模式与 `ChatGPT-Account-ID` 解耦，只抑制 cookie/粘性头，不再误去掉账号头
 - [x] `CPA no cookie` 模式下，`/responses` 与 `/responses/compact` 都会真正停止发送上游 `Cookie`
@@ -71,6 +72,7 @@
 - [x] refresh `401` 内部原因收口到稳定枚举，避免后续只靠散乱字符串匹配
 - [x] token endpoint 错误解析贴近官方优先级，并对 transport error 做敏感 URL 脱敏
 - [x] token endpoint 遇到 challenge / HTML 页面时输出稳定摘要，不再原样透传整页 HTML
+- [x] login callback HTML 响应现在显式发送 `Connection: close`，和官方 callback server 收尾语义一致
 - [x] token endpoint 命中 `403 + Cloudflare blocked` 时输出官方风格 blocked 摘要
 - [x] token endpoint / api key exchange 失败摘要补齐 `request_id / cf-ray / auth_error` 调试头
 - [x] token endpoint / api key exchange 的 `x-error-json` 统一支持原始 JSON 与 base64 两种头值，并补齐 `identity_error_code`
@@ -98,19 +100,17 @@
 - [x] 模型列表 `/models` 请求头收回到与官方默认客户端一致的 `originator / User-Agent / ChatGPT-Account-ID / residency` 语义，并移除历史 `Version` 头
 - [x] 模型列表 `/models` 失败诊断收口到稳定 challenge / HTML / auth / `identity_error_code` 摘要，并保持 OpenAI fallback 触发条件兼容
 - [x] 模型列表 `/models` 不再显式发送上游 `Cookie`
-- [ ] 继续核对请求体字段白名单和默认值的剩余边角
+- [ ] 继续核对请求体字段白名单和默认值的剩余边角（当前已补齐 `tools=[] / include=[]`，并已收紧为“仅在无工具时默认补 `parallel_tool_calls=false`”；已确认当前仓库没有可靠模型能力源可自动推断该字段，后续若继续推进只能新增显式能力表或继续保持保守策略）
 - [x] 对齐流式与非流式的 header profile 分支
 - [x] 收掉 HTTP `/responses` 上不该显式发送的 `Conversation_id / OpenAI-Beta / Connection / Version`
 - [x] 当上游目标是 `api.openai.com/v1` 时，`/responses` 不再透传 ChatGPT 侧 `Cookie / ChatGPT-Account-ID`
 - [x] 透传官方 `x-codex-beta-features`
 - [x] 透传官方 `x-codex-turn-metadata`（仅 ASCII 安全值）
-- [x] 客户端未传 `x-client-request-id` 时，仅在线程锚点（`prompt_cache_key / Conversation_id`）存在时自动补齐，不再从普通 `session_id` 派生
-- [x] 当 `/responses` 已有 `prompt_cache_key` 时，让 `session_id / x-client-request-id` 优先跟随线程锚点，不再让旧 `Session_id` 抢占
-- [x] 当入站明确携带 `Conversation_id` 时，让线程锚点覆盖旧 `x-client-request-id`
+- [x] `x-client-request-id` 收回到“仅透传客户端原值”的兼容策略，不再默认补齐，也不再让线程锚点覆盖旧值
 - [x] 当旧 `Session_id` 已被新的线程锚点覆盖时，丢弃旧 `x-codex-turn-state`
 - [x] 收掉 `/responses` 主链上 remote 地址参与 `session_id` 派生的兼容分支；保留基于账号/密钥的稳定 session 兼容
 - [x] 收紧 `x-codex-turn-state` 的入站信任：缺少稳定线程锚点时不再盲信客户端自带 turn-state
-- [x] 把 `openai fallback` 的线程锚点、`session_id`、`x-client-request-id` 语义继续收齐到主链
+- [x] 把 `openai fallback` 的线程锚点、`session_id`、`x-client-request-id` 语义继续收齐到主链；`x-client-request-id` 同样仅透传原值
 - [x] fallback 分支在缺少稳定线程锚点时，也不再信任孤立的 `x-codex-turn-state`
 - [x] fallback 非成功时，日志会补齐稳定摘要；继续 failover 时保留 `body/request_id/cf-ray/auth_error/identity_error_code`，直接回传上游非成功时也会保留 `request_id/cf-ray/auth_error/identity_error_code/content_type`
 - [x] 复核失败重试、failover、日志落盘时机；当候选全被切走或跳过时，请求日志会补齐 attempted/skipped/last_attempt 摘要，避免多账号切换误导
@@ -177,9 +177,9 @@
 - [x] `BRIDGE_RESULT` 与失败日志已补充 `request_id / cf-ray / content-type` 诊断摘要
 - [x] `/responses` 与 `compact` 的 challenge / HTML 失败摘要补齐 `auth_error`
 - [x] `/responses` 与 `compact` 的 `x-error-json` 已统一支持原始 JSON / base64 两种头值，并补齐 `identity_error_code`
-- [ ] 继续增强 `gateway-trace.log` 对最后一帧、最后一跳、响应头、body 摘要的记录
+- [x] `gateway-trace.log` 已补齐最后一跳和最后一帧摘要；`BRIDGE_RESULT` 现在会记录 `request_id / cf-ray / auth_error / identity_error_code / content-type / last_sse_event`
 - [x] 对 403/502/503 建立更稳定的错误分类；`/responses`、`compact`、fallback 非成功和最终 `503 no available account` 都会补稳定 `kind=...`
-- [ ] 让桌面端 toast 和请求日志错误文案尽量使用同一错误源
+- [x] 桌面端 toast 已收口到 transport 公共错误提取，尽量复用与请求日志一致的后端错误文案来源
 
 验收：
 

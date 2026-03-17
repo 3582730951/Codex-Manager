@@ -13,9 +13,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error || "");
+export function getAppErrorMessage(
+  error: unknown,
+  fallback = "操作失败"
+): string {
+  if (error instanceof Error) {
+    const nested = getAppErrorMessage(error.message, "");
+    return nested || fallback;
+  }
+
+  const businessMessage = resolveBusinessErrorMessage(error);
+  if (businessMessage) return businessMessage;
+
+  const rpcMessage = resolveRpcErrorMessage(error).trim();
+  if (!rpcMessage || rpcMessage === "null" || rpcMessage === "undefined") {
+    return fallback;
+  }
+  return rpcMessage;
 }
 
 function resolveRpcErrorMessage(error: unknown): string {
@@ -98,7 +112,7 @@ export function withAddr(
 }
 
 export function isCommandMissingError(err: unknown): boolean {
-  const msg = getErrorMessage(err).toLowerCase();
+  const msg = getAppErrorMessage(err, "").toLowerCase();
   return (
     msg.includes("unknown command") ||
     msg.includes("not found") ||

@@ -324,6 +324,9 @@ fn html_response(body: String) -> Response<std::io::Cursor<Vec<u8>>> {
     ) {
         response = response.with_header(header);
     }
+    if let Ok(header) = Header::from_bytes(b"Connection".as_slice(), b"close".as_slice()) {
+        response = response.with_header(header);
+    }
     response
 }
 

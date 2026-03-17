@@ -46,6 +46,9 @@ impl OpenAIChatCompletionsSseReader {
             return;
         }
         if let Ok(mut collector) = self.usage_collector.lock() {
+            if let Some(event_type) = inspection.last_event_type {
+                collector.last_event_type = Some(event_type);
+            }
             if let Some(parsed) = inspection.usage {
                 merge_usage(&mut collector.usage, parsed);
             }

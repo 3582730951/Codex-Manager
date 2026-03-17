@@ -6,16 +6,13 @@ import { toast } from "sonner";
 import { accountClient } from "@/lib/api/account-client";
 import { attachUsagesToAccounts } from "@/lib/api/normalize";
 import { serviceClient } from "@/lib/api/service-client";
+import { getAppErrorMessage } from "@/lib/api/transport";
 import { useAppStore } from "@/lib/store/useAppStore";
 
 type ImportByDirectoryResult = Awaited<ReturnType<typeof accountClient.importByDirectory>>;
 type ImportByFileResult = Awaited<ReturnType<typeof accountClient.importByFile>>;
 type ExportResult = Awaited<ReturnType<typeof accountClient.export>>;
 type DeleteUnavailableFreeResult = { deleted?: number };
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error || "");
-}
 
 function buildImportSummaryMessage(result: ImportByDirectoryResult): string {
   const total = Number(result?.total || 0);
@@ -92,7 +89,7 @@ export function useAccounts() {
       toast.success("账号用量已刷新");
     },
     onError: (error: unknown) => {
-      toast.error(`刷新失败: ${getErrorMessage(error)}`);
+      toast.error(`刷新失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -103,7 +100,7 @@ export function useAccounts() {
       toast.success("全部账号用量已刷新");
     },
     onError: (error: unknown) => {
-      toast.error(`刷新失败: ${getErrorMessage(error)}`);
+      toast.error(`刷新失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -114,7 +111,7 @@ export function useAccounts() {
       toast.success("账号已删除");
     },
     onError: (error: unknown) => {
-      toast.error(`删除失败: ${getErrorMessage(error)}`);
+      toast.error(`删除失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -125,7 +122,7 @@ export function useAccounts() {
       toast.success(`已删除 ${accountIds.length} 个账号`);
     },
     onError: (error: unknown) => {
-      toast.error(`批量删除失败: ${getErrorMessage(error)}`);
+      toast.error(`批量删除失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -141,7 +138,7 @@ export function useAccounts() {
       }
     },
     onError: (error: unknown) => {
-      toast.error(`清理失败: ${getErrorMessage(error)}`);
+      toast.error(`清理失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -156,7 +153,7 @@ export function useAccounts() {
       toast.success(buildImportSummaryMessage(result));
     },
     onError: (error: unknown) => {
-      toast.error(`导入失败: ${getErrorMessage(error)}`);
+      toast.error(`导入失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -171,7 +168,7 @@ export function useAccounts() {
       toast.success(buildImportSummaryMessage(result));
     },
     onError: (error: unknown) => {
-      toast.error(`导入失败: ${getErrorMessage(error)}`);
+      toast.error(`导入失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -191,7 +188,7 @@ export function useAccounts() {
       );
     },
     onError: (error: unknown) => {
-      toast.error(`导出失败: ${getErrorMessage(error)}`);
+      toast.error(`导出失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -202,7 +199,7 @@ export function useAccounts() {
       toast.success("已设为优先账号");
     },
     onError: (error: unknown) => {
-      toast.error(`设置优先账号失败: ${getErrorMessage(error)}`);
+      toast.error(`设置优先账号失败: ${getAppErrorMessage(error)}`);
     },
   });
 
@@ -213,7 +210,7 @@ export function useAccounts() {
       toast.success("已取消优先账号");
     },
     onError: (error: unknown) => {
-      toast.error(`取消优先账号失败: ${getErrorMessage(error)}`);
+      toast.error(`取消优先账号失败: ${getAppErrorMessage(error)}`);
     },
   });
 

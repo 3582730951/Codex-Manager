@@ -32,6 +32,9 @@ impl PassthroughSseUsageReader {
     fn update_usage_from_frame(&self, lines: &[String]) {
         let inspection = inspect_sse_frame(lines);
         if let Ok(mut collector) = self.usage_collector.lock() {
+            if let Some(event_type) = inspection.last_event_type {
+                collector.last_event_type = Some(event_type);
+            }
             if inspection.usage.is_none() && inspection.terminal.is_none() {
                 if collector.upstream_error_hint.is_none() {
                     let raw_frame = lines.concat();

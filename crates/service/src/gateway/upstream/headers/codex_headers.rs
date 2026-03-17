@@ -13,7 +13,6 @@ pub(crate) struct CodexUpstreamHeaderInput<'a> {
     pub(crate) incoming_beta_features: Option<&'a str>,
     pub(crate) incoming_turn_metadata: Option<&'a str>,
     pub(crate) fallback_session_id: Option<&'a str>,
-    pub(crate) fallback_client_request_id: Option<&'a str>,
     pub(crate) incoming_turn_state: Option<&'a str>,
     pub(crate) include_turn_state: bool,
     pub(crate) strip_session_affinity: bool,
@@ -74,7 +73,6 @@ pub(crate) fn build_codex_upstream_headers(
     }
     if let Some(client_request_id) = resolve_client_request_id(
         input.incoming_client_request_id,
-        input.fallback_client_request_id,
     ) {
         headers.push(("x-client-request-id".to_string(), client_request_id));
     }
@@ -227,19 +225,12 @@ fn resolve_optional_session_id(
         .map(str::to_string)
 }
 
-fn resolve_client_request_id(
-    incoming_client_request_id: Option<&str>,
-    fallback_client_request_id: Option<&str>,
-) -> Option<String> {
+fn resolve_client_request_id(incoming_client_request_id: Option<&str>) -> Option<String> {
     if let Some(value) = incoming_client_request_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         return Some(value.to_string());
     }
-
-    fallback_client_request_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+    None
 }

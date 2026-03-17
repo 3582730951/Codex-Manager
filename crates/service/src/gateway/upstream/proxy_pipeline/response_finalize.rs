@@ -125,7 +125,10 @@ pub(super) fn finalize_upstream_response(
         bridge.upstream_error_hint.as_deref(),
         bridge.upstream_request_id.as_deref(),
         bridge.upstream_cf_ray.as_deref(),
+        bridge.upstream_auth_error.as_deref(),
+        bridge.upstream_identity_error_code.as_deref(),
         bridge.upstream_content_type.as_deref(),
+        bridge.last_sse_event_type.as_deref(),
     );
 
     if let Some(upstream_hint) = bridge.upstream_error_hint.as_deref() {

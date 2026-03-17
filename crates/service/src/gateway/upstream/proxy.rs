@@ -30,10 +30,7 @@ fn exhausted_gateway_error_for_log(
     } else {
         "no_available_account"
     };
-    let mut parts = vec![
-        "no available account".to_string(),
-        format!("kind={kind}"),
-    ];
+    let mut parts = vec!["no available account".to_string(), format!("kind={kind}")];
     if !attempted_account_ids.is_empty() {
         parts.push(format!("attempted={}", attempted_account_ids.join(",")));
     }

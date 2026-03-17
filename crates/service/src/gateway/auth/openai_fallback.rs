@@ -10,7 +10,6 @@ struct RequestAffinityState<'a> {
     incoming_client_request_id: Option<String>,
     incoming_turn_state: Option<&'a str>,
     fallback_session_id: Option<String>,
-    fallback_client_request_id: Option<String>,
 }
 
 fn should_force_connection_close(target_url: &str) -> bool {
@@ -98,7 +97,7 @@ fn resolve_request_affinity_state<'a>(
 ) -> RequestAffinityState<'a> {
     let original_incoming_session_id = incoming_session_id;
     let mut resolved_incoming_session_id = original_incoming_session_id;
-    let mut resolved_client_request_id = incoming_client_request_id.map(str::to_string);
+    let resolved_client_request_id = incoming_client_request_id.map(str::to_string);
     let mut resolved_turn_state = incoming_turn_state;
     let conversation_anchor = conversation_id
         .map(str::trim)
@@ -118,9 +117,6 @@ fn resolve_request_affinity_state<'a>(
         // 上游 session_id。这里即使 prompt_cache_key 缺失，也让旧 session_id 退位，
         // 避免 compact 继续粘到历史兼容 session。
         resolved_incoming_session_id = None;
-        // 中文注释：主路径已按 conversation_id 覆盖旧 request id，这里保持一致；
-        // 缺少 prompt_cache_key 时退回到 conversation 锚点本身。
-        resolved_client_request_id = effective_thread_anchor.clone();
     }
     if resolved_turn_state.is_some()
         && original_incoming_session_id.is_none()
@@ -146,7 +142,6 @@ fn resolve_request_affinity_state<'a>(
         incoming_client_request_id: resolved_client_request_id,
         incoming_turn_state: resolved_turn_state,
         fallback_session_id: effective_thread_anchor.clone(),
-        fallback_client_request_id: effective_thread_anchor,
     }
 }
 
@@ -237,7 +232,6 @@ pub(super) fn try_openai_fallback(
             incoming_beta_features: incoming_headers.beta_features(),
             incoming_turn_metadata: incoming_headers.turn_metadata(),
             fallback_session_id: request_affinity.fallback_session_id.as_deref(),
-            fallback_client_request_id: request_affinity.fallback_client_request_id.as_deref(),
             incoming_turn_state: request_affinity.incoming_turn_state,
             include_turn_state: !compact_headers_mode && !is_openai_api_target,
             strip_session_affinity,
@@ -306,15 +300,11 @@ mod tests {
         assert_eq!(actual.incoming_session_id, None);
         assert_eq!(
             actual.incoming_client_request_id.as_deref(),
-            Some("conv_anchor_fallback")
+            Some("legacy_request_id_should_not_win")
         );
         assert_eq!(actual.incoming_turn_state, None);
         assert_eq!(
             actual.fallback_session_id.as_deref(),
-            Some("conv_anchor_fallback")
-        );
-        assert_eq!(
-            actual.fallback_client_request_id.as_deref(),
             Some("conv_anchor_fallback")
         );
     }
@@ -336,7 +326,6 @@ mod tests {
         );
         assert_eq!(actual.incoming_turn_state, Some("turn_state_ok"));
         assert_eq!(actual.fallback_session_id, None);
-        assert_eq!(actual.fallback_client_request_id, None);
     }
 
     #[test]
@@ -348,7 +337,6 @@ mod tests {
         assert_eq!(actual.incoming_client_request_id, None);
         assert_eq!(actual.incoming_turn_state, None);
         assert_eq!(actual.fallback_session_id, None);
-        assert_eq!(actual.fallback_client_request_id, None);
     }
 
     #[test]
@@ -364,15 +352,11 @@ mod tests {
         assert_eq!(actual.incoming_session_id, None);
         assert_eq!(
             actual.incoming_client_request_id.as_deref(),
-            Some("conv_anchor_only")
+            Some("legacy_request_id_should_not_win")
         );
         assert_eq!(actual.incoming_turn_state, None);
         assert_eq!(
             actual.fallback_session_id.as_deref(),
-            Some("conv_anchor_only")
-        );
-        assert_eq!(
-            actual.fallback_client_request_id.as_deref(),
             Some("conv_anchor_only")
         );
     }

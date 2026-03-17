@@ -64,6 +64,7 @@ pub(in super::super) struct SseFrameInspection {
     pub saw_data: bool,
     pub usage: Option<UpstreamResponseUsage>,
     pub terminal: Option<SseTerminal>,
+    pub last_event_type: Option<String>,
 }
 
 fn classify_terminal_event_name(name: &str) -> Option<SseTerminal> {
@@ -135,6 +136,7 @@ pub(in super::super) fn inspect_sse_frame(lines: &[String]) -> SseFrameInspectio
 
     if let Some(name) = event_name.as_deref() {
         inspection.terminal = classify_terminal_event_name(name);
+        inspection.last_event_type = Some(name.to_string());
     }
 
     if data_lines.is_empty() {
@@ -144,10 +146,19 @@ pub(in super::super) fn inspect_sse_frame(lines: &[String]) -> SseFrameInspectio
     let data = data_lines.join("\n");
     if data.trim() == "[DONE]" {
         inspection.terminal = Some(SseTerminal::Ok);
+        inspection.last_event_type = Some("[DONE]".to_string());
         return inspection;
     }
 
     if let Ok(value) = serde_json::from_str::<Value>(&data) {
+        if inspection.last_event_type.is_none() {
+            inspection.last_event_type = value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|kind| !kind.is_empty())
+                .map(str::to_string);
+        }
         if let Some(message) = extract_error_message_from_json(&value) {
             inspection.terminal = Some(SseTerminal::Err(message));
         } else if let Some(kind) = value.get("type").and_then(Value::as_str) {
@@ -241,6 +252,38 @@ pub(in super::super) fn extract_sse_frame_payload(lines: &[String]) -> Option<St
         None
     } else {
         Some(raw_lines.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inspect_sse_frame;
+
+    #[test]
+    fn inspect_sse_frame_keeps_last_event_type_from_header() {
+        let lines = vec![
+            "event: response.completed\n".to_string(),
+            "data: {\"type\":\"response.completed\"}\n".to_string(),
+            "\n".to_string(),
+        ];
+        let inspection = inspect_sse_frame(&lines);
+        assert_eq!(
+            inspection.last_event_type.as_deref(),
+            Some("response.completed")
+        );
+    }
+
+    #[test]
+    fn inspect_sse_frame_keeps_last_event_type_from_json_type() {
+        let lines = vec![
+            "data: {\"type\":\"response.failed\",\"error\":{\"message\":\"oops\"}}\n".to_string(),
+            "\n".to_string(),
+        ];
+        let inspection = inspect_sse_frame(&lines);
+        assert_eq!(
+            inspection.last_event_type.as_deref(),
+            Some("response.failed")
+        );
     }
 }
 

@@ -455,6 +455,10 @@ fn responses_defaults_tool_choice_and_reasoning_include_for_codex_backend() {
             .and_then(serde_json::Value::as_bool),
         Some(false)
     );
+    assert!(value
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .is_some());
     let include = value
         .get("include")
         .and_then(serde_json::Value::as_array)
@@ -464,6 +468,30 @@ fn responses_defaults_tool_choice_and_reasoning_include_for_codex_backend() {
             .map(|entry| entry == "reasoning.encrypted_content")
             .unwrap_or(false)
     }));
+}
+
+#[test]
+fn responses_defaults_empty_include_without_reasoning_for_codex_backend() {
+    let body = json!({
+        "model": "gpt-5.3-codex",
+        "input": "hello"
+    });
+    let out = apply_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    assert!(value
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .is_some());
+    assert!(value
+        .get("include")
+        .and_then(serde_json::Value::as_array)
+        .is_some());
 }
 
 #[test]
@@ -562,6 +590,28 @@ fn responses_compact_defaults_parallel_tool_calls_to_false_for_codex_backend() {
             .and_then(serde_json::Value::as_bool),
         Some(false)
     );
+    assert!(value
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .is_some());
+}
+
+#[test]
+fn responses_keeps_parallel_tool_calls_missing_when_tools_are_present() {
+    let body = json!({
+        "model": "gpt-5.3-codex",
+        "input": "hello",
+        "tools": [{ "type": "function", "name": "ping", "parameters": { "type": "object", "properties": {} } }]
+    });
+    let out = apply_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    assert!(value.get("parallel_tool_calls").is_none());
 }
 
 #[test]

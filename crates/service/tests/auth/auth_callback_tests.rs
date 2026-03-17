@@ -1,6 +1,6 @@
 use super::{
     build_callback_error_page, build_callback_success_page, ensure_login_server_with_addr,
-    oauth_callback_error_message, resolve_redirect_uri, LOGIN_SERVER_STATE,
+    html_response, oauth_callback_error_message, resolve_redirect_uri, LOGIN_SERVER_STATE,
 };
 use crate::auth_login::login_start;
 use std::net::TcpListener;
@@ -105,6 +105,24 @@ fn callback_error_page_escapes_message() {
     let html = build_callback_error_page("bad <script>alert(1)</script>");
     assert!(html.contains("Login Failed"));
     assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+}
+
+#[test]
+fn callback_html_response_forces_connection_close() {
+    let response = html_response(build_callback_success_page());
+    let headers = response.headers();
+
+    let content_type = headers
+        .iter()
+        .find(|header| header.field.equiv("Content-Type"))
+        .map(|header| header.value.as_str());
+    let connection = headers
+        .iter()
+        .find(|header| header.field.equiv("Connection"))
+        .map(|header| header.value.as_str());
+
+    assert_eq!(content_type, Some("text/html; charset=utf-8"));
+    assert_eq!(connection, Some("close"));
 }
 
 #[test]

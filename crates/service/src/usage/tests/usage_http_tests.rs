@@ -205,6 +205,45 @@ fn usage_request_headers_use_official_chatgpt_account_header_name() {
 }
 
 #[test]
+fn refresh_token_url_uses_official_default_for_openai_issuer() {
+    std::env::remove_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE");
+
+    assert_eq!(
+        super::resolve_refresh_token_url("https://auth.openai.com"),
+        "https://auth.openai.com/oauth/token"
+    );
+    assert_eq!(
+        super::resolve_refresh_token_url("https://auth.openai.com/"),
+        "https://auth.openai.com/oauth/token"
+    );
+}
+
+#[test]
+fn refresh_token_url_preserves_custom_issuer_and_override() {
+    let previous = std::env::var("CODEX_REFRESH_TOKEN_URL_OVERRIDE").ok();
+
+    std::env::remove_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE");
+    assert_eq!(
+        super::resolve_refresh_token_url("https://auth.example.com"),
+        "https://auth.example.com/oauth/token"
+    );
+
+    std::env::set_var(
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+        "https://override.example.com/custom/token",
+    );
+    assert_eq!(
+        super::resolve_refresh_token_url("https://auth.example.com"),
+        "https://override.example.com/custom/token"
+    );
+
+    match previous {
+        Some(value) => std::env::set_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE", value),
+        None => std::env::remove_var("CODEX_REFRESH_TOKEN_URL_OVERRIDE"),
+    }
+}
+
+#[test]
 fn summarize_usage_error_response_stabilizes_html_and_debug_headers() {
     let mut headers = HeaderMap::new();
     headers.insert("x-request-id", HeaderValue::from_static("req_usage_123"));

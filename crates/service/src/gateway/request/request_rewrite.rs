@@ -311,6 +311,9 @@ pub(super) fn apply_request_overrides_with_prompt_cache_key(
                 if responses::ensure_input_list(path, obj) {
                     changed = true;
                 }
+                if responses::ensure_tools_list(path, obj) {
+                    changed = true;
+                }
                 if responses::ensure_parallel_tool_calls_bool(path, obj) {
                     changed = true;
                 }
@@ -330,6 +333,9 @@ pub(super) fn apply_request_overrides_with_prompt_cache_key(
                         changed = true;
                     }
                     if responses::normalize_service_tier(path, obj) {
+                        changed = true;
+                    }
+                    if responses::ensure_include_list(path, obj) {
                         changed = true;
                     }
                     if responses::ensure_reasoning_include(path, obj) {

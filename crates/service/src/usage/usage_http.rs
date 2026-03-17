@@ -20,6 +20,8 @@ const REFRESH_TOKEN_INVALIDATED_MESSAGE: &str =
     "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.";
 const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
     "Your access token could not be refreshed. Please log out and sign in again.";
+const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
 const RESIDENCY_HEADER_NAME: &str = "x-openai-internal-codex-residency";
 const CHATGPT_ACCOUNT_ID_HEADER_NAME: &str = "ChatGPT-Account-ID";
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -243,6 +245,25 @@ fn build_usage_request_headers(workspace_id: Option<&str>) -> HeaderMap {
     headers
 }
 
+fn resolve_refresh_token_url(issuer: &str) -> String {
+    if let Some(override_url) = std::env::var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return override_url;
+    }
+
+    let normalized_issuer = issuer.trim().trim_end_matches('/');
+    if normalized_issuer.is_empty()
+        || normalized_issuer.eq_ignore_ascii_case("https://auth.openai.com")
+    {
+        return REFRESH_TOKEN_URL.to_string();
+    }
+
+    format!("{normalized_issuer}/oauth/token")
+}
+
 fn extract_response_header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -387,6 +408,7 @@ pub(crate) fn refresh_access_token(
     client_id: &str,
     refresh_token: &str,
 ) -> Result<RefreshTokenResponse, String> {
+    let refresh_token_url = resolve_refresh_token_url(issuer);
     let body = RefreshTokenRequest {
         client_id,
         grant_type: "refresh_token",
@@ -395,7 +417,7 @@ pub(crate) fn refresh_access_token(
     let build_request = || {
         let client = usage_http_client();
         client
-            .post(format!("{issuer}/oauth/token"))
+            .post(refresh_token_url.clone())
             .header("Content-Type", "application/json")
             .json(&body)
     };

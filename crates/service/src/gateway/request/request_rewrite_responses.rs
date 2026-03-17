@@ -147,6 +147,20 @@ pub(super) fn ensure_tool_choice_auto(
     true
 }
 
+pub(super) fn ensure_tools_list(path: &str, obj: &mut serde_json::Map<String, Value>) -> bool {
+    if !is_responses_path(path) {
+        return false;
+    }
+    match obj.get("tools") {
+        Some(Value::Array(_)) => return false,
+        Some(_) => {}
+        None => {}
+    }
+
+    obj.insert("tools".to_string(), Value::Array(Vec::new()));
+    true
+}
+
 pub(super) fn ensure_parallel_tool_calls_bool(
     path: &str,
     obj: &mut serde_json::Map<String, Value>,
@@ -160,7 +174,32 @@ pub(super) fn ensure_parallel_tool_calls_bool(
         None => {}
     }
 
+    let has_non_empty_tools = obj
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty());
+    if has_non_empty_tools {
+        return false;
+    }
+
     obj.insert("parallel_tool_calls".to_string(), Value::Bool(false));
+    true
+}
+
+pub(super) fn ensure_include_list(
+    path: &str,
+    obj: &mut serde_json::Map<String, Value>,
+) -> bool {
+    if !is_standard_responses_path(path) {
+        return false;
+    }
+    match obj.get("include") {
+        Some(Value::Array(_)) => return false,
+        Some(_) => {}
+        None => {}
+    }
+
+    obj.insert("include".to_string(), Value::Array(Vec::new()));
     true
 }
 
@@ -195,10 +234,7 @@ pub(super) fn ensure_reasoning_include(
     true
 }
 
-pub(super) fn normalize_service_tier(
-    path: &str,
-    obj: &mut serde_json::Map<String, Value>,
-) -> bool {
+pub(super) fn normalize_service_tier(path: &str, obj: &mut serde_json::Map<String, Value>) -> bool {
     if !is_standard_responses_path(path) {
         return false;
     }

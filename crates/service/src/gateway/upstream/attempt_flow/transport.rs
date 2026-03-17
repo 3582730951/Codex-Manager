@@ -169,7 +169,6 @@ pub(in super::super) fn send_upstream_request(
     } else {
         extract_prompt_cache_key(body.as_ref())
     };
-    let has_conversation_anchor = incoming_headers.conversation_id().is_some();
     let compact_conversation_anchor = if strip_session_affinity {
         None
     } else {
@@ -181,7 +180,7 @@ pub(in super::super) fn send_upstream_request(
     };
     let original_incoming_session_id = incoming_headers.session_id();
     let mut incoming_session_id = original_incoming_session_id;
-    let mut incoming_client_request_id = incoming_headers.client_request_id();
+    let incoming_client_request_id = incoming_headers.client_request_id();
     let mut incoming_turn_state = incoming_headers.turn_state();
     if prompt_cache_key.is_some() {
         // 中文注释：当请求已携带线程锚点（prompt_cache_key）时，优先让上游会话头也绑定到
@@ -192,12 +191,6 @@ pub(in super::super) fn send_upstream_request(
         // 中文注释：官方 compact 客户端会直接把 conversation_id 映射成 session_id。
         // compact 请求没有 prompt_cache_key，因此这里显式让会话头退回到 conversation 锚点。
         incoming_session_id = None;
-    }
-    if has_conversation_anchor {
-        // 中文注释：官方 ResponsesClient 在提供 conversation_id 时，会直接用它覆盖
-        // x-client-request-id。这里把旧值改写成当前线程锚点，而不是简单清空，
-        // 这样 failover 时仍能保留稳定的 client request id。
-        incoming_client_request_id = prompt_cache_key.as_deref();
     }
     if incoming_turn_state.is_some()
         && original_incoming_session_id.is_none()
@@ -224,8 +217,8 @@ pub(in super::super) fn send_upstream_request(
     } else {
         None
     };
-    // 中文注释：当 prompt_cache_key 存在时，用它对齐请求会话锚点，
-    // 更贴近官方 conversation_id -> session_id / x-client-request-id 的默认行为。
+    // 中文注释：当 prompt_cache_key 存在时，用它对齐请求会话锚点。
+    // 官方可见线程锚点仍以 prompt_cache_key + session_id 为主，不额外默认补 x-client-request-id。
     if !strip_session_affinity {
         if let Some(cache_key) = prompt_cache_key.as_ref() {
             derived_session_id = Some(cache_key.clone());
@@ -269,7 +262,6 @@ pub(in super::super) fn send_upstream_request(
             incoming_beta_features: incoming_headers.beta_features(),
             incoming_turn_metadata: incoming_headers.turn_metadata(),
             fallback_session_id: derived_session_id.as_deref(),
-            fallback_client_request_id: prompt_cache_key.as_deref(),
             incoming_turn_state,
             include_turn_state: !compact_headers_mode,
             strip_session_affinity,

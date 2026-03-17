@@ -54,7 +54,6 @@ fn codex_header_profile_sets_required_headers_for_stream() {
         incoming_beta_features: Some("reasoning_summaries"),
         incoming_turn_metadata: Some("{\"workspace\":\"repo\"}"),
         fallback_session_id: None,
-        fallback_client_request_id: None,
         incoming_turn_state: Some("turn-state"),
         include_turn_state: true,
         strip_session_affinity: false,
@@ -126,7 +125,6 @@ fn codex_header_profile_uses_json_accept_for_non_stream() {
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: None,
-        fallback_client_request_id: None,
         incoming_turn_state: None,
         include_turn_state: true,
         strip_session_affinity: false,
@@ -244,7 +242,6 @@ fn codex_header_profile_skips_cookie_when_cpa_no_cookie_mode_enabled() {
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: None,
-        fallback_client_request_id: None,
         incoming_turn_state: None,
         include_turn_state: true,
         strip_session_affinity: false,
@@ -303,7 +300,6 @@ fn codex_header_profile_uses_dynamic_originator_and_residency_requirement() {
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: None,
-        fallback_client_request_id: None,
         incoming_turn_state: None,
         include_turn_state: true,
         strip_session_affinity: false,
@@ -337,7 +333,6 @@ fn codex_header_profile_regenerates_session_on_failover() {
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: Some("fallback-session"),
-        fallback_client_request_id: None,
         incoming_turn_state: Some("sticky-turn"),
         include_turn_state: true,
         strip_session_affinity: true,
@@ -366,7 +361,6 @@ fn codex_header_profile_uses_fallback_session_when_incoming_missing() {
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: Some("fallback-session"),
-        fallback_client_request_id: None,
         incoming_turn_state: None,
         include_turn_state: true,
         strip_session_affinity: false,
@@ -394,7 +388,6 @@ fn codex_header_profile_does_not_forward_conversation_header_even_with_fallback(
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: Some("fallback-session"),
-        fallback_client_request_id: None,
         incoming_turn_state: None,
         include_turn_state: true,
         strip_session_affinity: false,
@@ -418,7 +411,6 @@ fn codex_header_profile_skips_account_header_when_disabled() {
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: None,
-        fallback_client_request_id: None,
         incoming_turn_state: None,
         include_turn_state: true,
         strip_session_affinity: false,
@@ -442,7 +434,6 @@ fn codex_header_profile_can_disable_affinity_headers() {
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: None,
-        fallback_client_request_id: None,
         incoming_turn_state: Some("sticky-turn"),
         include_turn_state: false,
         strip_session_affinity: false,
@@ -461,7 +452,7 @@ fn codex_header_profile_can_disable_affinity_headers() {
 }
 
 #[test]
-fn codex_header_profile_keeps_stable_client_request_id_on_failover() {
+fn codex_header_profile_does_not_invent_client_request_id_on_failover() {
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-failover-stable",
         account_id: None,
@@ -473,7 +464,6 @@ fn codex_header_profile_keeps_stable_client_request_id_on_failover() {
         incoming_beta_features: None,
         incoming_turn_metadata: None,
         fallback_session_id: Some("fallback-session"),
-        fallback_client_request_id: Some("conv-anchor"),
         incoming_turn_state: Some("sticky-turn"),
         include_turn_state: true,
         strip_session_affinity: true,
@@ -485,8 +475,5 @@ fn codex_header_profile_keeps_stable_client_request_id_on_failover() {
         find_header(&headers, "session_id").as_deref(),
         Some("sticky-session")
     );
-    assert_eq!(
-        find_header(&headers, "x-client-request-id").as_deref(),
-        Some("conv-anchor")
-    );
+    assert!(find_header(&headers, "x-client-request-id").is_none());
 }

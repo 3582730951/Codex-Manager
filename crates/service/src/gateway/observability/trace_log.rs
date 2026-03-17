@@ -450,17 +450,22 @@ pub(crate) fn log_bridge_result(
     upstream_error_hint: Option<&str>,
     upstream_request_id: Option<&str>,
     upstream_cf_ray: Option<&str>,
+    upstream_auth_error: Option<&str>,
+    upstream_identity_error_code: Option<&str>,
     upstream_content_type: Option<&str>,
+    last_sse_event_type: Option<&str>,
 ) {
     let bridge_has_error = delivery_error.is_some()
         || stream_terminal_error.is_some()
         || (is_stream && !stream_terminal_seen)
-        || has_error_text(upstream_error_hint);
+        || has_error_text(upstream_error_hint)
+        || has_error_text(upstream_auth_error)
+        || has_error_text(upstream_identity_error_code);
     if bridge_has_error {
         mark_trace_has_error(trace_id);
     }
     let line = format!(
-        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} path={} stream={} terminal_seen={} terminal_error={} delivery_error={} output_text_len={} output_tokens={} delivered_status={} upstream_hint={} upstream_request_id={} upstream_cf_ray={} upstream_content_type={}",
+        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} path={} stream={} terminal_seen={} terminal_error={} delivery_error={} output_text_len={} output_tokens={} delivered_status={} upstream_hint={} upstream_request_id={} upstream_cf_ray={} upstream_auth_error={} upstream_identity_error_code={} upstream_content_type={} last_sse_event={}",
         current_trace_ts(),
         sanitize_text(trace_id),
         sanitize_text(adapter),
@@ -479,7 +484,10 @@ pub(crate) fn log_bridge_result(
         sanitize_text(upstream_error_hint.unwrap_or("-")),
         sanitize_text(upstream_request_id.unwrap_or("-")),
         sanitize_text(upstream_cf_ray.unwrap_or("-")),
+        sanitize_text(upstream_auth_error.unwrap_or("-")),
+        sanitize_text(upstream_identity_error_code.unwrap_or("-")),
         sanitize_text(upstream_content_type.unwrap_or("-")),
+        sanitize_text(last_sse_event_type.unwrap_or("-")),
     );
     buffer_trace_line(trace_id, line);
 }

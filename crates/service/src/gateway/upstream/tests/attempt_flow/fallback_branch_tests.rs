@@ -95,7 +95,10 @@ fn fallback_non_success_summary_uses_plain_body_when_no_structured_hint_exists()
 #[test]
 fn fallback_non_success_headers_only_summary_includes_debug_headers() {
     let mut headers = HeaderMap::new();
-    headers.insert("x-oai-request-id", HeaderValue::from_static("req_fallback_headers"));
+    headers.insert(
+        "x-oai-request-id",
+        HeaderValue::from_static("req_fallback_headers"),
+    );
     headers.insert("cf-ray", HeaderValue::from_static("ray_fallback_headers"));
     headers.insert(
         "x-openai-authorization-error",
@@ -105,7 +108,10 @@ fn fallback_non_success_headers_only_summary_includes_debug_headers() {
         "x-error-json",
         HeaderValue::from_static("{\"identity_error_code\":\"org_membership_required\"}"),
     );
-    headers.insert("content-type", HeaderValue::from_static("text/html; charset=utf-8"));
+    headers.insert(
+        "content-type",
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
 
     let message = summarize_fallback_non_success_headers_only(500, 500, &headers);
 
@@ -113,7 +119,10 @@ fn fallback_non_success_headers_only_summary_includes_debug_headers() {
         message.contains("kind=cloudflare_blocked"),
         "unexpected summary: {message}"
     );
-    assert!(message.contains("status=500"), "unexpected summary: {message}");
+    assert!(
+        message.contains("status=500"),
+        "unexpected summary: {message}"
+    );
     assert!(
         message.contains("primary_status=500"),
         "unexpected summary: {message}"

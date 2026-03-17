@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { appClient } from "@/lib/api/app-client";
+import { getAppErrorMessage } from "@/lib/api/transport";
 import { useAppStore } from "@/lib/store/useAppStore";
 import { AppSettings, BackgroundTaskSettings } from "@/types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -113,10 +114,6 @@ function parseIntegerInput(value: string, minimum = 0): number | null {
   return rounded;
 }
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error || "");
-}
-
 export default function SettingsPage() {
   const { setAppSettings: setStoreSettings } = useAppStore();
   const { theme, setTheme } = useTheme();
@@ -156,7 +153,7 @@ export default function SettingsPage() {
       }
     },
     onError: (error: unknown) => {
-      toast.error(`更新失败: ${getErrorMessage(error)}`);
+      toast.error(`更新失败: ${getAppErrorMessage(error)}`);
     },
   });
 
