@@ -313,6 +313,58 @@ fn format_token_endpoint_status_error_accepts_raw_error_json_header() {
 }
 
 #[test]
+fn format_token_endpoint_status_error_uses_header_only_blocked_signal() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-openai-authorization-error",
+        HeaderValue::from_static("unsupported_country_region_territory"),
+    );
+    headers.insert(
+        "cf-ray",
+        HeaderValue::from_static("ray_token_header_blocked"),
+    );
+
+    let message = format_token_endpoint_status_error(reqwest::StatusCode::FORBIDDEN, &headers, "");
+
+    assert!(message.contains("token endpoint returned status 403 Forbidden"));
+    assert!(message.contains(
+        "Access blocked by Cloudflare. This usually happens when connecting from a restricted region"
+    ));
+    assert!(message.contains("auth_error=unsupported_country_region_territory"));
+    assert!(message.contains("kind=cloudflare_blocked"));
+}
+
+#[test]
+fn format_api_key_exchange_status_error_uses_identity_header_when_body_empty() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-error-json",
+        HeaderValue::from_static("{\"identity_error_code\":\"org_membership_required\"}"),
+    );
+
+    let message =
+        format_api_key_exchange_status_error(reqwest::StatusCode::FORBIDDEN, &headers, "");
+
+    assert!(message.contains("api key exchange failed with status 403 Forbidden"));
+    assert!(message.contains("identity error: org_membership_required"));
+    assert!(message.contains("identity_error_code=org_membership_required"));
+    assert!(message.contains("kind=identity_error"));
+}
+
+#[test]
+fn format_token_endpoint_status_error_uses_cloudflare_edge_kind_when_only_cf_ray_exists() {
+    let mut headers = HeaderMap::new();
+    headers.insert("cf-ray", HeaderValue::from_static("ray_token_only_cf"));
+
+    let message =
+        format_token_endpoint_status_error(reqwest::StatusCode::BAD_GATEWAY, &headers, "");
+
+    assert!(message.contains("token endpoint returned status 502 Bad Gateway"));
+    assert!(message.contains("cf_ray=ray_token_only_cf"));
+    assert!(message.contains("kind=cloudflare_edge"));
+}
+
+#[test]
 fn exchange_code_for_tokens_matches_official_login_server_headers() {
     let _guard = AUTH_RUNTIME_MUTEX.lock().expect("lock auth runtime");
     let _restore = GatewayRuntimeRestore::capture();

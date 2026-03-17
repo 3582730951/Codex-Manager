@@ -139,6 +139,48 @@ fn classify_token_endpoint_error_kind(body: &str) -> &'static str {
     }
 }
 
+fn looks_like_blocked_marker(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.contains("blocked")
+        || normalized.contains("unsupported_country_region_territory")
+        || normalized.contains("unsupported_country")
+        || normalized.contains("region_restricted")
+}
+
+fn classify_token_endpoint_error_kind_with_headers(
+    headers: &HeaderMap,
+    body: &str,
+) -> &'static str {
+    let body_kind = classify_token_endpoint_error_kind(body);
+    if !matches!(body_kind, "empty" | "non_json") {
+        return body_kind;
+    }
+
+    if extract_response_header(headers, AUTH_ERROR_HEADER)
+        .as_deref()
+        .is_some_and(looks_like_blocked_marker)
+        || crate::gateway::extract_identity_error_code_from_headers(headers)
+            .as_deref()
+            .is_some_and(looks_like_blocked_marker)
+    {
+        return "cloudflare_blocked";
+    }
+
+    if crate::gateway::extract_identity_error_code_from_headers(headers).is_some() {
+        return "identity_error";
+    }
+
+    if extract_response_header(headers, AUTH_ERROR_HEADER).is_some() {
+        return "auth_error";
+    }
+
+    if extract_response_header(headers, CF_RAY_HEADER).is_some() {
+        return "cloudflare_edge";
+    }
+
+    body_kind
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenEndpointErrorDetail {
     error_code: Option<String>,
@@ -337,15 +379,44 @@ pub(crate) fn parse_token_endpoint_error(body: &str) -> TokenEndpointErrorDetail
     }
 }
 
+fn summarize_header_only_token_endpoint_error(headers: &HeaderMap) -> Option<String> {
+    if let Some(auth_error) = extract_response_header(headers, AUTH_ERROR_HEADER) {
+        if looks_like_blocked_marker(&auth_error) {
+            return Some(CLOUDFLARE_BLOCKED_MESSAGE.to_string());
+        }
+        return Some(format!("authorization error: {auth_error}"));
+    }
+
+    if let Some(identity_error_code) =
+        crate::gateway::extract_identity_error_code_from_headers(headers)
+    {
+        if looks_like_blocked_marker(&identity_error_code) {
+            return Some(CLOUDFLARE_BLOCKED_MESSAGE.to_string());
+        }
+        return Some(format!("identity error: {identity_error_code}"));
+    }
+
+    None
+}
+
+fn resolve_token_endpoint_error_detail(headers: &HeaderMap, body: &str) -> String {
+    if !body.trim().is_empty() {
+        return parse_token_endpoint_error(body).to_string();
+    }
+
+    summarize_header_only_token_endpoint_error(headers)
+        .unwrap_or_else(|| parse_token_endpoint_error(body).to_string())
+}
+
 fn format_token_endpoint_status_error(
     status: reqwest::StatusCode,
     headers: &HeaderMap,
     body: &str,
 ) -> String {
-    let detail = parse_token_endpoint_error(body);
+    let detail = resolve_token_endpoint_error_detail(headers, body);
     let suffix = {
         let mut suffix = build_token_endpoint_debug_suffix(headers);
-        let kind = classify_token_endpoint_error_kind(body);
+        let kind = classify_token_endpoint_error_kind_with_headers(headers, body);
         if kind != "json" {
             let addition = format!("kind={kind}");
             if suffix.is_empty() {
@@ -364,10 +435,15 @@ fn format_api_key_exchange_status_error(
     headers: &HeaderMap,
     body: &str,
 ) -> String {
-    let detail = summarize_token_endpoint_error_body(body);
+    let detail = if body.trim().is_empty() {
+        summarize_header_only_token_endpoint_error(headers)
+            .unwrap_or_else(|| summarize_token_endpoint_error_body(body))
+    } else {
+        summarize_token_endpoint_error_body(body)
+    };
     let suffix = {
         let mut suffix = build_token_endpoint_debug_suffix(headers);
-        let kind = classify_token_endpoint_error_kind(body);
+        let kind = classify_token_endpoint_error_kind_with_headers(headers, body);
         if kind != "json" {
             let addition = format!("kind={kind}");
             if suffix.is_empty() {

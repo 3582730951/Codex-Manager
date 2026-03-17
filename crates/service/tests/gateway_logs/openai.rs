@@ -821,6 +821,12 @@ fn gateway_openai_compact_invalid_success_body_is_mapped_to_502() {
             || gateway_body.contains("HTML 错误页"),
         "unexpected gateway body: {gateway_body}"
     );
+    assert!(
+        gateway_body.contains("kind=invalid_success_body")
+            || gateway_body.contains("kind=cloudflare_challenge")
+            || gateway_body.contains("kind=html"),
+        "unexpected gateway body: {gateway_body}"
+    );
 
     let captured = upstream_rx
         .recv_timeout(Duration::from_secs(2))
@@ -1085,6 +1091,10 @@ fn gateway_openai_compact_html_non_success_is_mapped_to_structured_403() {
         "unexpected gateway body: {gateway_body}"
     );
     assert!(
+        gateway_body.contains("kind=cloudflare_challenge"),
+        "unexpected gateway body: {gateway_body}"
+    );
+    assert!(
         gateway_body.contains("token_expired"),
         "unexpected gateway body: {gateway_body}"
     );
@@ -1124,6 +1134,7 @@ fn gateway_openai_compact_html_non_success_is_mapped_to_structured_403() {
                 && err.contains("ray-compact-html")
                 && err.contains("expired_session")
                 && err.contains("token_expired")
+                && err.contains("kind=cloudflare_challenge")
         }),
         "unexpected log error: {:?}",
         log.error

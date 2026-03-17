@@ -76,7 +76,7 @@
 - [x] token endpoint / api key exchange 的 `x-error-json` 统一支持原始 JSON 与 base64 两种头值，并补齐 `identity_error_code`
 - [x] 当 refresh `401` 的 body 缺少错误码时，继续从 `x-error-json / x-openai-authorization-error` 头部兜底判定 canonical 原因
 - [ ] 继续复核登录回调与 token 链的剩余请求头使用点
-- [ ] 对齐 token endpoint 错误解析，继续细化 challenge / HTML / 非 JSON 子类
+- [x] 对齐 token endpoint 错误解析，继续细化 challenge / HTML / 非 JSON 子类，并让空 body 场景继续从 `auth_error / identity_error_code` 头部推断 `blocked / identity_error / auth_error / cloudflare_edge` 类型
 - [x] 复核 refresh token 失败后的账号状态迁移，继续避免误摘号
 - [x] 收紧 refresh 失效判定：仅 401 视为 refresh 认证失败，403/挑战页/代理异常不再摘号
 
@@ -132,7 +132,9 @@
 - [ ] 继续核对 compact 其余专用头部与 `session_id` 兼容分支
 - [x] compact 上游 `2xx` 假成功体改判为 `502`，避免 HTML/challenge/异常 JSON 透传成功
 - [x] compact 上游 `403/5xx` 的 HTML/challenge 页改成结构化 JSON 错误返回，不再透传整页 HTML
-- [ ] 继续细化 compact 失败时的 fallback 与 `identity_error_code` / 调试头诊断
+- [x] compact 结构化错误补齐稳定 `kind` 分类，能直接区分 `cloudflare_challenge / cloudflare_blocked / identity_error / auth_error / cloudflare_edge / html / invalid_success_body / non_json`
+- [x] compact 在 body 为空、但头部已给出 `auth_error / identity_error_code` 时，也会强制走结构化错误返回
+- [ ] 继续细化 compact 失败时的 fallback 与其余调试头诊断
 - [ ] 如果官方 `compact_remote` 的历史替换行为会影响真实请求链路，再按需补对应状态传递；否则不补 `thread/compact/start`
 
 验收：

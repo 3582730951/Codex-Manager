@@ -34,12 +34,16 @@ fn first_upstream_header(headers: &reqwest::header::HeaderMap, names: &[&str]) -
 }
 
 fn compact_debug_suffix(
+    kind: Option<&str>,
     request_id: Option<&str>,
     cf_ray: Option<&str>,
     auth_error: Option<&str>,
     identity_error_code: Option<&str>,
 ) -> String {
     let mut details = Vec::new();
+    if let Some(kind) = kind.map(str::trim).filter(|value| !value.is_empty()) {
+        details.push(format!("kind={kind}"));
+    }
     if let Some(request_id) = request_id.map(str::trim).filter(|value| !value.is_empty()) {
         details.push(format!("request_id={request_id}"));
     }
@@ -64,17 +68,108 @@ fn compact_debug_suffix(
 
 fn with_upstream_debug_suffix(
     message: Option<String>,
+    kind: Option<&str>,
     request_id: Option<&str>,
     cf_ray: Option<&str>,
     auth_error: Option<&str>,
     identity_error_code: Option<&str>,
 ) -> Option<String> {
     let message = message?;
-    let suffix = compact_debug_suffix(request_id, cf_ray, auth_error, identity_error_code);
+    let suffix = compact_debug_suffix(kind, request_id, cf_ray, auth_error, identity_error_code);
     if suffix.is_empty() {
         Some(message)
     } else {
         Some(format!("{message}{suffix}"))
+    }
+}
+
+fn looks_like_blocked_marker(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    normalized.contains("blocked")
+        || normalized.contains("unsupported_country_region_territory")
+        || normalized.contains("unsupported_country")
+        || normalized.contains("region_restricted")
+}
+
+fn classify_compact_invalid_success_kind(
+    body: &[u8],
+    cf_ray: Option<&str>,
+    auth_error: Option<&str>,
+    identity_error_code: Option<&str>,
+) -> &'static str {
+    if auth_error.is_some_and(looks_like_blocked_marker)
+        || identity_error_code.is_some_and(looks_like_blocked_marker)
+    {
+        return "cloudflare_blocked";
+    }
+    if let Some(hint) = extract_error_hint_from_body(502, body) {
+        if hint.contains("Cloudflare") {
+            return "cloudflare_challenge";
+        }
+        if hint.contains("HTML 错误页") {
+            return "html";
+        }
+    }
+    if identity_error_code.is_some() {
+        return "identity_error";
+    }
+    if auth_error.is_some() {
+        return "auth_error";
+    }
+    if cf_ray.is_some() {
+        return "cloudflare_edge";
+    }
+    if serde_json::from_slice::<Value>(body).is_ok() {
+        "invalid_success_body"
+    } else if body.is_empty() {
+        "empty"
+    } else {
+        "non_json"
+    }
+}
+
+fn classify_compact_non_success_kind(
+    status_code: u16,
+    content_type: Option<&str>,
+    body: &[u8],
+    cf_ray: Option<&str>,
+    auth_error: Option<&str>,
+    identity_error_code: Option<&str>,
+) -> &'static str {
+    if auth_error.is_some_and(looks_like_blocked_marker)
+        || identity_error_code.is_some_and(looks_like_blocked_marker)
+    {
+        return "cloudflare_blocked";
+    }
+    if let Some(hint) = extract_error_hint_from_body(status_code, body) {
+        if hint.contains("Cloudflare") {
+            return "cloudflare_challenge";
+        }
+        if hint.contains("HTML 错误页") {
+            return "html";
+        }
+    }
+    if content_type
+        .map(crate::gateway::is_html_content_type)
+        .unwrap_or(false)
+    {
+        return "html";
+    }
+    if identity_error_code.is_some() {
+        return "identity_error";
+    }
+    if auth_error.is_some() {
+        return "auth_error";
+    }
+    if cf_ray.is_some() {
+        return "cloudflare_edge";
+    }
+    if serde_json::from_slice::<Value>(body).is_ok() {
+        "json_error"
+    } else if body.is_empty() {
+        "empty"
+    } else {
+        "non_json"
     }
 }
 
@@ -92,23 +187,42 @@ fn build_invalid_compact_success_message(
     auth_error: Option<&str>,
     identity_error_code: Option<&str>,
 ) -> String {
+    let kind = classify_compact_invalid_success_kind(body, cf_ray, auth_error, identity_error_code);
     if let Ok(value) = serde_json::from_slice::<Value>(body) {
         if let Some(message) = extract_error_message_from_json(&value) {
             return format!(
                 "上游 compact 响应格式异常：{message}{}",
-                compact_debug_suffix(request_id, cf_ray, auth_error, identity_error_code)
+                compact_debug_suffix(
+                    Some(kind),
+                    request_id,
+                    cf_ray,
+                    auth_error,
+                    identity_error_code
+                )
             );
         }
     }
     if let Some(hint) = extract_error_hint_from_body(502, body) {
         return format!(
             "上游 compact 响应格式异常：{hint}{}",
-            compact_debug_suffix(request_id, cf_ray, auth_error, identity_error_code)
+            compact_debug_suffix(
+                Some(kind),
+                request_id,
+                cf_ray,
+                auth_error,
+                identity_error_code
+            )
         );
     }
     format!(
         "上游 compact 响应格式异常（未返回 output 数组）{}",
-        compact_debug_suffix(request_id, cf_ray, auth_error, identity_error_code)
+        compact_debug_suffix(
+            Some(kind),
+            request_id,
+            cf_ray,
+            auth_error,
+            identity_error_code
+        )
     )
 }
 
@@ -116,9 +230,20 @@ fn compact_non_success_body_should_be_normalized(
     status_code: u16,
     content_type: Option<&str>,
     body: &[u8],
+    auth_error: Option<&str>,
+    identity_error_code: Option<&str>,
 ) -> bool {
     if status_code < 400 {
         return false;
+    }
+    if auth_error
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || identity_error_code
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    {
+        return true;
     }
     if content_type
         .map(crate::gateway::is_html_content_type)
@@ -132,29 +257,56 @@ fn compact_non_success_body_should_be_normalized(
 
 fn build_compact_non_success_message(
     status_code: u16,
+    content_type: Option<&str>,
     body: &[u8],
     request_id: Option<&str>,
     cf_ray: Option<&str>,
     auth_error: Option<&str>,
     identity_error_code: Option<&str>,
 ) -> String {
+    let kind = classify_compact_non_success_kind(
+        status_code,
+        content_type,
+        body,
+        cf_ray,
+        auth_error,
+        identity_error_code,
+    );
     if let Ok(value) = serde_json::from_slice::<Value>(body) {
         if let Some(message) = extract_error_message_from_json(&value) {
             return format!(
                 "上游 compact 请求失败：{message}{}",
-                compact_debug_suffix(request_id, cf_ray, auth_error, identity_error_code)
+                compact_debug_suffix(
+                    Some(kind),
+                    request_id,
+                    cf_ray,
+                    auth_error,
+                    identity_error_code
+                )
             );
         }
     }
     if let Some(hint) = extract_error_hint_from_body(status_code, body) {
         return format!(
             "上游 compact 请求失败：{hint}{}",
-            compact_debug_suffix(request_id, cf_ray, auth_error, identity_error_code)
+            compact_debug_suffix(
+                Some(kind),
+                request_id,
+                cf_ray,
+                auth_error,
+                identity_error_code
+            )
         );
     }
     format!(
         "上游 compact 请求失败：status={status_code}{}",
-        compact_debug_suffix(request_id, cf_ray, auth_error, identity_error_code)
+        compact_debug_suffix(
+            Some(kind),
+            request_id,
+            cf_ray,
+            auth_error,
+            identity_error_code
+        )
     )
 }
 
@@ -218,6 +370,7 @@ fn respond_invalid_compact_non_success_body(
     status_code: u16,
     usage: UpstreamResponseUsage,
     body: &[u8],
+    content_type: Option<&str>,
     request_id: Option<&str>,
     cf_ray: Option<&str>,
     auth_error: Option<&str>,
@@ -230,6 +383,7 @@ fn respond_invalid_compact_non_success_body(
         usage,
         build_compact_non_success_message(
             status_code,
+            content_type,
             body,
             request_id,
             cf_ray,
@@ -308,6 +462,7 @@ pub(crate) fn respond_with_upstream(
                     }
                     let upstream_error_hint = with_upstream_debug_suffix(
                         extract_error_hint_from_body(status.0, &body),
+                        None,
                         upstream_request_id.as_deref(),
                         upstream_cf_ray.as_deref(),
                         upstream_auth_error.as_deref(),
@@ -348,6 +503,8 @@ pub(crate) fn respond_with_upstream(
                             status.0,
                             upstream_content_type.as_deref(),
                             body.as_ref(),
+                            upstream_auth_error.as_deref(),
+                            upstream_identity_error_code.as_deref(),
                         )
                     {
                         return Ok(respond_invalid_compact_non_success_body(
@@ -355,6 +512,7 @@ pub(crate) fn respond_with_upstream(
                             status.0,
                             usage,
                             body.as_ref(),
+                            upstream_content_type.as_deref(),
                             upstream_request_id.as_deref(),
                             upstream_cf_ray.as_deref(),
                             upstream_auth_error.as_deref(),
@@ -410,6 +568,8 @@ pub(crate) fn respond_with_upstream(
                         status.0,
                         upstream_content_type.as_deref(),
                         upstream_body.as_ref(),
+                        upstream_auth_error.as_deref(),
+                        upstream_identity_error_code.as_deref(),
                     )
                 {
                     return Ok(respond_invalid_compact_non_success_body(
@@ -417,6 +577,7 @@ pub(crate) fn respond_with_upstream(
                         status.0,
                         usage,
                         upstream_body.as_ref(),
+                        upstream_content_type.as_deref(),
                         upstream_request_id.as_deref(),
                         upstream_cf_ray.as_deref(),
                         upstream_auth_error.as_deref(),
@@ -426,6 +587,7 @@ pub(crate) fn respond_with_upstream(
                 }
                 let upstream_error_hint = with_upstream_debug_suffix(
                     extract_error_hint_from_body(status.0, upstream_body.as_ref()),
+                    None,
                     upstream_request_id.as_deref(),
                     upstream_cf_ray.as_deref(),
                     upstream_auth_error.as_deref(),
@@ -466,6 +628,7 @@ pub(crate) fn respond_with_upstream(
                 };
                 let upstream_error_hint = with_upstream_debug_suffix(
                     extract_error_hint_from_body(status.0, upstream_body.as_ref()),
+                    None,
                     upstream_request_id.as_deref(),
                     upstream_cf_ray.as_deref(),
                     upstream_auth_error.as_deref(),
@@ -517,6 +680,7 @@ pub(crate) fn respond_with_upstream(
                     delivery_error,
                     upstream_error_hint: with_upstream_debug_suffix(
                         collector.upstream_error_hint,
+                        None,
                         upstream_request_id.as_deref(),
                         upstream_cf_ray.as_deref(),
                         upstream_auth_error.as_deref(),
@@ -716,6 +880,7 @@ pub(crate) fn respond_with_upstream(
             let delivery_error = request.respond(response).err().map(|err| err.to_string());
             let upstream_error_hint = with_upstream_debug_suffix(
                 extract_error_hint_from_body(status.0, upstream_body.as_ref()),
+                None,
                 upstream_request_id.as_deref(),
                 upstream_cf_ray.as_deref(),
                 upstream_auth_error.as_deref(),
@@ -820,6 +985,7 @@ pub(crate) fn respond_with_upstream(
             let delivery_error = request.respond(response).err().map(|err| err.to_string());
             let upstream_error_hint = with_upstream_debug_suffix(
                 extract_error_hint_from_body(status.0, upstream_body.as_ref()),
+                None,
                 upstream_request_id.as_deref(),
                 upstream_cf_ray.as_deref(),
                 upstream_auth_error.as_deref(),
@@ -858,5 +1024,47 @@ fn resolve_stream_keepalive_frame(
         ResponseAdapter::OpenAIChatCompletionsJson
         | ResponseAdapter::OpenAICompletionsJson
         | ResponseAdapter::AnthropicJson => SseKeepAliveFrame::Comment,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_compact_non_success_kind, compact_non_success_body_should_be_normalized};
+
+    #[test]
+    fn compact_header_only_identity_error_is_normalized_and_classified() {
+        assert!(compact_non_success_body_should_be_normalized(
+            403,
+            Some("text/plain"),
+            b"",
+            None,
+            Some("org_membership_required"),
+        ));
+        assert_eq!(
+            classify_compact_non_success_kind(
+                403,
+                Some("text/plain"),
+                b"",
+                None,
+                None,
+                Some("org_membership_required"),
+            ),
+            "identity_error"
+        );
+    }
+
+    #[test]
+    fn compact_header_only_cf_ray_is_classified_as_cloudflare_edge() {
+        assert_eq!(
+            classify_compact_non_success_kind(
+                502,
+                Some("text/plain"),
+                b"",
+                Some("ray_compact_edge"),
+                None,
+                None,
+            ),
+            "cloudflare_edge"
+        );
     }
 }
