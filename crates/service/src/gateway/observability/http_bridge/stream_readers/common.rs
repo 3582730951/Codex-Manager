@@ -3,12 +3,15 @@ use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_SSE_KEEPALIVE_INTERVAL_MS: u64 = 15_000;
+const DEFAULT_SSE_IDLE_TIMEOUT_MS: u64 = 120_000;
 const ENV_SSE_KEEPALIVE_INTERVAL_MS: &str = "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS";
+const ENV_SSE_IDLE_TIMEOUT_MS: &str = "CODEXMANAGER_SSE_IDLE_TIMEOUT_MS";
 
 static SSE_KEEPALIVE_INTERVAL_MS: AtomicU64 = AtomicU64::new(DEFAULT_SSE_KEEPALIVE_INTERVAL_MS);
+static SSE_IDLE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_SSE_IDLE_TIMEOUT_MS);
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PassthroughSseCollector {
@@ -112,6 +115,13 @@ pub(super) fn reload_from_env() {
             .unwrap_or(DEFAULT_SSE_KEEPALIVE_INTERVAL_MS),
         Ordering::Relaxed,
     );
+    SSE_IDLE_TIMEOUT_MS.store(
+        std::env::var(ENV_SSE_IDLE_TIMEOUT_MS)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_SSE_IDLE_TIMEOUT_MS),
+        Ordering::Relaxed,
+    );
 }
 
 pub(super) fn sse_keepalive_interval() -> Duration {
@@ -121,6 +131,27 @@ pub(super) fn sse_keepalive_interval() -> Duration {
 
 pub(super) fn current_sse_keepalive_interval_ms() -> u64 {
     SSE_KEEPALIVE_INTERVAL_MS.load(Ordering::Relaxed).max(1)
+}
+
+pub(super) fn sse_idle_timeout() -> Option<Duration> {
+    match SSE_IDLE_TIMEOUT_MS.load(Ordering::Relaxed) {
+        0 => None,
+        value => Some(Duration::from_millis(value.max(1))),
+    }
+}
+
+pub(super) fn stream_idle_timeout_exceeded(idle_since: &mut Option<Instant>) -> bool {
+    let Some(timeout) = sse_idle_timeout() else {
+        return false;
+    };
+    let now = Instant::now();
+    match idle_since {
+        Some(since) => since.elapsed() >= timeout,
+        None => {
+            *idle_since = Some(now);
+            false
+        }
+    }
 }
 
 pub(super) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
@@ -154,6 +185,10 @@ pub(super) fn mark_collector_terminal_success(
 
 pub(super) fn stream_incomplete_message() -> String {
     "上游流中途中断（未正常结束）".to_string()
+}
+
+pub(super) fn stream_idle_timeout_message() -> String {
+    "上游流空闲超时".to_string()
 }
 
 pub(super) fn stream_reader_disconnected_message() -> String {

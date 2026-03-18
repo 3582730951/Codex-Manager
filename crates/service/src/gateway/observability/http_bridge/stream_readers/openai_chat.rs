@@ -5,11 +5,13 @@ use super::{
     extract_openai_completed_output_text, extract_sse_frame_payload, inspect_sse_frame,
     is_response_completed_event_name, map_chunk_has_chat_text, mark_collector_terminal_success,
     merge_usage, normalize_chat_chunk_delta_role, parse_sse_frame_json,
-    should_skip_chat_live_text_event, sse_keepalive_interval, stream_incomplete_message,
-    stream_reader_disconnected_message, update_openai_stream_meta, Arc, Cursor, Mutex,
-    OpenAIStreamMeta, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
-    ToolNameRestoreMap, UpstreamSseFramePump, UpstreamSseFramePumpItem, Value,
+    should_skip_chat_live_text_event, sse_keepalive_interval, stream_idle_timeout_exceeded,
+    stream_idle_timeout_message, stream_incomplete_message, stream_reader_disconnected_message,
+    update_openai_stream_meta, Arc, Cursor, Mutex, OpenAIStreamMeta, PassthroughSseCollector, Read,
+    SseKeepAliveFrame, SseTerminal, ToolNameRestoreMap, UpstreamSseFramePump,
+    UpstreamSseFramePumpItem, Value,
 };
+use std::time::Instant;
 
 pub(crate) struct OpenAIChatCompletionsSseReader {
     upstream: UpstreamSseFramePump,
@@ -19,6 +21,7 @@ pub(crate) struct OpenAIChatCompletionsSseReader {
     stream_meta: OpenAIStreamMeta,
     emitted_text_delta: bool,
     emitted_assistant_role: bool,
+    idle_since: Option<Instant>,
     finished: bool,
 }
 
@@ -36,6 +39,7 @@ impl OpenAIChatCompletionsSseReader {
             stream_meta: OpenAIStreamMeta::default(),
             emitted_text_delta: false,
             emitted_assistant_role: false,
+            idle_since: None,
             finished: false,
         }
     }
@@ -148,6 +152,7 @@ impl OpenAIChatCompletionsSseReader {
         loop {
             match self.upstream.recv_timeout(sse_keepalive_interval()) {
                 Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
+                    self.idle_since = None;
                     self.update_usage_from_frame(&frame);
                     let mapped = self.map_frame_to_chat_completions_sse(&frame);
                     if !mapped.is_empty() {
@@ -181,6 +186,15 @@ impl OpenAIChatCompletionsSseReader {
                     return Ok(Vec::new());
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if stream_idle_timeout_exceeded(&mut self.idle_since) {
+                        if let Ok(mut collector) = self.usage_collector.lock() {
+                            collector
+                                .terminal_error
+                                .get_or_insert_with(stream_idle_timeout_message);
+                        }
+                        self.finished = true;
+                        return Ok(Vec::new());
+                    }
                     return Ok(SseKeepAliveFrame::OpenAIChatCompletions.bytes().to_vec());
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {

@@ -373,10 +373,10 @@ fn gateway_error_logging_writes_only_trace_log_file() {
 
     let trace_content = fs::read_to_string(&trace_log_path).expect("read gateway trace log");
     assert!(trace_content.contains("event=FAILED_REQUEST"));
-    assert!(!trace_content.contains("event=REQUEST_FINAL"));
     assert!(!trace_content.contains("event=REQUEST_RECORD"));
-    assert!(!trace_content.contains("event=ATTEMPT_RESULT"));
-    assert!(!trace_content.contains("event=BRIDGE_RESULT"));
+    assert!(trace_content.contains("event=REQUEST_START"));
+    assert!(trace_content.contains("event=ATTEMPT_RESULT"));
+    assert!(trace_content.contains("event=BRIDGE_RESULT"));
     assert!(trace_content.contains("trace_id="));
     assert!(trace_content.contains("request_path=/v1/responses"));
     assert!(trace_content.contains("upstream_url="));

@@ -1,16 +1,18 @@
 use super::{
     classify_upstream_stream_read_error, inspect_sse_frame, merge_usage, sse_keepalive_interval,
-    stream_incomplete_message, stream_reader_disconnected_message, Arc, Cursor, Mutex,
-    PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal, UpstreamSseFramePump,
-    UpstreamSseFramePumpItem,
+    stream_idle_timeout_exceeded, stream_idle_timeout_message, stream_incomplete_message,
+    stream_reader_disconnected_message, Arc, Cursor, Mutex, PassthroughSseCollector, Read,
+    SseKeepAliveFrame, SseTerminal, UpstreamSseFramePump, UpstreamSseFramePumpItem,
 };
 use crate::gateway::http_bridge::extract_error_hint_from_body;
+use std::time::Instant;
 
 pub(crate) struct PassthroughSseUsageReader {
     upstream: UpstreamSseFramePump,
     out_cursor: Cursor<Vec<u8>>,
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
     keepalive_frame: SseKeepAliveFrame,
+    idle_since: Option<Instant>,
     finished: bool,
 }
 
@@ -25,6 +27,7 @@ impl PassthroughSseUsageReader {
             out_cursor: Cursor::new(Vec::new()),
             usage_collector,
             keepalive_frame,
+            idle_since: None,
             finished: false,
         }
     }
@@ -67,6 +70,7 @@ impl PassthroughSseUsageReader {
     fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
         match self.upstream.recv_timeout(sse_keepalive_interval()) {
             Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
+                self.idle_since = None;
                 self.update_usage_from_frame(&frame);
                 Ok(frame.concat().into_bytes())
             }
@@ -91,6 +95,15 @@ impl PassthroughSseUsageReader {
                 Ok(Vec::new())
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if stream_idle_timeout_exceeded(&mut self.idle_since) {
+                    if let Ok(mut collector) = self.usage_collector.lock() {
+                        collector
+                            .terminal_error
+                            .get_or_insert_with(stream_idle_timeout_message);
+                    }
+                    self.finished = true;
+                    return Ok(Vec::new());
+                }
                 Ok(self.keepalive_frame.bytes().to_vec())
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {

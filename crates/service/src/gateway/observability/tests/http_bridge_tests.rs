@@ -764,6 +764,45 @@ fn passthrough_sse_reader_emits_keepalive_for_responses_stream() {
 }
 
 #[test]
+fn passthrough_sse_reader_stops_after_idle_timeout() {
+    let _guard = test_env_guard();
+    let _keepalive_guard = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS", "15");
+    let _idle_guard = EnvGuard::set("CODEXMANAGER_SSE_IDLE_TIMEOUT_MS", "40");
+    super::reload_from_env();
+
+    let (upstream, server) = open_streaming_mock_http_response(
+        "text/event-stream",
+        &[
+            (
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_idle_timeout_1\"}}\n\n",
+                0,
+            ),
+            ("data: [DONE]\n\n", 120),
+        ],
+    );
+    let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = PassthroughSseUsageReader::new(
+        upstream,
+        Arc::clone(&usage_collector),
+        SseKeepAliveFrame::OpenAIResponses,
+    );
+    let mut mapped = String::new();
+    reader
+        .read_to_string(&mut mapped)
+        .expect("read passthrough idle timeout");
+    server.join().expect("join streaming mock upstream");
+    super::reload_from_env();
+
+    let collector = usage_collector
+        .lock()
+        .expect("lock usage collector")
+        .clone();
+    assert!(mapped.contains("\"type\":\"codexmanager.keepalive\""));
+    assert!(!mapped.contains("data: [DONE]"));
+    assert_eq!(collector.terminal_error.as_deref(), Some("上游流空闲超时"));
+}
+
+#[test]
 fn passthrough_sse_reader_captures_raw_html_error_body() {
     let (upstream, server) = open_streaming_mock_http_response(
         "text/html",
@@ -828,4 +867,43 @@ fn openai_chat_sse_reader_emits_keepalive_chunk_during_idle_gap() {
     assert!(mapped.contains("\"id\":\"cm_keepalive\""));
     assert!(mapped.contains("\"object\":\"chat.completion.chunk\""));
     assert!(mapped.contains("data: [DONE]"));
+}
+
+#[test]
+fn openai_chat_sse_reader_stops_after_idle_timeout() {
+    let _guard = test_env_guard();
+    let _keepalive_guard = EnvGuard::set("CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS", "15");
+    let _idle_guard = EnvGuard::set("CODEXMANAGER_SSE_IDLE_TIMEOUT_MS", "40");
+    super::reload_from_env();
+
+    let (upstream, server) = open_streaming_mock_http_response(
+        "text/event-stream",
+        &[
+            (
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_chat_idle_timeout_1\",\"created\":1,\"model\":\"gpt-5.3-codex\"}}\n\n",
+                0,
+            ),
+            (
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_chat_idle_timeout_1\",\"created\":1,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n",
+                120,
+            ),
+        ],
+    );
+    let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader =
+        OpenAIChatCompletionsSseReader::new(upstream, Arc::clone(&usage_collector), None);
+    let mut mapped = String::new();
+    reader
+        .read_to_string(&mut mapped)
+        .expect("read chat idle timeout");
+    server.join().expect("join streaming mock upstream");
+    super::reload_from_env();
+
+    let collector = usage_collector
+        .lock()
+        .expect("lock usage collector")
+        .clone();
+    assert!(mapped.contains("\"id\":\"cm_keepalive\""));
+    assert!(!mapped.contains("data: [DONE]"));
+    assert_eq!(collector.terminal_error.as_deref(), Some("上游流空闲超时"));
 }

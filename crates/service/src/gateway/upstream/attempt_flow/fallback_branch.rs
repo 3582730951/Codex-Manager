@@ -13,7 +13,7 @@ fn should_failover_after_fallback_non_success(status: u16, has_more_candidates: 
     if !has_more_candidates {
         return false;
     }
-    matches!(status, 401 | 403 | 404 | 408 | 409 | 429)
+    matches!(status, 401 | 402 | 403 | 404 | 408 | 409 | 429)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -104,6 +104,7 @@ where
             // 中文注释：仅对“可能账号相关/可恢复”的状态继续 failover；
             // 例如 5xx 这类上游服务端错误直接回传，避免单次请求在大量候选账号上长时间轮询。
             if should_failover_after_fallback_non_success(fallback_status, has_more_candidates) {
+                let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
                 FallbackBranchResult::Failover
             } else {
                 FallbackBranchResult::RespondUpstream(resp)

@@ -107,3 +107,11 @@ fn rate_limited_offense_resets_after_quiet_period() {
     let state = lock.lock().expect("cooldown state lock");
     assert_eq!(state.offense_counts.get("acc"), Some(&1));
 }
+
+#[test]
+fn payment_required_maps_to_quota_exhausted_cooldown() {
+    assert_eq!(
+        cooldown_reason_for_status(402),
+        Some(CooldownReason::QuotaExhausted)
+    );
+}

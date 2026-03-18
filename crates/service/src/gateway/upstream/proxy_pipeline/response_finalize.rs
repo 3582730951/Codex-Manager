@@ -65,6 +65,25 @@ fn is_client_disconnect_error(message: &str) -> bool {
         || normalized.contains("os error 104")
 }
 
+fn error_hint_looks_like_quota_exhausted(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    normalized.contains("insufficient_quota")
+        || normalized.contains("quota exceeded")
+        || normalized.contains("exceeded your current quota")
+        || normalized.contains("usage limit")
+        || normalized.contains("out of credits")
+        || normalized.contains("credit balance")
+        || normalized.contains("credits exhausted")
+        || normalized.contains("billing hard limit")
+        || normalized.contains("requires_payment_method")
+        || normalized.contains("payment required")
+        || normalized.contains("余额不足")
+        || normalized.contains("额度不足")
+}
+
 fn classify_stream_bridge_failure(
     stream_terminal_seen: bool,
     stream_terminal_error: Option<&str>,
@@ -258,6 +277,18 @@ pub(super) fn finalize_upstream_response(
             super::super::super::CooldownReason::Network,
         );
         super::super::super::record_route_quality(account_id, 502);
+    }
+    if final_error
+        .as_deref()
+        .is_some_and(error_hint_looks_like_quota_exhausted)
+    {
+        super::super::super::mark_account_cooldown(
+            account_id,
+            super::super::super::CooldownReason::QuotaExhausted,
+        );
+    }
+    if status_for_log >= 400 || stream_failure.is_some() {
+        let _ = super::super::super::clear_manual_preferred_account_if(account_id);
     }
 
     let usage = bridge.usage;

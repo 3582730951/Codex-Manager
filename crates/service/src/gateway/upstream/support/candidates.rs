@@ -27,20 +27,10 @@ pub(in super::super) fn free_account_model_override(
 
 pub(in super::super) fn candidate_skip_reason_for_proxy(
     account_id: &str,
-    idx: usize,
+    _idx: usize,
     _candidate_count: usize,
     account_max_inflight: usize,
 ) -> Option<CandidateSkipReason> {
-    // 中文注释：当用户手动“切到当前”后，首候选应持续优先命中；
-    // 仅在真实请求失败时由上游流程自动清除手动锁定，再回退常规轮转。
-    let is_manual_preferred_head = idx == 0
-        && super::super::super::manual_preferred_account()
-            .as_deref()
-            .is_some_and(|manual_id| manual_id == account_id);
-    if is_manual_preferred_head {
-        return None;
-    }
-
     if super::super::super::is_account_in_cooldown(account_id) {
         super::super::super::record_gateway_failover_attempt();
         return Some(CandidateSkipReason::Cooldown);
@@ -57,7 +47,10 @@ pub(in super::super) fn candidate_skip_reason_for_proxy(
 }
 #[cfg(test)]
 mod tests {
-    use super::free_account_model_override;
+    use super::{
+        candidate_skip_reason_for_proxy, free_account_model_override, CandidateSkipReason,
+    };
+    use crate::gateway::{cooldown, route_hint};
     use codexmanager_core::storage::{now_ts, Account, Storage, Token, UsageSnapshotRecord};
 
     #[test]
@@ -186,5 +179,20 @@ mod tests {
         let _ = crate::gateway::set_free_account_max_model(&original);
 
         assert_eq!(actual.as_deref(), Some("gpt-5.2"));
+    }
+
+    #[test]
+    fn manual_preferred_head_still_skips_when_account_is_in_cooldown() {
+        route_hint::clear_route_state_for_tests();
+        cooldown::clear_runtime_state();
+        route_hint::set_manual_preferred_account("acc-manual").expect("set manual preferred");
+        cooldown::mark_account_cooldown("acc-manual", cooldown::CooldownReason::RateLimited);
+
+        let reason = candidate_skip_reason_for_proxy("acc-manual", 0, 2, 1);
+
+        route_hint::clear_route_state_for_tests();
+        cooldown::clear_runtime_state();
+
+        assert_eq!(reason, Some(CandidateSkipReason::Cooldown));
     }
 }

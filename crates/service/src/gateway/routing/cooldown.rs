@@ -5,6 +5,7 @@ use codexmanager_core::storage::now_ts;
 
 const DEFAULT_ACCOUNT_COOLDOWN_SECS: i64 = 20;
 const DEFAULT_ACCOUNT_COOLDOWN_NETWORK_SECS: i64 = DEFAULT_ACCOUNT_COOLDOWN_SECS;
+const DEFAULT_ACCOUNT_COOLDOWN_QUOTA_SECS: i64 = 15 * 60;
 const DEFAULT_ACCOUNT_COOLDOWN_429_SECS: i64 = 45;
 const DEFAULT_ACCOUNT_COOLDOWN_5XX_SECS: i64 = 30;
 const DEFAULT_ACCOUNT_COOLDOWN_4XX_SECS: i64 = DEFAULT_ACCOUNT_COOLDOWN_SECS;
@@ -30,6 +31,7 @@ static ACCOUNT_COOLDOWN_UNTIL: OnceLock<Mutex<AccountCooldownState>> = OnceLock:
 pub(super) enum CooldownReason {
     Default,
     Network,
+    QuotaExhausted,
     RateLimited,
     Upstream5xx,
     Upstream4xx,
@@ -40,6 +42,7 @@ fn cooldown_secs_for_reason(reason: CooldownReason) -> i64 {
     match reason {
         CooldownReason::Default => DEFAULT_ACCOUNT_COOLDOWN_SECS,
         CooldownReason::Network => DEFAULT_ACCOUNT_COOLDOWN_NETWORK_SECS,
+        CooldownReason::QuotaExhausted => DEFAULT_ACCOUNT_COOLDOWN_QUOTA_SECS,
         CooldownReason::RateLimited => DEFAULT_ACCOUNT_COOLDOWN_429_SECS,
         CooldownReason::Upstream5xx => DEFAULT_ACCOUNT_COOLDOWN_5XX_SECS,
         CooldownReason::Upstream4xx => DEFAULT_ACCOUNT_COOLDOWN_4XX_SECS,
@@ -100,6 +103,8 @@ fn decay_offense_count_for_success(
 
 pub(super) fn cooldown_reason_for_status(status: u16) -> Option<CooldownReason> {
     match status {
+        401 | 403 | 408 | 409 => Some(CooldownReason::Upstream4xx),
+        402 => Some(CooldownReason::QuotaExhausted),
         429 => Some(CooldownReason::RateLimited),
         500..=599 => Some(CooldownReason::Upstream5xx),
         _ => None,

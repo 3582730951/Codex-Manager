@@ -18,6 +18,54 @@ fn status_404_with_more_candidates_triggers_failover() {
 }
 
 #[test]
+fn status_401_with_more_candidates_triggers_failover() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let decision = decide_upstream_outcome(
+        &storage,
+        "acc-401",
+        reqwest::StatusCode::UNAUTHORIZED,
+        None,
+        "https://api.openai.com/v1/responses",
+        true,
+        |_, _, _| {},
+    );
+    assert!(matches!(decision, UpstreamOutcomeDecision::Failover));
+}
+
+#[test]
+fn status_402_with_more_candidates_triggers_failover() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let decision = decide_upstream_outcome(
+        &storage,
+        "acc-402",
+        reqwest::StatusCode::PAYMENT_REQUIRED,
+        None,
+        "https://api.openai.com/v1/responses",
+        true,
+        |_, _, _| {},
+    );
+    assert!(matches!(decision, UpstreamOutcomeDecision::Failover));
+}
+
+#[test]
+fn status_403_with_more_candidates_triggers_failover() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let decision = decide_upstream_outcome(
+        &storage,
+        "acc-403",
+        reqwest::StatusCode::FORBIDDEN,
+        None,
+        "https://api.openai.com/v1/responses",
+        true,
+        |_, _, _| {},
+    );
+    assert!(matches!(decision, UpstreamOutcomeDecision::Failover));
+}
+
+#[test]
 fn status_404_on_last_candidate_keeps_upstream_response() {
     let storage = Storage::open_in_memory().expect("open");
     storage.init().expect("init");

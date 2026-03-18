@@ -5,10 +5,12 @@ use super::{
     extract_sse_frame_payload, inspect_sse_frame, is_response_completed_event_name,
     map_chunk_has_completion_text, mark_collector_terminal_success, merge_usage,
     parse_sse_frame_json, should_skip_completion_live_text_event, sse_keepalive_interval,
-    stream_incomplete_message, stream_reader_disconnected_message, update_openai_stream_meta, Arc,
-    Cursor, Mutex, OpenAIStreamMeta, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
+    stream_idle_timeout_exceeded, stream_idle_timeout_message, stream_incomplete_message,
+    stream_reader_disconnected_message, update_openai_stream_meta, Arc, Cursor, Mutex,
+    OpenAIStreamMeta, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
     UpstreamSseFramePump, UpstreamSseFramePumpItem, Value,
 };
+use std::time::Instant;
 
 pub(crate) struct OpenAICompletionsSseReader {
     upstream: UpstreamSseFramePump,
@@ -16,6 +18,7 @@ pub(crate) struct OpenAICompletionsSseReader {
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
     stream_meta: OpenAIStreamMeta,
     emitted_text_delta: bool,
+    idle_since: Option<Instant>,
     finished: bool,
 }
 
@@ -30,6 +33,7 @@ impl OpenAICompletionsSseReader {
             usage_collector,
             stream_meta: OpenAIStreamMeta::default(),
             emitted_text_delta: false,
+            idle_since: None,
             finished: false,
         }
     }
@@ -133,6 +137,7 @@ impl OpenAICompletionsSseReader {
         loop {
             match self.upstream.recv_timeout(sse_keepalive_interval()) {
                 Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
+                    self.idle_since = None;
                     self.update_usage_from_frame(&frame);
                     let mapped = self.map_frame_to_completions_sse(&frame);
                     if !mapped.is_empty() {
@@ -166,6 +171,15 @@ impl OpenAICompletionsSseReader {
                     return Ok(Vec::new());
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if stream_idle_timeout_exceeded(&mut self.idle_since) {
+                        if let Ok(mut collector) = self.usage_collector.lock() {
+                            collector
+                                .terminal_error
+                                .get_or_insert_with(stream_idle_timeout_message);
+                        }
+                        self.finished = true;
+                        return Ok(Vec::new());
+                    }
                     return Ok(SseKeepAliveFrame::OpenAICompletions.bytes().to_vec());
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
