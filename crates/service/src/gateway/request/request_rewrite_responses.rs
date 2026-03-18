@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::HashSet;
 
 use super::request_rewrite_shared::{
     path_matches_template, retain_fields_by_templates, TemplateAllowlist,
@@ -103,6 +104,120 @@ pub(super) fn normalize_input_items(path: &str, obj: &mut serde_json::Map<String
         }
     }
     changed
+}
+
+fn item_type(item: &Value) -> Option<&str> {
+    item.get("type").and_then(Value::as_str).map(str::trim)
+}
+
+fn item_call_id(item: &Value) -> Option<String> {
+    item.get("call_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn gather_call_ids(items: &[Value], kinds: &[&str]) -> HashSet<String> {
+    items
+        .iter()
+        .filter(|item| item_type(item).is_some_and(|item_type| kinds.contains(&item_type)))
+        .filter_map(item_call_id)
+        .collect()
+}
+
+fn gather_output_ids(items: &[Value], kind: &str) -> HashSet<String> {
+    items
+        .iter()
+        .filter(|item| item_type(item) == Some(kind))
+        .filter_map(item_call_id)
+        .collect()
+}
+
+fn gather_tool_search_output_ids(items: &[Value]) -> HashSet<String> {
+    items
+        .iter()
+        .filter(|item| item_type(item) == Some("tool_search_output"))
+        .filter_map(|item| {
+            item_call_id(item).or_else(|| {
+                if item.get("execution").and_then(Value::as_str) == Some("server") {
+                    None
+                } else {
+                    Some(String::new())
+                }
+            })
+        })
+        .collect()
+}
+
+fn should_keep_tool_history_item(
+    item: &Value,
+    function_calls: &HashSet<String>,
+    function_outputs: &HashSet<String>,
+    custom_tool_calls: &HashSet<String>,
+    custom_tool_outputs: &HashSet<String>,
+    tool_search_calls: &HashSet<String>,
+    tool_search_outputs: &HashSet<String>,
+) -> bool {
+    match item_type(item) {
+        Some("function_call") | Some("local_shell_call") => {
+            item_call_id(item).is_some_and(|call_id| function_outputs.contains(&call_id))
+        }
+        Some("custom_tool_call") => {
+            item_call_id(item).is_some_and(|call_id| custom_tool_outputs.contains(&call_id))
+        }
+        Some("tool_search_call") => {
+            item_call_id(item).is_some_and(|call_id| tool_search_outputs.contains(&call_id))
+        }
+        Some("function_call_output") => {
+            item_call_id(item).is_some_and(|call_id| function_calls.contains(&call_id))
+        }
+        Some("custom_tool_call_output") => {
+            item_call_id(item).is_some_and(|call_id| custom_tool_calls.contains(&call_id))
+        }
+        Some("tool_search_output") => {
+            if item.get("execution").and_then(Value::as_str) == Some("server")
+                && item_call_id(item).is_none()
+            {
+                return true;
+            }
+            item_call_id(item).is_some_and(|call_id| tool_search_calls.contains(&call_id))
+        }
+        _ => true,
+    }
+}
+
+pub(super) fn sanitize_tool_history_input_items(
+    path: &str,
+    obj: &mut serde_json::Map<String, Value>,
+) -> bool {
+    if !is_responses_path(path) {
+        return false;
+    }
+    let Some(Value::Array(items)) = obj.get_mut("input") else {
+        return false;
+    };
+
+    let function_calls = gather_call_ids(items, &["function_call", "local_shell_call"]);
+    let custom_tool_calls = gather_call_ids(items, &["custom_tool_call"]);
+    let tool_search_calls = gather_call_ids(items, &["tool_search_call"]);
+    let function_outputs = gather_output_ids(items, "function_call_output");
+    let custom_tool_outputs = gather_output_ids(items, "custom_tool_call_output");
+    let tool_search_outputs = gather_tool_search_output_ids(items);
+
+    let original_len = items.len();
+    items.retain(|item| {
+        should_keep_tool_history_item(
+            item,
+            &function_calls,
+            &function_outputs,
+            &custom_tool_calls,
+            &custom_tool_outputs,
+            &tool_search_calls,
+            &tool_search_outputs,
+        )
+    });
+    original_len != items.len()
 }
 
 pub(super) fn ensure_stream_true(path: &str, obj: &mut serde_json::Map<String, Value>) -> bool {

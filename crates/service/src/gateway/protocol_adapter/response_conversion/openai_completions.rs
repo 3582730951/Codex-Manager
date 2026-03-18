@@ -148,6 +148,8 @@ pub(crate) fn convert_openai_completions_stream_chunk(value: &Value) -> Option<V
 
         if chunk_type == "response.function_call_arguments.delta"
             || chunk_type == "response.function_call_arguments.done"
+            || chunk_type == "response.custom_tool_call_input.delta"
+            || chunk_type == "response.custom_tool_call_input.done"
         {
             return None;
         }

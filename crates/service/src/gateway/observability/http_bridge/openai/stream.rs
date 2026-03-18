@@ -150,13 +150,21 @@ pub(in super::super) fn map_chunk_has_completion_text(mapped: &Value) -> bool {
         })
 }
 
-fn is_function_call_output_item(value: &Value) -> bool {
+fn is_tool_related_output_item(value: &Value) -> bool {
     value
         .get("item")
         .or_else(|| value.get("output_item"))
         .and_then(|item| item.get("type"))
         .and_then(Value::as_str)
-        .is_some_and(|item_type| item_type == "function_call")
+        .is_some_and(|item_type| {
+            matches!(
+                item_type,
+                "function_call"
+                    | "custom_tool_call"
+                    | "function_call_output"
+                    | "custom_tool_call_output"
+            )
+        })
 }
 
 pub(in super::super) fn should_skip_chat_live_text_event(event_type: &str, value: &Value) -> bool {
@@ -166,7 +174,7 @@ pub(in super::super) fn should_skip_chat_live_text_event(event_type: &str, value
         | "response.content_part.delta"
         | "response.content_part.done" => true,
         "response.output_item.added" | "response.output_item.done" => {
-            !is_function_call_output_item(value)
+            !is_tool_related_output_item(value)
         }
         _ => false,
     }
@@ -182,7 +190,7 @@ pub(in super::super) fn should_skip_completion_live_text_event(
         | "response.content_part.delta"
         | "response.content_part.done" => true,
         "response.output_item.added" | "response.output_item.done" => {
-            !is_function_call_output_item(value)
+            !is_tool_related_output_item(value)
         }
         _ => false,
     }

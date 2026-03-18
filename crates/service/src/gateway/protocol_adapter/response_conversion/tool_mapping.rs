@@ -7,6 +7,32 @@ pub(super) fn is_openai_chat_tool_item_type(item_type: &str) -> bool {
     matches!(item_type, "function_call" | "custom_tool_call")
 }
 
+fn is_tool_input_delta_event(chunk_type: &str) -> bool {
+    matches!(
+        chunk_type,
+        "response.function_call_arguments.delta"
+            | "response.function_call_arguments.done"
+            | "response.custom_tool_call_input.delta"
+            | "response.custom_tool_call_input.done"
+    )
+}
+
+fn extract_tool_input_fragment(chunk_type: &str, value: &Value) -> Option<String> {
+    match chunk_type {
+        "response.function_call_arguments.delta" | "response.function_call_arguments.done" => value
+            .get("delta")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("arguments").and_then(Value::as_str))
+            .map(str::to_string),
+        "response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done" => value
+            .get("delta")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("input").and_then(Value::as_str))
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
 // 中文注释：请求侧可能把超长工具名缩短，这里在响应映射时按 restore_map 还原原始名称。
 pub(super) fn restore_openai_tool_name(
     name: &str,
@@ -112,13 +138,8 @@ pub(super) fn map_response_event_to_openai_chat_tool_chunk(
             }
             tool_call
         }
-        "response.function_call_arguments.delta" | "response.function_call_arguments.done" => {
-            let arguments = value
-                .get("delta")
-                .and_then(Value::as_str)
-                .or_else(|| value.get("arguments").and_then(Value::as_str))
-                .unwrap_or_default()
-                .to_string();
+        _ if is_tool_input_delta_event(chunk_type) => {
+            let arguments = extract_tool_input_fragment(chunk_type, value).unwrap_or_default();
             if arguments.is_empty() {
                 return None;
             }
@@ -134,7 +155,6 @@ pub(super) fn map_response_event_to_openai_chat_tool_chunk(
             });
             if let Some(call_id) = value
                 .get("call_id")
-                .or_else(|| value.get("item_id"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .filter(|id| !id.is_empty())

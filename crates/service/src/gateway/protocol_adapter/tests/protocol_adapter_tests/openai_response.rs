@@ -542,6 +542,42 @@ data: [DONE]
 }
 
 #[test]
+fn openai_chat_stream_response_delta_only_preserves_custom_tool_calls_from_incremental_input() {
+    let upstream = br#"data: {"type":"response.output_item.added","response_id":"resp_custom_tool_incremental","created":1700000007,"model":"gpt-5.3-codex","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_js_delta","name":"js_repl"}}
+
+data: {"type":"response.custom_tool_call_input.delta","response_id":"resp_custom_tool_incremental","created":1700000007,"model":"gpt-5.3-codex","output_index":0,"call_id":"call_js_delta","delta":"console.log(\"hel"}
+
+data: {"type":"response.custom_tool_call_input.done","response_id":"resp_custom_tool_incremental","created":1700000007,"model":"gpt-5.3-codex","output_index":0,"call_id":"call_js_delta","input":"console.log(\"hello\")"}
+
+data: {"type":"response.completed","response":{"id":"resp_custom_tool_incremental","created":1700000007,"model":"gpt-5.3-codex","usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}
+
+data: [DONE]
+
+"#;
+    let (body, content_type) = adapt_upstream_response(
+        ResponseAdapter::OpenAIChatCompletionsJson,
+        Some("text/event-stream"),
+        upstream,
+    )
+    .expect("convert response");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("parse converted body");
+    assert_eq!(content_type, "application/json");
+    assert_eq!(
+        value["choices"][0]["message"]["tool_calls"][0]["id"],
+        "call_js_delta"
+    );
+    assert_eq!(
+        value["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        "js_repl"
+    );
+    assert_eq!(
+        value["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        "console.log(\"hello\")"
+    );
+    assert_eq!(value["choices"][0]["finish_reason"], "tool_calls");
+}
+
+#[test]
 fn openai_chat_stream_response_outputs_web_search_summary_text() {
     let upstream = br#"data: {"type":"response.output_item.done","response_id":"resp_web_search_stream","created":1700000008,"model":"gpt-5.3-codex","output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"weather seattle"}}}
 
@@ -591,6 +627,70 @@ fn openai_chat_stream_chunk_maps_function_call_argument_delta() {
             .and_then(|function| function.get("arguments"))
             .and_then(serde_json::Value::as_str),
         Some("{\"x\":1}")
+    );
+}
+
+#[test]
+fn openai_chat_stream_chunk_maps_custom_tool_input_delta() {
+    let value = serde_json::json!({
+        "type": "response.custom_tool_call_input.delta",
+        "response_id": "resp_call_custom_1",
+        "created": 1700000100,
+        "model": "gpt-5.3-codex",
+        "output_index": 0,
+        "call_id": "call_custom_1",
+        "delta": "console.log(1)"
+    });
+    let mapped =
+        convert_openai_chat_stream_chunk(&value).expect("map custom_tool_call_input.delta");
+    assert_eq!(
+        mapped
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .and_then(|choice| choice.get("delta"))
+            .and_then(|delta| delta.get("tool_calls"))
+            .and_then(|tool_calls| tool_calls.get(0))
+            .and_then(|tool_call| tool_call.get("id"))
+            .and_then(serde_json::Value::as_str),
+        Some("call_custom_1")
+    );
+    assert_eq!(
+        mapped
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .and_then(|choice| choice.get("delta"))
+            .and_then(|delta| delta.get("tool_calls"))
+            .and_then(|tool_calls| tool_calls.get(0))
+            .and_then(|tool_call| tool_call.get("function"))
+            .and_then(|function| function.get("arguments"))
+            .and_then(serde_json::Value::as_str),
+        Some("console.log(1)")
+    );
+}
+
+#[test]
+fn openai_chat_stream_chunk_prefers_call_id_over_item_id_for_function_call_delta() {
+    let value = serde_json::json!({
+        "type": "response.function_call_arguments.delta",
+        "response_id": "resp_call_2",
+        "created": 1700000100,
+        "model": "gpt-5.3-codex",
+        "output_index": 0,
+        "call_id": "call_real",
+        "item_id": "item_shadow",
+        "delta": "{\"x\":1}"
+    });
+    let mapped = convert_openai_chat_stream_chunk(&value).expect("map function_call_arguments");
+    assert_eq!(
+        mapped
+            .get("choices")
+            .and_then(|choices| choices.get(0))
+            .and_then(|choice| choice.get("delta"))
+            .and_then(|delta| delta.get("tool_calls"))
+            .and_then(|tool_calls| tool_calls.get(0))
+            .and_then(|tool_call| tool_call.get("id"))
+            .and_then(serde_json::Value::as_str),
+        Some("call_real")
     );
 }
 

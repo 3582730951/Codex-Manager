@@ -470,6 +470,29 @@ fn collect_non_stream_json_from_sse_bytes_backfills_function_call_output_items()
 }
 
 #[test]
+fn collect_non_stream_json_from_sse_bytes_backfills_custom_tool_call_input_items() {
+    let sse = concat!(
+        "data: {\"type\":\"response.output_item.added\",\"response_id\":\"resp_custom_tool_agg_1\",\"output_index\":0,\"item\":{\"type\":\"custom_tool_call\",\"call_id\":\"call_js_1\",\"name\":\"js_repl\"}}\n\n",
+        "data: {\"type\":\"response.custom_tool_call_input.delta\",\"response_id\":\"resp_custom_tool_agg_1\",\"output_index\":0,\"call_id\":\"call_js_1\",\"delta\":\"console.log(\\\"hel\"}\n\n",
+        "data: {\"type\":\"response.custom_tool_call_input.done\",\"response_id\":\"resp_custom_tool_agg_1\",\"output_index\":0,\"call_id\":\"call_js_1\",\"input\":\"console.log(\\\"hello\\\")\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_custom_tool_agg_1\",\"created\":7,\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":6,\"output_tokens\":1,\"total_tokens\":7}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (body, usage) = collect_non_stream_json_from_sse_bytes(sse.as_bytes());
+    let body = body.expect("synthesized response json");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("parse synthesized body");
+    assert_eq!(value["id"], "resp_custom_tool_agg_1");
+    assert_eq!(value["output"][0]["type"], "custom_tool_call");
+    assert_eq!(value["output"][0]["call_id"], "call_js_1");
+    assert_eq!(value["output"][0]["name"], "js_repl");
+    assert_eq!(value["output"][0]["input"], "console.log(\"hello\")");
+    assert!(value.get("output_text").is_none());
+    assert_eq!(usage.input_tokens, Some(6));
+    assert_eq!(usage.output_tokens, Some(1));
+    assert_eq!(usage.total_tokens, Some(7));
+}
+
+#[test]
 fn parse_sse_frame_json_infers_type_from_event_name() {
     let frame_lines = vec![
         "event: response.output_text.delta\n".to_string(),
@@ -612,6 +635,32 @@ fn live_chat_stream_skips_done_and_message_item_text_events() {
         "response.output_item.done",
         &function_item_done
     ));
+
+    let custom_tool_item_done = json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "custom_tool_call",
+            "name": "js_repl",
+            "input": "console.log(1)"
+        }
+    });
+    assert!(!should_skip_chat_live_text_event(
+        "response.output_item.done",
+        &custom_tool_item_done
+    ));
+
+    let custom_tool_output_done = json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "call_js",
+            "output": "1"
+        }
+    });
+    assert!(!should_skip_chat_live_text_event(
+        "response.output_item.done",
+        &custom_tool_output_done
+    ));
 }
 
 #[test]
@@ -648,6 +697,18 @@ fn live_completion_stream_skips_done_and_message_item_text_events() {
     assert!(!should_skip_completion_live_text_event(
         "response.output_item.added",
         &function_item_added
+    ));
+
+    let custom_tool_item_added = json!({
+        "type": "response.output_item.added",
+        "item": {
+            "type": "custom_tool_call",
+            "name": "js_repl"
+        }
+    });
+    assert!(!should_skip_completion_live_text_event(
+        "response.output_item.added",
+        &custom_tool_item_added
     ));
 }
 

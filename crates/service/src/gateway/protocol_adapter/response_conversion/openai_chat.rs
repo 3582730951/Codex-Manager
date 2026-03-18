@@ -414,7 +414,10 @@ pub(super) fn convert_openai_chat_stream_chunk_with_tool_name_restore_map(
                 }
                 return Some(build_openai_chat_text_chunk(value, text.as_str()));
             }
-            "response.function_call_arguments.delta" | "response.function_call_arguments.done" => {
+            "response.function_call_arguments.delta"
+            | "response.function_call_arguments.done"
+            | "response.custom_tool_call_input.delta"
+            | "response.custom_tool_call_input.done" => {
                 return map_response_event_to_openai_chat_tool_chunk(value, tool_name_restore_map);
             }
             "response.completed" | "response.done" => {

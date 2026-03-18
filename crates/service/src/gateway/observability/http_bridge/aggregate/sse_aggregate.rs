@@ -92,7 +92,7 @@ fn merge_response_output_item_event(synthesis: &mut ResponsesSseSynthesis, value
                     .get(&index)
                     .and_then(Value::as_object)
                 {
-                    for field in ["id", "call_id", "name", "arguments"] {
+                    for field in ["id", "call_id", "name", "arguments", "input"] {
                         if stored_obj.get(field).is_none() {
                             if let Some(existing_value) = existing_obj.get(field) {
                                 stored_obj.insert(field.to_string(), existing_value.clone());
@@ -123,7 +123,6 @@ fn merge_response_output_item_event(synthesis: &mut ResponsesSseSynthesis, value
             };
             if let Some(call_id) = value
                 .get("call_id")
-                .or_else(|| value.get("item_id"))
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -140,6 +139,44 @@ fn merge_response_output_item_event(synthesis: &mut ResponsesSseSynthesis, value
             merge_tool_call_arguments(&mut arguments, fragment);
             if !arguments.is_empty() {
                 entry_obj.insert("arguments".to_string(), Value::String(arguments));
+            }
+        }
+        "response.custom_tool_call_input.delta" | "response.custom_tool_call_input.done" => {
+            let fragment = value
+                .get("delta")
+                .and_then(Value::as_str)
+                .or_else(|| value.get("input").and_then(Value::as_str))
+                .unwrap_or_default();
+            let explicit_index = value.get("output_index").and_then(Value::as_i64);
+            let index = reserve_output_index(synthesis, explicit_index);
+            let entry = synthesis
+                .output_items
+                .entry(index)
+                .or_insert_with(|| json!({ "type": "custom_tool_call", "index": index }));
+            if !entry.is_object() {
+                *entry = json!({ "type": "custom_tool_call", "index": index });
+            }
+            let Some(entry_obj) = entry.as_object_mut() else {
+                return;
+            };
+            if let Some(call_id) = value
+                .get("call_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                entry_obj
+                    .entry("call_id".to_string())
+                    .or_insert_with(|| Value::String(call_id.to_string()));
+            }
+            let mut input = entry_obj
+                .get("input")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_default();
+            merge_tool_call_arguments(&mut input, fragment);
+            if !input.is_empty() {
+                entry_obj.insert("input".to_string(), Value::String(input));
             }
         }
         _ => {}

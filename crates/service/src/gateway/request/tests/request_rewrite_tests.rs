@@ -511,6 +511,94 @@ fn responses_compact_normalizes_deep_compaction_item_aliases() {
 }
 
 #[test]
+fn responses_codex_backend_drops_orphan_tool_history_items() {
+    let body = json!({
+        "model": "gpt-5.3-codex",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            },
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_js_repl",
+                "name": "js_repl",
+                "input": "console.log(1)"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_js_repl",
+                "output": "1"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "",
+                "output": "drop-empty"
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "ghost_custom",
+                "output": "drop-orphan"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_read",
+                "name": "read_file",
+                "arguments": "{\"path\":\"README.md\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_read",
+                "output": "README"
+            },
+            {
+                "type": "function_call",
+                "call_id": "pending_call",
+                "name": "list_dir",
+                "arguments": "{}"
+            },
+            {
+                "type": "local_shell_call",
+                "call_id": "shell_done",
+                "action": { "type": "exec", "command": ["pwd"] }
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "shell_done",
+                "output": "/workspace"
+            },
+            {
+                "type": "local_shell_call",
+                "call_id": "shell_pending",
+                "action": { "type": "exec", "command": ["ls"] }
+            }
+        ]
+    });
+    let out = apply_request_overrides(
+        "/v1/responses",
+        serde_json::to_vec(&body).expect("serialize request body"),
+        None,
+        None,
+        Some("https://chatgpt.com/backend-api/codex"),
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out).expect("parse output body");
+    let input = value["input"].as_array().expect("input array");
+    assert_eq!(input.len(), 7);
+    assert_eq!(input[1]["type"], "custom_tool_call");
+    assert_eq!(input[2]["type"], "custom_tool_call_output");
+    assert_eq!(input[3]["type"], "function_call");
+    assert_eq!(input[4]["type"], "function_call_output");
+    assert_eq!(input[5]["type"], "local_shell_call");
+    assert_eq!(input[5]["call_id"], "shell_done");
+    assert_eq!(input[6]["type"], "function_call_output");
+    assert_eq!(input[6]["call_id"], "shell_done");
+    assert!(input.iter().all(|item| item["call_id"] != "pending_call"));
+    assert!(input.iter().all(|item| item["call_id"] != "shell_pending"));
+    assert!(input.iter().all(|item| item["call_id"] != "ghost_custom"));
+}
+
+#[test]
 fn responses_passthrough_for_non_codex_upstream() {
     let body = json!({
         "model": "gpt-4.1",
