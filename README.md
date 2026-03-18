@@ -39,6 +39,22 @@
 - 桌面稳定性和启动体验继续修过一轮：服务启动误判、`/rpc` 空响应、刷新用量弹窗不更新、首次切页卡顿、Hydration 不一致、开发态渲染指示误导等问题都已处理，Web 密码和桌面/Web 设置同步也已收口。
 - 发布链路也做了统一治理：版本已提升到 `0.1.9`，Tauri Rust 侧和 workflow 里的 Tauri CLI / pnpm 版本已重新对齐，`release-all.yml` 继续作为 Windows / macOS / Linux 的单一发布入口。完整历史请看 [CHANGELOG.md](CHANGELOG.md)。
 
+### 近期提交摘要
+- `9435be2`：新增外观版本切换。设置页现在支持“默认 / 渐变版本”两套视觉预设，支持即时切换、持久化保存，并同步收口了默认值、卡片尺寸和切换行为。
+- `cf351e4`：修复发布缓存并优化 Docker 配置。发布 workflow 避免在不执行 `pnpm install` 的构建 job 中错误开启 pnpm 缓存，同时补充了 Docker 运行用户、健康检查、构建上下文裁剪和 compose 依赖顺序。
+- `7f6aa6b`：统一主题样式并修复发布细节。主题变量、玻璃卡片层次、背景渐层和设置页外观整体做了统一收口，并顺带修正发布流程里的若干细节问题。
+- `70c1ee7`：修复发布工作流 Node 与 Tauri CLI 版本。重新对齐 workflow 里 Node、pnpm 与 Tauri CLI 版本，降低跨平台打包时的版本漂移风险。
+- `1fafcf9`：调整免责声明与搜索框样式。补强顶部免责声明展示，同时微调搜索框与界面细节，减少桌面端视觉噪音。
+- `43530c1`：补充 README 交流圈二维码。文档里已增加交流圈入口，便于集中反馈、交流和跟进问题。
+
+### Recent Updates
+- `9435be2`: Added appearance preset switching. The settings page now supports both `Default` and `Gradient` visual presets with instant switching, persistent storage, and aligned defaults and card sizing.
+- `cf351e4`: Fixed release cache handling and improved Docker setup. The release workflow no longer enables pnpm cache in build jobs that do not run `pnpm install`, and the Docker setup now includes a non-root runtime user, health checks, leaner build context, and stricter compose dependencies.
+- `7f6aa6b`: Unified theme styling and refined release details. Theme variables, glass card layering, background gradients, and the overall settings appearance were consolidated, with several release-flow details corrected at the same time.
+- `70c1ee7`: Aligned Node.js and Tauri CLI versions in the release workflow. This reduces cross-platform packaging drift by keeping the workflow's Node, pnpm, and Tauri CLI versions in sync.
+- `1fafcf9`: Updated the disclaimer and search box styling. The top disclaimer was strengthened, and the search box plus several UI details were refined to reduce visual noise on desktop.
+- `43530c1`: Added the community QR code to the README. A dedicated community entry is now included in the documentation for easier feedback, discussion, and issue follow-up.
+
 ## 功能概览
 - 账号池管理：分组、标签、排序、备注
 - 批量导入 / 导出：支持多文件导入、桌面端文件夹递归导入 JSON、按账号导出单文件
@@ -120,4 +136,4 @@
 - 微信： ProsperGao
 - 交流圈：
 
-  ![交流圈二维码](assets/images/qq_group.jpg)
+  <img src="assets/images/qq_group.jpg" alt="交流群二维码" width="280" />
