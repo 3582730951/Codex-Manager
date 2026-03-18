@@ -117,6 +117,18 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized == "upstream not-found failover" {
         return ErrorCode::UpstreamNotFound;
     }
+    if normalized == "upstream_stream_terminal_error"
+        || normalized.starts_with("upstream_stream_terminal_error:")
+    {
+        return ErrorCode::UpstreamNonSuccess;
+    }
+    if normalized == "upstream_disconnect_before_terminal"
+        || normalized.starts_with("upstream_disconnect_before_terminal:")
+        || normalized == "stream_incomplete_unknown"
+        || normalized.starts_with("stream_incomplete_unknown:")
+    {
+        return ErrorCode::StreamInterrupted;
+    }
     if normalized == "upstream non-success" {
         return ErrorCode::UpstreamNonSuccess;
     }
@@ -268,6 +280,14 @@ mod tests {
         assert_eq!(
             classify_message("candidate exhausted"),
             ErrorCode::NoAvailableAccount
+        );
+        assert_eq!(
+            classify_message("upstream_stream_terminal_error: code=server_error"),
+            ErrorCode::UpstreamNonSuccess
+        );
+        assert_eq!(
+            classify_message("stream_incomplete_unknown"),
+            ErrorCode::StreamInterrupted
         );
         assert_eq!(
             classify_message("client_cancelled"),

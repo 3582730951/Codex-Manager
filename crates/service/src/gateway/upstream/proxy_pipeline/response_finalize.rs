@@ -13,19 +13,19 @@ enum StreamBridgeFailure {
 }
 
 impl StreamBridgeFailure {
-    fn status_for_log(self) -> u16 {
+    fn status_for_log(self, upstream_status_code: u16) -> u16 {
         match self {
             Self::Timeout => 504,
             Self::ExplicitUpstreamError
             | Self::Disconnected
-            | Self::IncompleteUnknown
-            | Self::GatewayBridgeError => 502,
+            | Self::IncompleteUnknown => upstream_status_code,
+            Self::GatewayBridgeError => 502,
         }
     }
 
     fn error_label(self) -> &'static str {
         match self {
-            Self::ExplicitUpstreamError => "upstream_http_error",
+            Self::ExplicitUpstreamError => "upstream_stream_terminal_error",
             Self::Timeout => "upstream_preheader_timeout",
             Self::Disconnected => "upstream_disconnect_before_terminal",
             Self::IncompleteUnknown => "stream_incomplete_unknown",
@@ -117,6 +117,23 @@ fn classify_stream_bridge_failure(
         return Some(StreamBridgeFailure::IncompleteUnknown);
     }
     Some(StreamBridgeFailure::GatewayBridgeError)
+}
+
+fn describe_stream_bridge_failure(
+    failure: StreamBridgeFailure,
+    bridge_error_message: Option<&str>,
+) -> String {
+    let detail = bridge_error_message
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match failure {
+        StreamBridgeFailure::ExplicitUpstreamError => detail
+            .map(|message| format!("upstream_stream_terminal_error: {message}"))
+            .unwrap_or_else(|| failure.error_label().to_string()),
+        _ => detail
+            .map(str::to_string)
+            .unwrap_or_else(|| failure.error_label().to_string()),
+    }
 }
 
 pub(super) fn respond_total_timeout(
@@ -235,18 +252,20 @@ pub(super) fn finalize_upstream_response(
         .delivery_error
         .as_deref()
         .is_some_and(is_client_disconnect_error);
+    let bridge_error_message = bridge.error_message(client_is_stream);
     if final_error.is_none() {
         if client_delivery_failed {
             final_error = Some("client_cancelled".to_string());
         } else if let Some(stream_failure) = stream_failure {
-            final_error = Some(stream_failure.error_label().to_string());
+            final_error = Some(describe_stream_bridge_failure(
+                stream_failure,
+                bridge_error_message.as_deref(),
+            ));
         } else if bridge.delivery_error.is_some() {
             final_error = Some("gateway_bridge_error".to_string());
         } else if !bridge_ok {
             final_error = Some(
-                bridge
-                    .error_message(client_is_stream)
-                    .unwrap_or_else(|| "gateway_bridge_error".to_string()),
+                bridge_error_message.unwrap_or_else(|| "gateway_bridge_error".to_string()),
             );
         }
     }
@@ -255,7 +274,7 @@ pub(super) fn finalize_upstream_response(
     } else if client_delivery_failed {
         499
     } else if let Some(stream_failure) = stream_failure {
-        stream_failure.status_for_log()
+        stream_failure.status_for_log(status_code)
     } else if bridge_ok {
         status_code
     } else {
@@ -315,7 +334,9 @@ pub(super) fn finalize_upstream_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_stream_bridge_failure, StreamBridgeFailure};
+    use super::{
+        classify_stream_bridge_failure, describe_stream_bridge_failure, StreamBridgeFailure,
+    };
 
     #[test]
     fn stream_bridge_failure_treats_seen_terminal_errors_as_explicit_failures() {
@@ -331,7 +352,7 @@ mod tests {
             classify_stream_bridge_failure(false, Some("上游请求超时")),
             Some(StreamBridgeFailure::Timeout)
         );
-        assert_eq!(StreamBridgeFailure::Timeout.status_for_log(), 504);
+        assert_eq!(StreamBridgeFailure::Timeout.status_for_log(200), 504);
     }
 
     #[test]
@@ -347,6 +368,25 @@ mod tests {
         assert_eq!(
             classify_stream_bridge_failure(false, None),
             Some(StreamBridgeFailure::IncompleteUnknown)
+        );
+    }
+
+    #[test]
+    fn upstream_stream_failures_keep_original_http_status_in_request_log() {
+        assert_eq!(StreamBridgeFailure::ExplicitUpstreamError.status_for_log(200), 200);
+        assert_eq!(StreamBridgeFailure::Disconnected.status_for_log(200), 200);
+        assert_eq!(StreamBridgeFailure::IncompleteUnknown.status_for_log(200), 200);
+        assert_eq!(StreamBridgeFailure::GatewayBridgeError.status_for_log(200), 502);
+    }
+
+    #[test]
+    fn explicit_upstream_stream_failures_preserve_terminal_error_detail() {
+        assert_eq!(
+            describe_stream_bridge_failure(
+                StreamBridgeFailure::ExplicitUpstreamError,
+                Some("code=server_error request failed")
+            ),
+            "upstream_stream_terminal_error: code=server_error request failed"
         );
     }
 

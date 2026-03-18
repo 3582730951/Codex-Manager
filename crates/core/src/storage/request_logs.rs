@@ -201,7 +201,7 @@ impl Storage {
         let sql = format!(
             "SELECT
                 COUNT(1),
-                IFNULL(SUM(CASE WHEN r.status_code >= 200 AND r.status_code <= 299 THEN 1 ELSE 0 END), 0),
+                IFNULL(SUM(CASE WHEN r.status_code >= 200 AND r.status_code <= 299 AND TRIM(IFNULL(r.error, '')) = '' THEN 1 ELSE 0 END), 0),
                 IFNULL(SUM(CASE WHEN IFNULL(r.status_code, 0) >= 400 OR TRIM(IFNULL(r.error, '')) <> '' THEN 1 ELSE 0 END), 0),
                 IFNULL(SUM(
                     CASE

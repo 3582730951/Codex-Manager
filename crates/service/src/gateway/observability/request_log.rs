@@ -98,6 +98,12 @@ fn normalize_duration_ms(value: Option<u128>) -> Option<i64> {
     value.map(|duration| duration.min(i64::MAX as u128) as i64)
 }
 
+fn has_request_error_text(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .is_some_and(|text| !text.is_empty() && text != "-")
+}
+
 fn is_inference_path(path: &str) -> bool {
     path.starts_with("/v1/responses")
         || path.starts_with("/v1/chat/completions")
@@ -201,7 +207,8 @@ pub(super) fn write_request_log_with_attempts(
     );
     let success = status_code
         .map(|status| (200..300).contains(&status))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        && !has_request_error_text(error);
     let input_zero_or_missing = input_tokens.unwrap_or(0) == 0;
     let cached_zero_or_missing = cached_input_tokens.unwrap_or(0) == 0;
     let output_zero_or_missing = output_tokens.unwrap_or(0) == 0;

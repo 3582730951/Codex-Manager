@@ -321,3 +321,63 @@ fn request_logs_filtered_summary_aggregates_counts_and_tokens() {
     assert_eq!(summary.error_count, 1);
     assert_eq!(summary.total_tokens, 150);
 }
+
+#[test]
+fn request_log_summary_excludes_2xx_rows_with_error_from_success_count() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+
+    let request_log_id = storage
+        .insert_request_log(&RequestLog {
+            trace_id: Some("trc-stream-error".to_string()),
+            key_id: Some("gk-stream".to_string()),
+            account_id: Some("acc-stream".to_string()),
+            initial_account_id: Some("acc-stream".to_string()),
+            attempted_account_ids_json: Some(r#"["acc-stream"]"#.to_string()),
+            request_path: "/v1/responses".to_string(),
+            original_path: Some("/v1/responses".to_string()),
+            adapted_path: Some("/v1/responses".to_string()),
+            method: "POST".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            response_adapter: Some("Passthrough".to_string()),
+            upstream_url: Some("https://chatgpt.com/backend-api/codex/responses".to_string()),
+            status_code: Some(200),
+            duration_ms: Some(1800),
+            input_tokens: None,
+            cached_input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            reasoning_output_tokens: None,
+            estimated_cost_usd: None,
+            error: Some(
+                "upstream_stream_terminal_error: code=server_error request failed".to_string(),
+            ),
+            created_at: 3_000,
+        })
+        .expect("insert request log");
+
+    storage
+        .insert_request_token_stat(&RequestTokenStat {
+            request_log_id,
+            key_id: Some("gk-stream".to_string()),
+            account_id: Some("acc-stream".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            input_tokens: Some(10),
+            cached_input_tokens: Some(0),
+            output_tokens: Some(0),
+            total_tokens: Some(10),
+            reasoning_output_tokens: Some(0),
+            estimated_cost_usd: Some(0.01),
+            created_at: 3_000,
+        })
+        .expect("insert token stat");
+
+    let summary = storage
+        .summarize_request_logs_filtered(None, Some("all"))
+        .expect("summarize filtered logs");
+    assert_eq!(summary.count, 1);
+    assert_eq!(summary.success_count, 0);
+    assert_eq!(summary.error_count, 1);
+    assert_eq!(summary.total_tokens, 10);
+}
