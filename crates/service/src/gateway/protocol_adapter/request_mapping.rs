@@ -6,7 +6,6 @@ mod openai;
 
 type ToolNameRestoreMap = super::ToolNameRestoreMap;
 
-const DEFAULT_ANTHROPIC_MODEL: &str = "gpt-5.3-codex";
 const DEFAULT_ANTHROPIC_REASONING: &str = "high";
 const DEFAULT_ANTHROPIC_INSTRUCTIONS: &str =
     "You are Codex, a coding assistant that responds clearly and safely.";

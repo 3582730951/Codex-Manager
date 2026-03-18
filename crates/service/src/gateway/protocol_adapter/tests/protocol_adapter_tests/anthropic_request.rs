@@ -5,7 +5,7 @@ use crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE;
 #[test]
 fn anthropic_messages_are_the_only_path_adapted_to_responses() {
     let body =
-        br#"{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hello"}]}"#.to_vec();
+        br#"{"model":"gpt-5.3-codex","messages":[{"role":"user","content":"hello"}]}"#.to_vec();
     let adapted = adapt_request_for_protocol(PROTOCOL_ANTHROPIC_NATIVE, "/v1/messages", body)
         .expect("adapt request");
     assert_eq!(adapted.path, "/v1/responses");
@@ -15,7 +15,7 @@ fn anthropic_messages_are_the_only_path_adapted_to_responses() {
 #[test]
 fn anthropic_messages_map_text_and_base64_image_to_responses_input() {
     let body = serde_json::json!({
-        "model": "claude-3-5-sonnet",
+        "model": "gpt-5.3-codex",
         "messages": [{
             "role": "user",
             "content": [
@@ -96,7 +96,7 @@ fn anthropic_messages_map_text_and_base64_image_to_responses_input() {
 #[test]
 fn anthropic_messages_map_url_image_to_responses_input() {
     let body = serde_json::json!({
-        "model": "claude-3-5-sonnet",
+        "model": "gpt-5.3-codex",
         "messages": [{
             "role": "user",
             "content": [{
@@ -131,7 +131,7 @@ fn anthropic_messages_map_url_image_to_responses_input() {
 #[test]
 fn anthropic_messages_map_thinking_and_output_config_effort_to_responses() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4-5",
+        "model": "gpt-5.3-codex",
         "thinking": {
             "type": "enabled",
             "budget_tokens": 10000
@@ -190,7 +190,7 @@ fn anthropic_messages_map_thinking_and_output_config_effort_to_responses() {
 #[test]
 fn anthropic_messages_map_disabled_thinking_to_summary_none() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4-5",
+        "model": "gpt-5.3-codex",
         "thinking": {
             "type": "disabled"
         },
@@ -220,7 +220,7 @@ fn anthropic_messages_map_disabled_thinking_to_summary_none() {
 #[test]
 fn anthropic_assistant_tool_use_preserves_text_order_in_responses_input() {
     let body = serde_json::json!({
-        "model": "claude-3-5-sonnet",
+        "model": "gpt-5.3-codex",
         "messages": [
             {
                 "role": "user",
@@ -347,7 +347,7 @@ fn anthropic_assistant_tool_use_preserves_text_order_in_responses_input() {
 #[test]
 fn anthropic_tool_result_with_image_maps_to_function_call_output_items() {
     let body = serde_json::json!({
-        "model": "claude-3-5-sonnet",
+        "model": "gpt-5.3-codex",
         "messages": [
             {
                 "role": "assistant",
@@ -476,7 +476,7 @@ fn anthropic_messages_preserve_all_tools_across_multiple_mcp_servers() {
     }));
 
     let body = serde_json::json!({
-        "model": "claude-sonnet-4-5",
+        "model": "gpt-5.3-codex",
         "messages": [{ "role": "user", "content": "同时使用两个 MCP server" }],
         "tools": tools
     });
@@ -507,7 +507,7 @@ fn anthropic_messages_shorten_long_tool_names_and_build_restore_map() {
     let original_tool_name =
         "mcp__plugin_super_long_workspace_namespace__tool_server_namespace_for_codex_manager_gateway_adapter_alignment__very_long_tool_operation_name";
     let body = serde_json::json!({
-        "model": "claude-sonnet-4-5",
+        "model": "gpt-5.3-codex",
         "messages": [
             {
                 "role": "assistant",

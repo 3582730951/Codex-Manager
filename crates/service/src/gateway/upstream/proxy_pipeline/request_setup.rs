@@ -10,6 +10,7 @@ pub(in super::super) struct UpstreamRequestSetup {
     pub(in super::super) url: String,
     pub(in super::super) url_alt: Option<String>,
     pub(in super::super) upstream_cookie: Option<String>,
+    pub(in super::super) flow_key: String,
     pub(in super::super) candidate_count: usize,
     pub(in super::super) account_max_inflight: usize,
     pub(in super::super) anthropic_has_prompt_cache_key: bool,
@@ -53,6 +54,7 @@ pub(in super::super) fn prepare_request_setup(
         trace_id,
         key_id,
         super::super::super::current_route_strategy(),
+        flow_key.as_str(),
         candidate_order.as_slice(),
     );
 
@@ -62,6 +64,7 @@ pub(in super::super) fn prepare_request_setup(
         url,
         url_alt,
         upstream_cookie,
+        flow_key,
         candidate_count,
         account_max_inflight,
         anthropic_has_prompt_cache_key,

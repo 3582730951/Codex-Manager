@@ -50,10 +50,8 @@ pub(crate) fn apply_env_overrides_to_process(
 
     let mut baseline =
         crate::lock_utils::lock_recover(env_override_baseline(), "env_override_baseline");
-    let mut last_applied = crate::lock_utils::lock_recover(
-        env_override_last_applied(),
-        "env_override_last_applied",
-    );
+    let mut last_applied =
+        crate::lock_utils::lock_recover(env_override_last_applied(), "env_override_last_applied");
     for key in &all_keys {
         baseline
             .entry(key.clone())

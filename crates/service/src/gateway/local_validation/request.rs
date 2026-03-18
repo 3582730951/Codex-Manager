@@ -38,6 +38,19 @@ pub(super) fn build_local_validation_result(
 ) -> Result<LocalValidationResult, LocalValidationError> {
     // 按当前策略取消每次请求都更新 api_keys.last_used_at，减少并发写入冲突。
     let normalized_path = super::super::normalize_models_path(request.url());
+    let (effective_model, effective_reasoning) = resolve_effective_request_overrides(&api_key);
+    if api_key.protocol_type == PROTOCOL_ANTHROPIC_NATIVE
+        && effective_model.is_some()
+        && normalized_path.starts_with("/v1/messages")
+    {
+        body = super::super::apply_request_overrides(
+            &normalized_path,
+            body,
+            effective_model.as_deref(),
+            None,
+            api_key.upstream_base_url.as_deref(),
+        );
+    }
     let original_body = body.clone();
     let adapted = super::super::adapt_request_for_protocol(
         api_key.protocol_type.as_str(),
@@ -70,7 +83,6 @@ pub(super) fn build_local_validation_result(
     // 中文注释：下游调用方的 stream 语义应在请求改写前确定；
     // 否则上游兼容改写（例如 /responses 强制 stream=true）会污染下游响应模式判断。
     let client_request_meta = super::super::parse_request_metadata(&body);
-    let (effective_model, effective_reasoning) = resolve_effective_request_overrides(&api_key);
     body = super::super::apply_request_overrides(
         &path,
         body,

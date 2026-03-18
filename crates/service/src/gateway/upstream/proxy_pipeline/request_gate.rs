@@ -6,11 +6,19 @@ pub(in super::super) fn acquire_request_gate(
     key_id: &str,
     path: &str,
     model_for_log: Option<&str>,
+    flow_key: &str,
     request_deadline: Option<Instant>,
 ) -> Option<super::super::super::request_gate::RequestGateGuard> {
-    let request_gate_lock = super::super::super::request_gate_lock(key_id, path, model_for_log);
+    let request_gate_lock =
+        super::super::super::request_gate_lock(key_id, path, model_for_log, flow_key);
     let request_gate_wait_timeout = super::super::super::request_gate_wait_timeout();
-    super::super::super::trace_log::log_request_gate_wait(trace_id, key_id, path, model_for_log);
+    super::super::super::trace_log::log_request_gate_wait(
+        trace_id,
+        key_id,
+        path,
+        model_for_log,
+        Some(flow_key),
+    );
     let gate_wait_started_at = Instant::now();
 
     match request_gate_lock.try_acquire() {
@@ -20,8 +28,10 @@ pub(in super::super) fn acquire_request_gate(
                 key_id,
                 path,
                 model_for_log,
+                Some(flow_key),
                 0,
             );
+            super::super::super::record_request_gate_acquire(0);
             Some(guard)
         }
         Ok(None) => {
@@ -38,7 +48,11 @@ pub(in super::super) fn acquire_request_gate(
                     key_id,
                     path,
                     model_for_log,
+                    Some(flow_key),
                     gate_wait_started_at.elapsed().as_millis(),
+                );
+                super::super::super::record_request_gate_acquire(
+                    gate_wait_started_at.elapsed().as_millis() as u64,
                 );
                 Some(guard)
             } else {
@@ -46,8 +60,10 @@ pub(in super::super) fn acquire_request_gate(
                     Err(super::super::super::RequestGateAcquireError::Poisoned) => {
                         super::super::super::trace_log::log_request_gate_skip(
                             trace_id,
+                            Some(flow_key),
                             "lock_poisoned",
                         );
+                        super::super::super::record_request_gate_skip("lock_poisoned");
                     }
                     _ => {
                         let reason = if deadline::is_expired(request_deadline) {
@@ -55,14 +71,24 @@ pub(in super::super) fn acquire_request_gate(
                         } else {
                             "gate_wait_timeout"
                         };
-                        super::super::super::trace_log::log_request_gate_skip(trace_id, reason);
+                        super::super::super::trace_log::log_request_gate_skip(
+                            trace_id,
+                            Some(flow_key),
+                            reason,
+                        );
+                        super::super::super::record_request_gate_skip(reason);
                     }
                 }
                 None
             }
         }
         Err(super::super::super::RequestGateAcquireError::Poisoned) => {
-            super::super::super::trace_log::log_request_gate_skip(trace_id, "lock_poisoned");
+            super::super::super::trace_log::log_request_gate_skip(
+                trace_id,
+                Some(flow_key),
+                "lock_poisoned",
+            );
+            super::super::super::record_request_gate_skip("lock_poisoned");
             None
         }
     }

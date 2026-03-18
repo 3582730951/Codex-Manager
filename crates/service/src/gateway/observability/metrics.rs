@@ -27,6 +27,10 @@ static HTTP_QUEUE_ENQUEUE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPT_ERRORS: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPT_DURATION_MS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static GATEWAY_REQUEST_GATE_ACQUIRES: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REQUEST_GATE_SKIPS: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REQUEST_GATE_POISONED: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REQUEST_GATE_WAIT_MS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct GatewayRequestLabelKey {
@@ -59,6 +63,10 @@ pub(crate) struct GatewayMetricsSnapshot {
     pub gateway_upstream_attempt_duration_ms_total: u64,
     pub gateway_upstream_attempts: usize,
     pub gateway_upstream_attempt_errors: usize,
+    pub request_gate_acquires: usize,
+    pub request_gate_skips: usize,
+    pub request_gate_poisoned: usize,
+    pub request_gate_wait_ms_total: u64,
 }
 
 pub(crate) struct GatewayRequestGuard;
@@ -161,6 +169,18 @@ pub(crate) fn record_gateway_upstream_attempt(duration_ms: u64, failed: bool) {
     }
 }
 
+pub(crate) fn record_request_gate_acquire(wait_ms: u64) {
+    GATEWAY_REQUEST_GATE_ACQUIRES.fetch_add(1, Ordering::Relaxed);
+    GATEWAY_REQUEST_GATE_WAIT_MS_TOTAL.fetch_add(wait_ms, Ordering::Relaxed);
+}
+
+pub(crate) fn record_request_gate_skip(reason: &str) {
+    GATEWAY_REQUEST_GATE_SKIPS.fetch_add(1, Ordering::Relaxed);
+    if reason == "lock_poisoned" {
+        GATEWAY_REQUEST_GATE_POISONED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn record_gateway_request_outcome(
     path: &str,
     status_code: u16,
@@ -212,6 +232,10 @@ pub(crate) fn gateway_metrics_snapshot() -> GatewayMetricsSnapshot {
             .load(Ordering::Relaxed),
         gateway_upstream_attempts: GATEWAY_UPSTREAM_ATTEMPTS.load(Ordering::Relaxed),
         gateway_upstream_attempt_errors: GATEWAY_UPSTREAM_ATTEMPT_ERRORS.load(Ordering::Relaxed),
+        request_gate_acquires: GATEWAY_REQUEST_GATE_ACQUIRES.load(Ordering::Relaxed),
+        request_gate_skips: GATEWAY_REQUEST_GATE_SKIPS.load(Ordering::Relaxed),
+        request_gate_poisoned: GATEWAY_REQUEST_GATE_POISONED.load(Ordering::Relaxed),
+        request_gate_wait_ms_total: GATEWAY_REQUEST_GATE_WAIT_MS_TOTAL.load(Ordering::Relaxed),
     }
 }
 
@@ -243,6 +267,10 @@ codexmanager_http_queue_enqueue_failures_total {}\n\
 codexmanager_gateway_upstream_attempt_duration_milliseconds_total {}\n\
 codexmanager_gateway_upstream_attempt_duration_milliseconds_count {}\n\
 codexmanager_gateway_upstream_attempt_errors_total {}\n\
+codexmanager_gateway_request_gate_acquires_total {}\n\
+codexmanager_gateway_request_gate_skips_total {}\n\
+codexmanager_gateway_request_gate_poisoned_total {}\n\
+codexmanager_gateway_request_gate_wait_milliseconds_total {}\n\
 {}",
         m.total_requests,
         m.active_requests,
@@ -268,6 +296,10 @@ codexmanager_gateway_upstream_attempt_errors_total {}\n\
         m.gateway_upstream_attempt_duration_ms_total,
         m.gateway_upstream_attempts,
         m.gateway_upstream_attempt_errors,
+        m.request_gate_acquires,
+        m.request_gate_skips,
+        m.request_gate_poisoned,
+        m.request_gate_wait_ms_total,
         labeled,
     )
 }

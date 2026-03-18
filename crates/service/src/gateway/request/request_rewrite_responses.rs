@@ -88,10 +88,7 @@ fn normalize_input_item(item: &mut Value) -> bool {
     }
 }
 
-pub(super) fn normalize_input_items(
-    path: &str,
-    obj: &mut serde_json::Map<String, Value>,
-) -> bool {
+pub(super) fn normalize_input_items(path: &str, obj: &mut serde_json::Map<String, Value>) -> bool {
     if !is_responses_path(path) {
         return false;
     }

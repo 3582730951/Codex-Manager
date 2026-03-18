@@ -58,8 +58,8 @@ fn gateway_claude_protocol_end_to_end_uses_codex_headers() {
         .insert_api_key(&ApiKey {
             id: "gk_claude_e2e".to_string(),
             name: Some("claude-e2e".to_string()),
-            model_slug: None,
-            reasoning_effort: None,
+            model_slug: Some("gpt-5.3-codex".to_string()),
+            reasoning_effort: Some("high".to_string()),
             client_type: "codex".to_string(),
             protocol_type: "anthropic_native".to_string(),
             auth_scheme: "x_api_key".to_string(),

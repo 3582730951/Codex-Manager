@@ -87,7 +87,10 @@ fn fallback_not_found_response<F>(candidates: &[String], mut read_asset: F) -> R
 where
     F: FnMut(&str) -> Option<Vec<u8>>,
 {
-    if candidates.first().is_some_and(|candidate| is_html_route(candidate)) {
+    if candidates
+        .first()
+        .is_some_and(|candidate| is_html_route(candidate))
+    {
         for fallback in ["404.html", "_not-found.html", "index.html"] {
             if let Some(bytes) = read_asset(fallback) {
                 let status = if fallback == "index.html" {

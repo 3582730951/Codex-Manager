@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn anthropic_messages_request_maps_to_responses() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4",
+        "model": "gpt-5.3-codex",
         "system": "你是一个助手",
         "messages": [
             {
@@ -57,7 +57,7 @@ fn anthropic_messages_request_sets_prompt_cache_key() {
 #[test]
 fn anthropic_messages_request_drops_query_params() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4",
+        "model": "gpt-5.3-codex",
         "messages": [
             { "role": "user", "content": "hello" }
         ],
@@ -73,7 +73,7 @@ fn anthropic_messages_request_drops_query_params() {
 #[test]
 fn anthropic_tools_request_maps_to_openai_tools_and_tool_choice() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4",
+        "model": "gpt-5.3-codex",
         "messages": [
             { "role": "user", "content": "请读取README" }
         ],
@@ -107,7 +107,7 @@ fn anthropic_tools_request_maps_to_openai_tools_and_tool_choice() {
 #[test]
 fn anthropic_tools_request_respects_disable_parallel_tool_use() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4",
+        "model": "gpt-5.3-codex",
         "messages": [
             { "role": "user", "content": "请读取README" }
         ],
@@ -142,7 +142,7 @@ fn anthropic_tools_request_respects_disable_parallel_tool_use() {
 #[test]
 fn anthropic_tools_request_accepts_type_only_tool_definition() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4",
+        "model": "gpt-5.3-codex",
         "messages": [
             { "role": "user", "content": "hello" }
         ],
@@ -167,7 +167,7 @@ fn anthropic_tools_request_accepts_type_only_tool_definition() {
 #[test]
 fn anthropic_stream_request_uses_sse_adapter() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4",
+        "model": "gpt-5.3-codex",
         "messages": [{ "role": "user", "content": "hello" }],
         "stream": true
     });
@@ -181,7 +181,7 @@ fn anthropic_stream_request_uses_sse_adapter() {
 #[test]
 fn anthropic_request_ignores_unsupported_block_type() {
     let body = serde_json::json!({
-        "model": "claude-sonnet-4",
+        "model": "gpt-5.3-codex",
         "messages": [
             {
                 "role": "user",

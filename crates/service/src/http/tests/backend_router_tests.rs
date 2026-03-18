@@ -23,12 +23,18 @@ fn resolves_metrics_route() {
 
 #[test]
 fn resolves_service_probe_routes() {
-    assert_eq!(resolve_backend_route("GET", "/"), BackendRoute::ServiceProbe);
+    assert_eq!(
+        resolve_backend_route("GET", "/"),
+        BackendRoute::ServiceProbe
+    );
     assert_eq!(
         resolve_backend_route("GET", "/favicon.ico"),
         BackendRoute::ServiceProbe
     );
-    assert_eq!(resolve_backend_route("GET", "/v1"), BackendRoute::ServiceProbe);
+    assert_eq!(
+        resolve_backend_route("GET", "/v1"),
+        BackendRoute::ServiceProbe
+    );
     assert_eq!(
         resolve_backend_route("HEAD", "/v1?trace=1"),
         BackendRoute::ServiceProbe

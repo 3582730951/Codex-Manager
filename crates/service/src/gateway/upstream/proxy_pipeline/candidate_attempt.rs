@@ -65,6 +65,7 @@ pub(super) fn run_candidate_attempt(
         context.key_id(),
         path,
         context.model_for_log(),
+        setup.flow_key.as_str(),
         request_deadline,
     );
     if gate_guard.is_none() {

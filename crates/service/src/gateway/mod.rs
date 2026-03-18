@@ -51,7 +51,7 @@ mod upstream;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_cooldown_mark, record_gateway_failover_attempt, record_gateway_request_outcome,
-    AccountInFlightGuard,
+    record_request_gate_acquire, record_request_gate_skip, AccountInFlightGuard,
 };
 pub(crate) use metrics::{
     begin_rpc_request, duration_to_millis, gateway_metrics_prometheus, record_usage_refresh_outcome,

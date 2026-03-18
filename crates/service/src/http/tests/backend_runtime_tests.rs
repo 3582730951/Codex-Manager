@@ -50,7 +50,10 @@ fn full_stream_queue_does_not_spill_into_normal_queue() {
         Err(EnqueueError::Overloaded(value, HttpQueueKind::Stream)) => assert_eq!(value, 2),
         _ => panic!("unexpected enqueue result"),
     }
-    assert!(normal_rx.is_empty(), "stream overload must not spill to normal queue");
+    assert!(
+        normal_rx.is_empty(),
+        "stream overload must not spill to normal queue"
+    );
 }
 
 #[test]
@@ -71,6 +74,9 @@ fn full_normal_queue_does_not_spill_into_stream_queue() {
         Err(EnqueueError::Overloaded(value, HttpQueueKind::Normal)) => assert_eq!(value, 2),
         _ => panic!("unexpected enqueue result"),
     }
-    assert!(stream_rx.is_empty(), "normal overload must not spill to stream queue");
+    assert!(
+        stream_rx.is_empty(),
+        "normal overload must not spill to stream queue"
+    );
     assert_eq!(normal_rx.recv().expect("retain original normal item"), 1);
 }

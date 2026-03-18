@@ -82,8 +82,11 @@ impl CandidateExecutionState {
         model_override: Option<&str>,
     ) -> Bytes {
         let rewritten = self.rewrite_body_for_model(path, body, setup, model_override);
+        let is_compact_path =
+            path == "/v1/responses/compact" || path.starts_with("/v1/responses/compact?");
         let should_strip_body_affinity = setup.has_body_encrypted_content
-            && (strip_session_affinity || crate::gateway::cpa_no_cookie_header_mode_enabled());
+            && (strip_session_affinity
+                || (crate::gateway::cpa_no_cookie_header_mode_enabled() && !is_compact_path));
         if should_strip_body_affinity {
             // 中文注释：请求头收敛模式会主动移除 turn-state / conversation_id。
             // 若此时仍把 body 里的 compaction/encrypted_content 原样上送，
@@ -169,6 +172,7 @@ mod tests {
             url: "https://chatgpt.com/backend-api/codex/responses".to_string(),
             url_alt: None,
             upstream_cookie: None,
+            flow_key: "flow-test".to_string(),
             candidate_count: 1,
             account_max_inflight: 1,
             anthropic_has_prompt_cache_key: false,

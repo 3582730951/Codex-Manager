@@ -62,7 +62,9 @@ fn collect_gateway_candidates_uncached(storage: &Storage) -> Result<Vec<(Account
 }
 
 fn refresh_candidate_usage_pressure(storage: &Storage, candidates: &[(Account, Token)]) {
-    let snapshots = storage.latest_usage_snapshots_by_account().unwrap_or_default();
+    let snapshots = storage
+        .latest_usage_snapshots_by_account()
+        .unwrap_or_default();
     let snapshot_map = snapshots
         .into_iter()
         .map(|snap| (snap.account_id.clone(), snap))
@@ -267,9 +269,11 @@ pub(super) fn set_candidate_usage_pressure_for_tests(entries: &[(&str, i32)]) {
     let lock = CANDIDATE_USAGE_PRESSURE.get_or_init(|| RwLock::new(HashMap::new()));
     let mut map = crate::lock_utils::write_recover(lock, "candidate_usage_pressure");
     map.clear();
-    map.extend(entries.iter().map(|(account_id, penalty)| {
-        ((*account_id).to_string(), (*penalty).max(0))
-    }));
+    map.extend(
+        entries
+            .iter()
+            .map(|(account_id, penalty)| ((*account_id).to_string(), (*penalty).max(0))),
+    );
 }
 
 #[cfg(test)]

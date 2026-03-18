@@ -150,7 +150,7 @@ fn anthropic_json_response_restores_shortened_tool_name() {
     let original_tool_name =
         "mcp__plugin_super_long_workspace_namespace__tool_server_namespace_for_codex_manager_gateway_adapter_alignment__very_long_tool_operation_name";
     let request = serde_json::json!({
-        "model": "claude-sonnet-4-5",
+        "model": "gpt-5.3-codex",
         "messages": [{ "role": "user", "content": "hi" }],
         "tools": [{
             "name": original_tool_name,

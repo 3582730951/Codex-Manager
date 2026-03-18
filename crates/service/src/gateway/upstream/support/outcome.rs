@@ -18,6 +18,24 @@ pub(in super::super) fn decide_upstream_outcome<F>(
 where
     F: FnMut(Option<&str>, u16, Option<&str>),
 {
+    let is_challenge =
+        super::super::super::is_upstream_challenge_response(status.as_u16(), upstream_content_type);
+    if is_challenge {
+        super::super::super::mark_account_cooldown(
+            account_id,
+            super::super::super::CooldownReason::Challenge,
+        );
+        log_gateway_result(
+            Some(url),
+            status.as_u16(),
+            Some("upstream challenge blocked"),
+        );
+        if has_more_candidates {
+            return UpstreamOutcomeDecision::Failover;
+        }
+        return UpstreamOutcomeDecision::RespondUpstream;
+    }
+
     if status.is_success() {
         super::super::super::clear_account_cooldown(account_id);
         log_gateway_result(Some(url), status.as_u16(), None);
@@ -39,24 +57,6 @@ where
             super::super::super::CooldownReason::RateLimited,
         );
         log_gateway_result(Some(url), status.as_u16(), Some("upstream rate-limited"));
-        if has_more_candidates {
-            return UpstreamOutcomeDecision::Failover;
-        }
-        return UpstreamOutcomeDecision::RespondUpstream;
-    }
-
-    let is_challenge =
-        super::super::super::is_upstream_challenge_response(status.as_u16(), upstream_content_type);
-    if is_challenge {
-        super::super::super::mark_account_cooldown(
-            account_id,
-            super::super::super::CooldownReason::Challenge,
-        );
-        log_gateway_result(
-            Some(url),
-            status.as_u16(),
-            Some("upstream challenge blocked"),
-        );
         if has_more_candidates {
             return UpstreamOutcomeDecision::Failover;
         }

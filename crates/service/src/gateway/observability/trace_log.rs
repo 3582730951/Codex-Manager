@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -11,10 +11,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const DEFAULT_TRACE_QUEUE_CAPACITY: usize = 2048;
 const TRACE_FLUSH_WAIT_TIMEOUT_MS: u64 = 200;
 const ENV_TRACE_QUEUE_CAPACITY: &str = "CODEXMANAGER_TRACE_QUEUE_CAPACITY";
+const MAX_BUFFERED_TRACE_LINES_PER_TRACE: usize = 128;
 
 static TRACE_WRITER: OnceLock<TraceAsyncWriter> = OnceLock::new();
 static TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
 static TRACE_ERROR_TRACES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static TRACE_BUFFERED_LINES: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
 
 enum TraceCommand {
     Append {
@@ -142,6 +144,13 @@ fn trace_file_path_from_env() -> PathBuf {
     PathBuf::from("gateway-trace.log")
 }
 
+fn current_trace_ts() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn sanitize_text(value: &str) -> String {
     value.replace(['\r', '\n'], " ")
 }
@@ -161,6 +170,48 @@ fn append_trace_line(line: String, flush: bool) {
 
 fn trace_error_traces() -> &'static Mutex<HashSet<String>> {
     TRACE_ERROR_TRACES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn trace_buffered_lines() -> &'static Mutex<HashMap<String, Vec<String>>> {
+    TRACE_BUFFERED_LINES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn buffer_trace_line(trace_id: &str, line: String) {
+    let Ok(mut buffered) = trace_buffered_lines().lock() else {
+        return;
+    };
+    let lines = buffered.entry(trace_id.to_string()).or_default();
+    if lines.len() < MAX_BUFFERED_TRACE_LINES_PER_TRACE {
+        lines.push(line);
+        return;
+    }
+    if let Some(last) = lines.last_mut() {
+        *last = format!(
+            "ts={} event=TRACE_BUFFER_OVERFLOW trace_id={} dropped_after={}",
+            current_trace_ts(),
+            sanitize_text(trace_id),
+            MAX_BUFFERED_TRACE_LINES_PER_TRACE
+        );
+    }
+}
+
+fn flush_buffered_trace(trace_id: &str) {
+    let lines = trace_buffered_lines()
+        .lock()
+        .ok()
+        .and_then(|mut buffered| buffered.remove(trace_id));
+    let Some(lines) = lines else {
+        return;
+    };
+    for line in lines {
+        append_trace_line(line, false);
+    }
+}
+
+fn clear_buffered_trace(trace_id: &str) {
+    if let Ok(mut buffered) = trace_buffered_lines().lock() {
+        buffered.remove(trace_id);
+    }
 }
 
 fn mark_trace_has_error(trace_id: &str) {
@@ -265,8 +316,28 @@ pub(crate) fn log_request_body_preview(trace_id: &str, body: &[u8]) {
     let _ = (trace_id, body, super::trace_body_preview_max_bytes());
 }
 
-pub(crate) fn log_request_gate_wait(trace_id: &str, key_id: &str, path: &str, model: Option<&str>) {
-    let _ = (trace_id, key_id, path, model);
+pub(crate) fn log_request_gate_wait(
+    trace_id: &str,
+    key_id: &str,
+    path: &str,
+    model: Option<&str>,
+    flow_key: Option<&str>,
+) {
+    let line = format!(
+        "ts={} event=REQUEST_GATE_WAIT trace_id={} key_id={} request_path={} model={} flow_fp={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(key_id),
+        sanitize_text(path),
+        sanitize_text(model.unwrap_or("-")),
+        sanitize_text(
+            flow_key
+                .map(short_fingerprint)
+                .unwrap_or_else(|| "-".to_string())
+                .as_str()
+        ),
+    );
+    buffer_trace_line(trace_id, line);
 }
 
 pub(crate) fn log_request_gate_acquired(
@@ -274,13 +345,41 @@ pub(crate) fn log_request_gate_acquired(
     key_id: &str,
     path: &str,
     model: Option<&str>,
+    flow_key: Option<&str>,
     wait_ms: u128,
 ) {
-    let _ = (trace_id, key_id, path, model, wait_ms);
+    let line = format!(
+        "ts={} event=REQUEST_GATE_ACQUIRED trace_id={} key_id={} request_path={} model={} flow_fp={} wait_ms={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(key_id),
+        sanitize_text(path),
+        sanitize_text(model.unwrap_or("-")),
+        sanitize_text(
+            flow_key
+                .map(short_fingerprint)
+                .unwrap_or_else(|| "-".to_string())
+                .as_str()
+        ),
+        wait_ms,
+    );
+    buffer_trace_line(trace_id, line);
 }
 
-pub(crate) fn log_request_gate_skip(trace_id: &str, reason: &str) {
-    let _ = (trace_id, reason);
+pub(crate) fn log_request_gate_skip(trace_id: &str, flow_key: Option<&str>, reason: &str) {
+    let line = format!(
+        "ts={} event=REQUEST_GATE_SKIP trace_id={} flow_fp={} reason={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(
+            flow_key
+                .map(short_fingerprint)
+                .unwrap_or_else(|| "-".to_string())
+                .as_str()
+        ),
+        sanitize_text(reason),
+    );
+    buffer_trace_line(trace_id, line);
 }
 
 pub(crate) fn log_candidate_start(
@@ -297,9 +396,25 @@ pub(crate) fn log_candidate_pool(
     trace_id: &str,
     key_id: &str,
     strategy: &str,
+    flow_key: &str,
     candidates: &[String],
 ) {
-    let _ = (trace_id, key_id, strategy, candidates);
+    let ordered_candidates = if candidates.is_empty() {
+        "-".to_string()
+    } else {
+        candidates.join(",")
+    };
+    let line = format!(
+        "ts={} event=CANDIDATE_POOL trace_id={} key_id={} strategy={} flow_fp={} size={} ordered_candidates={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(key_id),
+        sanitize_text(strategy),
+        sanitize_text(short_fingerprint(flow_key).as_str()),
+        candidates.len(),
+        sanitize_text(ordered_candidates.as_str()),
+    );
+    buffer_trace_line(trace_id, line);
 }
 
 pub(crate) fn log_candidate_skip(
@@ -309,7 +424,16 @@ pub(crate) fn log_candidate_skip(
     account_id: &str,
     reason: &str,
 ) {
-    let _ = (trace_id, idx, total, account_id, reason);
+    let line = format!(
+        "ts={} event=CANDIDATE_SKIP trace_id={} idx={} total={} account_id={} reason={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        idx,
+        total,
+        sanitize_text(account_id),
+        sanitize_text(reason),
+    );
+    buffer_trace_line(trace_id, line);
 }
 
 pub(crate) fn log_attempt_result(
@@ -399,9 +523,11 @@ pub(crate) fn log_request_final(
     let should_mark_error = status_code >= 400 || has_error_text(error);
     if should_mark_error {
         mark_trace_has_error(trace_id);
+    } else {
+        clear_trace_error(trace_id);
+        clear_buffered_trace(trace_id);
     }
     let _ = (final_account_id, upstream_url, elapsed_ms);
-    clear_trace_error(trace_id);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -423,6 +549,9 @@ pub(crate) fn log_failed_request(
 ) {
     if !status_code.is_some_and(|status| status >= 400) && !has_error_text(error) {
         return;
+    }
+    if let Some(trace_id) = trace_id {
+        flush_buffered_trace(trace_id);
     }
     let code = crate::error_codes::code_or_dash(error);
     let line = format!(
@@ -447,6 +576,10 @@ pub(crate) fn log_failed_request(
         sanitize_text(error.unwrap_or("-")),
     );
     append_trace_line(line, true);
+    if let Some(trace_id) = trace_id {
+        clear_trace_error(trace_id);
+        clear_buffered_trace(trace_id);
+    }
 }
 
 #[cfg(test)]

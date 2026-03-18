@@ -51,7 +51,11 @@ async fn rpc_probe_ready(addr: &str, rpc_token: &str) -> bool {
     };
     payload
         .get("result")
-        .and_then(|result| result.get("server_name").or_else(|| result.get("serverName")))
+        .and_then(|result| {
+            result
+                .get("server_name")
+                .or_else(|| result.get("serverName"))
+        })
         .and_then(|value| value.as_str())
         .map(|value| value == "codexmanager-service")
         .unwrap_or(false)

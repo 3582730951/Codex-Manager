@@ -180,7 +180,9 @@ fn balanced_prefers_lower_burn_within_rendezvous_window() {
 fn balanced_filters_cooldown_and_inflight_before_selection() {
     let _guard = route_strategy_test_guard();
     let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "balanced");
+    let _inflight_limit = EnvGuard::set("CODEXMANAGER_ACCOUNT_MAX_INFLIGHT", "1");
     let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", "inst-route-filter");
+    super::super::runtime_config::reload_from_env();
     reload_from_env();
     clear_route_state_for_tests();
     super::super::cooldown::mark_account_cooldown(
