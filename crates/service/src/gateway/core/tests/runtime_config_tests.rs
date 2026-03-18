@@ -1,10 +1,8 @@
 use super::*;
-use std::sync::{Mutex, MutexGuard};
-
-static TEST_MUTEX: Mutex<()> = Mutex::new(());
+use std::sync::MutexGuard;
 
 fn test_guard() -> MutexGuard<'static, ()> {
-    TEST_MUTEX.lock().expect("lock runtime config test mutex")
+    gateway_runtime_test_guard()
 }
 
 struct EnvGuard {

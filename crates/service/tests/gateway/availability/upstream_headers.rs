@@ -1,13 +1,18 @@
 use super::*;
 use crate::gateway::{build_codex_compact_upstream_headers, CodexCompactUpstreamHeaderInput};
-use std::sync::{Mutex, MutexGuard};
-
-static HEADER_RUNTIME_MUTEX: Mutex<()> = Mutex::new(());
+use std::sync::MutexGuard;
 
 fn header_runtime_guard() -> MutexGuard<'static, ()> {
-    HEADER_RUNTIME_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::gateway::gateway_runtime_test_guard()
+}
+
+fn header_runtime_scope() -> (MutexGuard<'static, ()>, GatewayHeaderRuntimeRestore) {
+    let guard = header_runtime_guard();
+    let restore = GatewayHeaderRuntimeRestore::capture();
+    crate::gateway::set_cpa_no_cookie_header_mode(false);
+    let _ = crate::set_gateway_originator("codex_cli_rs");
+    let _ = crate::set_gateway_residency_requirement(None);
+    (guard, restore)
 }
 
 struct GatewayHeaderRuntimeRestore {
@@ -43,6 +48,7 @@ fn find_header(headers: &[(String, String)], name: &str) -> Option<String> {
 
 #[test]
 fn codex_header_profile_sets_required_headers_for_stream() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-123",
         account_id: Some("acc-1"),
@@ -114,6 +120,7 @@ fn codex_header_profile_sets_required_headers_for_stream() {
 
 #[test]
 fn codex_header_profile_uses_json_accept_for_non_stream() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-456",
         account_id: None,
@@ -143,6 +150,7 @@ fn codex_header_profile_uses_json_accept_for_non_stream() {
 
 #[test]
 fn codex_compact_header_profile_matches_remote_compact_shape() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_compact_upstream_headers(CodexCompactUpstreamHeaderInput {
         auth_token: "token-compact",
         account_id: Some("acc-compact"),
@@ -193,6 +201,7 @@ fn codex_compact_header_profile_matches_remote_compact_shape() {
 
 #[test]
 fn codex_compact_header_profile_omits_subagent_without_explicit_source() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_compact_upstream_headers(CodexCompactUpstreamHeaderInput {
         auth_token: "token-compact-default",
         account_id: None,
@@ -210,6 +219,7 @@ fn codex_compact_header_profile_omits_subagent_without_explicit_source() {
 
 #[test]
 fn codex_compact_header_profile_omits_session_without_thread_anchor() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_compact_upstream_headers(CodexCompactUpstreamHeaderInput {
         auth_token: "token-compact-no-session",
         account_id: None,
@@ -227,8 +237,7 @@ fn codex_compact_header_profile_omits_session_without_thread_anchor() {
 
 #[test]
 fn codex_header_profile_skips_cookie_when_cpa_no_cookie_mode_enabled() {
-    let _guard = header_runtime_guard();
-    let _restore = GatewayHeaderRuntimeRestore::capture();
+    let (_guard, _restore) = header_runtime_scope();
     crate::gateway::set_cpa_no_cookie_header_mode(true);
 
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
@@ -258,8 +267,7 @@ fn codex_header_profile_skips_cookie_when_cpa_no_cookie_mode_enabled() {
 
 #[test]
 fn codex_compact_header_profile_skips_cookie_when_cpa_no_cookie_mode_enabled() {
-    let _guard = header_runtime_guard();
-    let _restore = GatewayHeaderRuntimeRestore::capture();
+    let (_guard, _restore) = header_runtime_scope();
     crate::gateway::set_cpa_no_cookie_header_mode(true);
 
     let headers = build_codex_compact_upstream_headers(CodexCompactUpstreamHeaderInput {
@@ -283,8 +291,7 @@ fn codex_compact_header_profile_skips_cookie_when_cpa_no_cookie_mode_enabled() {
 
 #[test]
 fn codex_header_profile_uses_dynamic_originator_and_residency_requirement() {
-    let _guard = header_runtime_guard();
-    let _restore = GatewayHeaderRuntimeRestore::capture();
+    let (_guard, _restore) = header_runtime_scope();
     crate::set_gateway_originator("codex_cli_rs_e2e").expect("set gateway originator");
     crate::set_gateway_residency_requirement(Some("us"))
         .expect("set gateway residency requirement");
@@ -322,6 +329,7 @@ fn codex_header_profile_uses_dynamic_originator_and_residency_requirement() {
 
 #[test]
 fn codex_header_profile_regenerates_session_on_failover() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-789",
         account_id: None,
@@ -350,6 +358,7 @@ fn codex_header_profile_regenerates_session_on_failover() {
 
 #[test]
 fn codex_header_profile_uses_fallback_session_when_incoming_missing() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-fallback",
         account_id: None,
@@ -377,6 +386,7 @@ fn codex_header_profile_uses_fallback_session_when_incoming_missing() {
 
 #[test]
 fn codex_header_profile_does_not_forward_conversation_header_even_with_fallback() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-fallback-conv",
         account_id: None,
@@ -400,6 +410,7 @@ fn codex_header_profile_does_not_forward_conversation_header_even_with_fallback(
 
 #[test]
 fn codex_header_profile_skips_account_header_when_disabled() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-no-acc",
         account_id: Some("acc-should-not-send"),
@@ -423,6 +434,7 @@ fn codex_header_profile_skips_account_header_when_disabled() {
 
 #[test]
 fn codex_header_profile_can_disable_affinity_headers() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-cpa-mode",
         account_id: None,
@@ -453,6 +465,7 @@ fn codex_header_profile_can_disable_affinity_headers() {
 
 #[test]
 fn codex_header_profile_does_not_invent_client_request_id_on_failover() {
+    let (_guard, _restore) = header_runtime_scope();
     let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
         auth_token: "token-failover-stable",
         account_id: None,

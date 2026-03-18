@@ -321,6 +321,11 @@ pub(crate) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, Str
     http_bridge::set_sse_keepalive_interval_ms(interval_ms)
 }
 
+#[cfg(test)]
+pub(crate) fn gateway_runtime_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    runtime_config::gateway_runtime_test_guard()
+}
+
 pub(crate) fn manual_preferred_account() -> Option<String> {
     route_hint::get_manual_preferred_account()
 }

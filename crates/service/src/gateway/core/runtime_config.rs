@@ -460,7 +460,6 @@ pub(super) fn reload_from_env() {
     drop(cached_residency);
 
     refresh_upstream_clients_from_runtime_config();
-    let _ = RUNTIME_CONFIG_LOADED.set(());
 }
 
 const ENV_UPSTREAM_COOKIE: &str = "CODEXMANAGER_UPSTREAM_COOKIE";
@@ -542,6 +541,15 @@ fn originator_cell() -> &'static RwLock<String> {
 
 fn residency_requirement_cell() -> &'static RwLock<Option<String>> {
     RESIDENCY_REQUIREMENT.get_or_init(|| RwLock::new(None))
+}
+
+#[cfg(test)]
+pub(crate) fn gateway_runtime_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GATEWAY_RUNTIME_TEST_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    GATEWAY_RUNTIME_TEST_MUTEX
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn current_upstream_proxy_url() -> Option<String> {

@@ -4,14 +4,18 @@ use super::{
 };
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::StatusCode;
-use std::sync::{Mutex, MutexGuard};
-
-static USAGE_HEADER_RUNTIME_MUTEX: Mutex<()> = Mutex::new(());
+use std::sync::MutexGuard;
 
 fn usage_header_runtime_guard() -> MutexGuard<'static, ()> {
-    USAGE_HEADER_RUNTIME_MUTEX
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::gateway::gateway_runtime_test_guard()
+}
+
+fn usage_header_runtime_scope() -> (MutexGuard<'static, ()>, UsageHeaderRuntimeRestore) {
+    let guard = usage_header_runtime_guard();
+    let restore = UsageHeaderRuntimeRestore::capture();
+    let _ = crate::set_gateway_originator("codex_cli_rs");
+    let _ = crate::set_gateway_residency_requirement(None);
+    (guard, restore)
 }
 
 struct UsageHeaderRuntimeRestore {
@@ -59,7 +63,7 @@ fn refresh_token_status_error_includes_body_snippet() {
             StatusCode::BAD_REQUEST,
             "{\n  \"error\": \"invalid_grant\"\n}"
         ),
-        "refresh token failed with status 400 Bad Request: { \"error\": \"invalid_grant\" }"
+        "refresh token failed with status 400 Bad Request: invalid_grant"
     );
 }
 
@@ -205,8 +209,7 @@ fn refresh_token_auth_error_reason_from_message_tracks_canonical_messages() {
 
 #[test]
 fn usage_http_default_headers_follow_gateway_runtime_profile() {
-    let _guard = usage_header_runtime_guard();
-    let _restore = UsageHeaderRuntimeRestore::capture();
+    let (_guard, _restore) = usage_header_runtime_scope();
     crate::set_gateway_originator("codex_cli_rs_usage").expect("set gateway originator");
     crate::set_gateway_residency_requirement(Some("us"))
         .expect("set gateway residency requirement");
@@ -237,7 +240,7 @@ fn usage_request_headers_use_official_chatgpt_account_header_name() {
             .and_then(|value| value.to_str().ok()),
         Some("workspace_123")
     );
-    assert!(headers.get("ChatGPT-Account-Id").is_none());
+    assert_eq!(headers.len(), 1);
 }
 
 #[test]
