@@ -203,7 +203,8 @@ fn set_originator_updates_env_and_dynamic_user_agent() {
         std::env::var(ENV_ORIGINATOR).ok().as_deref(),
         Some("codex_cli_rs_windows")
     );
-    assert!(current_codex_user_agent().contains("codex_cli_rs/0.101.0"));
+    let expected_prefix = format!("codex_cli_rs/{}", current_codex_user_agent_version());
+    assert!(current_codex_user_agent().contains(expected_prefix.as_str()));
 }
 
 #[test]
