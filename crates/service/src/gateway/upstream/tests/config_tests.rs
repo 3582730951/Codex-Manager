@@ -35,12 +35,12 @@ fn fallback_content_type_trigger_is_limited_to_responses_path() {
 }
 
 #[test]
-fn fallback_base_stays_disabled_without_env() {
+fn fallback_base_defaults_for_chatgpt_primary_without_env() {
     std::env::remove_var("CODEXMANAGER_UPSTREAM_FALLBACK_BASE_URL");
     reload_from_env();
     assert_eq!(
         resolve_upstream_fallback_base_url("https://chatgpt.com/backend-api/codex").as_deref(),
-        None
+        Some("https://api.openai.com/v1")
     );
 }
 

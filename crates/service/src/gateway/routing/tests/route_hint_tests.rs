@@ -200,6 +200,35 @@ fn balanced_filters_cooldown_and_inflight_before_selection() {
 }
 
 #[test]
+fn balanced_keeps_inflight_candidates_when_no_free_candidate_remains() {
+    let _guard = route_strategy_test_guard();
+    let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "balanced");
+    let _instance = EnvGuard::set("CODEXMANAGER_INSTANCE_ID", "inst-route-inflight-fallback");
+    reload_from_env();
+    clear_route_state_for_tests();
+    super::super::cooldown::mark_account_cooldown(
+        "acc-a",
+        super::super::cooldown::CooldownReason::RateLimited,
+    );
+    let inflight_guard_b = super::super::metrics::acquire_account_inflight("acc-b");
+    let inflight_guard_c = super::super::metrics::acquire_account_inflight("acc-c");
+
+    let mut candidates = candidate_list();
+    apply_route_strategy(&mut candidates, selection("flow-inflight-fallback"));
+
+    drop(inflight_guard_c);
+    drop(inflight_guard_b);
+    super::super::metrics::clear_account_inflight_for_tests();
+    super::super::cooldown::clear_runtime_state();
+
+    let ids = account_ids(&candidates);
+    assert_eq!(ids.len(), 2, "ids={ids:?}");
+    assert!(!ids.iter().any(|id| id == "acc-a"), "ids={ids:?}");
+    assert!(ids.iter().any(|id| id == "acc-b"), "ids={ids:?}");
+    assert!(ids.iter().any(|id| id == "acc-c"), "ids={ids:?}");
+}
+
+#[test]
 fn ordered_only_reorders_within_small_prefix_window() {
     let _guard = route_strategy_test_guard();
     let _route_strategy = EnvGuard::set(ROUTE_STRATEGY_ENV, "ordered");

@@ -84,6 +84,7 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized.starts_with("upstream blocked by cloudflare/waf")
         || normalized.starts_with("upstream challenge blocked")
         || normalized.contains("html challenge")
+        || normalized.contains("cloudflare 安全验证页")
     {
         return ErrorCode::UpstreamChallengeBlocked;
     }
@@ -124,6 +125,7 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     }
     if normalized.contains("cloudflare/waf")
         || normalized.contains("安全验证拦截")
+        || normalized.contains("安全验证页")
         || normalized.contains("验证/拦截页面")
     {
         return ErrorCode::UpstreamChallengeBlocked;
@@ -278,6 +280,10 @@ mod tests {
         );
         assert_eq!(
             classify_message("response conversion failed: upstream returned html challenge"),
+            ErrorCode::UpstreamChallengeBlocked
+        );
+        assert_eq!(
+            classify_message("Cloudflare 安全验证页（ray=9dea201d5b311014, zone=chatgpt.com）"),
             ErrorCode::UpstreamChallengeBlocked
         );
         assert_eq!(classify_message("上游请求超时"), ErrorCode::UpstreamTimeout);

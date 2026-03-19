@@ -4,6 +4,7 @@ use std::sync::{OnceLock, RwLock};
 const ENV_UPSTREAM_BASE_URL: &str = "CODEXMANAGER_UPSTREAM_BASE_URL";
 const ENV_UPSTREAM_FALLBACK_BASE_URL: &str = "CODEXMANAGER_UPSTREAM_FALLBACK_BASE_URL";
 const DEFAULT_UPSTREAM_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const DEFAULT_UPSTREAM_FALLBACK_BASE_URL: &str = "https://api.openai.com/v1";
 
 static CONFIG_LOADED: OnceLock<()> = OnceLock::new();
 static UPSTREAM_BASE_URL: OnceLock<RwLock<String>> = OnceLock::new();
@@ -35,7 +36,11 @@ pub(in super::super) fn resolve_upstream_fallback_base_url(primary_base: &str) -
         upstream_fallback_base_url_cell(),
         "upstream_fallback_base_url",
     )
-    .clone();
+    .clone()
+    .or_else(|| {
+        is_chatgpt_backend_base(primary_base)
+            .then_some(DEFAULT_UPSTREAM_FALLBACK_BASE_URL.to_string())
+    });
     fallback.filter(|value| !value.eq_ignore_ascii_case(primary_base.trim()))
 }
 

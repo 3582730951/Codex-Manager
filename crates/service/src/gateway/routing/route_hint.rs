@@ -193,13 +193,30 @@ fn reorder_candidates(
 
 fn hard_filter_local_unavailable_candidates(candidates: &mut Vec<(Account, Token)>) {
     let inflight_limit = super::runtime_config::account_max_inflight_limit();
-    candidates.retain(|(account, _)| {
-        if super::cooldown::is_account_in_cooldown(account.id.as_str()) {
-            return false;
+    let mut available = Vec::with_capacity(candidates.len());
+    let mut inflight_only = Vec::new();
+
+    for candidate in candidates.drain(..) {
+        let account_id = candidate.0.id.as_str();
+        if super::cooldown::is_account_in_cooldown(account_id) {
+            continue;
         }
-        inflight_limit == 0
-            || super::metrics::account_inflight_count(account.id.as_str()) < inflight_limit
-    });
+        let inflight_saturated = inflight_limit > 0
+            && super::metrics::account_inflight_count(account_id) >= inflight_limit;
+        if inflight_saturated {
+            inflight_only.push(candidate);
+        } else {
+            available.push(candidate);
+        }
+    }
+
+    if !available.is_empty() {
+        *candidates = available;
+    } else {
+        // 中文注释：当账号只是“全部都忙”而不是“全部都不可用”时，不要提前把候选池清空；
+        // 保留这些 inflight 候选，让后续 per-account gate 负责等待/切换，避免直接 503 no_available_account。
+        *candidates = inflight_only;
+    }
 }
 
 fn rotate_to_manual_preferred_account(candidates: &mut Vec<(Account, Token)>) -> bool {
