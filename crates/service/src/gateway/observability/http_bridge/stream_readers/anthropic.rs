@@ -306,7 +306,7 @@ impl AnthropicSseReader {
                     "id": self.state.response_id.clone().unwrap_or_else(|| "msg_proxy".to_string()),
                     "type": "message",
                     "role": "assistant",
-                    "model": self.state.model.clone().unwrap_or_else(|| "unknown".to_string()),
+                    "model": self.state.model.clone().unwrap_or_else(|| "gpt-5.3-codex".to_string()),
                     "content": [],
                     "stop_reason": Value::Null,
                     "stop_sequence": Value::Null,

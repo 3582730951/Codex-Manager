@@ -64,6 +64,53 @@ fn read_text_with_timeout(
     }
 }
 
+fn summarize_token_endpoint_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let value = serde_json::from_str::<serde_json::Value>(trimmed).ok();
+    let candidates = [
+        value
+            .as_ref()
+            .and_then(|json| json.get("error_description"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        value
+            .as_ref()
+            .and_then(|json| json.get("error"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        value
+            .as_ref()
+            .and_then(|json| json.get("message"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        value
+            .as_ref()
+            .and_then(|json| json.get("error"))
+            .and_then(|value| value.get("message"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        Some(trimmed.to_string()),
+    ];
+
+    candidates
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+        .map(|value| {
+            if value.len() > 200 {
+                format!("{}...", &value[..200])
+            } else {
+                value
+            }
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn next_account_sort(storage: &codexmanager_core::storage::Storage) -> i64 {
     storage
         .list_accounts()
@@ -242,7 +289,15 @@ fn exchange_code_for_tokens(
         .send()
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("token endpoint returned status {}", resp.status()));
+        let status = resp.status();
+        let detail = read_text_with_timeout(resp, OPENAI_AUTH_READ_TIMEOUT)
+            .map(|body| summarize_token_endpoint_error_body(&body))
+            .unwrap_or_default();
+        return Err(if detail.is_empty() {
+            format!("token endpoint returned status {status}")
+        } else {
+            format!("token endpoint returned status {status}: {detail}")
+        });
     }
     read_json_with_timeout(resp, OPENAI_AUTH_READ_TIMEOUT)
 }

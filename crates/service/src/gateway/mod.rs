@@ -13,6 +13,8 @@ mod incoming_headers;
 mod instance_id;
 #[path = "routing/local_burn.rs"]
 mod local_burn;
+#[path = "routing/model_feedback.rs"]
+mod model_feedback;
 #[path = "request/local_count_tokens.rs"]
 mod local_count_tokens;
 #[path = "request/local_models.rs"]
@@ -51,7 +53,7 @@ mod upstream;
 use metrics::{
     account_inflight_count, acquire_account_inflight, begin_gateway_request,
     record_gateway_cooldown_mark, record_gateway_failover_attempt, record_gateway_request_outcome,
-    record_request_gate_acquire, record_request_gate_skip, AccountInFlightGuard,
+    AccountInFlightGuard,
 };
 pub(crate) use metrics::{
     begin_rpc_request, duration_to_millis, gateway_metrics_prometheus, record_usage_refresh_outcome,
@@ -134,6 +136,7 @@ pub(crate) fn reload_runtime_config_from_env() {
     runtime_config::reload_from_env();
     instance_id::reload_from_env();
     local_burn::reload_from_env();
+    model_feedback::reload_from_env();
     selection::reload_from_env();
     request_gate::clear_runtime_state();
     cooldown::clear_runtime_state();
@@ -259,6 +262,32 @@ pub(crate) fn clear_manual_preferred_account() {
 
 pub(crate) fn clear_manual_preferred_account_if(account_id: &str) -> bool {
     route_hint::clear_manual_preferred_account_if(account_id)
+}
+
+pub(crate) use model_feedback::AccountRequestFeedback;
+
+pub(crate) fn record_model_ineligible_feedback(account_id: &str, request_model: &str) {
+    model_feedback::record_model_ineligible_feedback(account_id, request_model);
+}
+
+pub(crate) fn record_quota_rejected_feedback(account_id: &str, request_model: Option<&str>) {
+    model_feedback::record_quota_rejected_feedback(account_id, request_model);
+}
+
+pub(crate) fn clear_request_feedback(account_id: &str, request_model: Option<&str>) {
+    model_feedback::clear_request_feedback(account_id, request_model);
+}
+
+pub(crate) fn request_feedback_for(
+    account_id: &str,
+    request_model: Option<&str>,
+) -> Option<AccountRequestFeedback> {
+    model_feedback::request_feedback_for(account_id, request_model)
+}
+
+#[cfg(test)]
+pub(crate) fn clear_request_feedback_runtime_state_for_tests() {
+    model_feedback::clear_runtime_state_for_tests();
 }
 
 #[cfg(test)]

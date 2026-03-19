@@ -4,9 +4,9 @@ use super::{
     convert_openai_completions_stream_chunk, extract_openai_completed_output_text,
     extract_sse_frame_payload, inspect_sse_frame, is_response_completed_event_name,
     map_chunk_has_completion_text, mark_collector_terminal_success, merge_usage,
-    parse_sse_frame_json, should_skip_completion_live_text_event, sse_keepalive_interval,
-    stream_idle_timeout_exceeded, stream_idle_timeout_message, stream_incomplete_message,
-    stream_reader_disconnected_message, update_openai_stream_meta, Arc, Cursor, Mutex,
+    parse_sse_frame_json, should_skip_completion_live_text_event, stream_idle_timeout_reached,
+    stream_incomplete_message, stream_poll_timeout, stream_reader_disconnected_message,
+    stream_reader_idle_timeout_message, update_openai_stream_meta, Arc, Cursor, Mutex,
     OpenAIStreamMeta, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
     UpstreamSseFramePump, UpstreamSseFramePumpItem, Value,
 };
@@ -16,9 +16,12 @@ pub(crate) struct OpenAICompletionsSseReader {
     upstream: UpstreamSseFramePump,
     out_cursor: Cursor<Vec<u8>>,
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
+    trace_id: Option<String>,
     stream_meta: OpenAIStreamMeta,
     emitted_text_delta: bool,
-    idle_since: Option<Instant>,
+    saw_upstream_frame: bool,
+    saw_semantic_output: bool,
+    last_upstream_activity: Instant,
     finished: bool,
 }
 
@@ -26,14 +29,18 @@ impl OpenAICompletionsSseReader {
     pub(crate) fn new(
         upstream: reqwest::blocking::Response,
         usage_collector: Arc<Mutex<PassthroughSseCollector>>,
+        trace_id: Option<&str>,
     ) -> Self {
         Self {
             upstream: UpstreamSseFramePump::new(upstream),
             out_cursor: Cursor::new(Vec::new()),
             usage_collector,
+            trace_id: trace_id.map(str::to_string),
             stream_meta: OpenAIStreamMeta::default(),
             emitted_text_delta: false,
-            idle_since: None,
+            saw_upstream_frame: false,
+            saw_semantic_output: false,
+            last_upstream_activity: Instant::now(),
             finished: false,
         }
     }
@@ -52,6 +59,12 @@ impl OpenAICompletionsSseReader {
                 if let SseTerminal::Err(message) = terminal {
                     collector.terminal_error = Some(message);
                 }
+                crate::gateway::trace_log::log_stream_phase(
+                    self.trace_id.as_deref(),
+                    "openai_completions",
+                    "terminal_seen",
+                    collector.terminal_error.as_deref().or(Some("ok")),
+                );
             }
         }
     }
@@ -130,14 +143,54 @@ impl OpenAICompletionsSseReader {
             self.finished = true;
         }
 
+        if !self.saw_semantic_output
+            && !out.trim().is_empty()
+            && out.trim() != "data: [DONE]"
+        {
+            self.saw_semantic_output = true;
+            crate::gateway::trace_log::log_stream_phase(
+                self.trace_id.as_deref(),
+                "openai_completions",
+                "first_semantic_event",
+                Some(event_type),
+            );
+        }
+
         out.into_bytes()
     }
 
     fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
         loop {
-            match self.upstream.recv_timeout(sse_keepalive_interval()) {
+            if stream_idle_timeout_reached(self.last_upstream_activity) {
+                if let Ok(mut collector) = self.usage_collector.lock() {
+                    collector
+                        .terminal_error
+                        .get_or_insert_with(stream_reader_idle_timeout_message);
+                }
+                crate::gateway::trace_log::log_stream_phase(
+                    self.trace_id.as_deref(),
+                    "openai_completions",
+                    "idle_timeout_triggered",
+                    None,
+                );
+                self.finished = true;
+                return Ok(Vec::new());
+            }
+            match self
+                .upstream
+                .recv_timeout(stream_poll_timeout(self.last_upstream_activity))
+            {
                 Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
-                    self.idle_since = None;
+                    self.last_upstream_activity = Instant::now();
+                    if !self.saw_upstream_frame {
+                        self.saw_upstream_frame = true;
+                        crate::gateway::trace_log::log_stream_phase(
+                            self.trace_id.as_deref(),
+                            "openai_completions",
+                            "first_upstream_frame",
+                            None,
+                        );
+                    }
                     self.update_usage_from_frame(&frame);
                     let mapped = self.map_frame_to_completions_sse(&frame);
                     if !mapped.is_empty() {
@@ -156,6 +209,12 @@ impl OpenAICompletionsSseReader {
                             collector
                                 .terminal_error
                                 .get_or_insert_with(stream_incomplete_message);
+                            crate::gateway::trace_log::log_stream_phase(
+                                self.trace_id.as_deref(),
+                                "openai_completions",
+                                "eof_without_terminal",
+                                collector.terminal_error.as_deref(),
+                            );
                         }
                     }
                     self.finished = true;
@@ -167,19 +226,37 @@ impl OpenAICompletionsSseReader {
                             .terminal_error
                             .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
                     }
+                    crate::gateway::trace_log::log_stream_phase(
+                        self.trace_id.as_deref(),
+                        "openai_completions",
+                        "read_error",
+                        Some(err.as_str()),
+                    );
                     self.finished = true;
                     return Ok(Vec::new());
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if stream_idle_timeout_exceeded(&mut self.idle_since) {
+                    if stream_idle_timeout_reached(self.last_upstream_activity) {
                         if let Ok(mut collector) = self.usage_collector.lock() {
                             collector
                                 .terminal_error
-                                .get_or_insert_with(stream_idle_timeout_message);
+                                .get_or_insert_with(stream_reader_idle_timeout_message);
                         }
+                        crate::gateway::trace_log::log_stream_phase(
+                            self.trace_id.as_deref(),
+                            "openai_completions",
+                            "idle_timeout_triggered",
+                            None,
+                        );
                         self.finished = true;
                         return Ok(Vec::new());
                     }
+                    crate::gateway::trace_log::log_stream_phase(
+                        self.trace_id.as_deref(),
+                        "openai_completions",
+                        "keepalive_emitted",
+                        None,
+                    );
                     return Ok(SseKeepAliveFrame::OpenAICompletions.bytes().to_vec());
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -188,6 +265,12 @@ impl OpenAICompletionsSseReader {
                             .terminal_error
                             .get_or_insert_with(stream_reader_disconnected_message);
                     }
+                    crate::gateway::trace_log::log_stream_phase(
+                        self.trace_id.as_deref(),
+                        "openai_completions",
+                        "reader_disconnected",
+                        None,
+                    );
                     self.finished = true;
                     return Ok(Vec::new());
                 }

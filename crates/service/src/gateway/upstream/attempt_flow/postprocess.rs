@@ -52,6 +52,7 @@ pub(super) fn process_upstream_post_retry_flow<F>(
     client: &reqwest::blocking::Client,
     storage: &Storage,
     method: &reqwest::Method,
+    request_model: Option<&str>,
     upstream_base: &str,
     path: &str,
     url: &str,
@@ -264,6 +265,8 @@ where
     match decide_upstream_outcome(
         storage,
         &account.id,
+        path,
+        request_model,
         status,
         upstream.headers().get(reqwest::header::CONTENT_TYPE),
         url,

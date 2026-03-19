@@ -14,6 +14,8 @@ use super::{
     UpstreamResponseUsage,
 };
 
+const MAX_SYNTHETIC_SSE_BODY_BYTES: usize = 256 * 1024;
+
 pub(crate) fn respond_with_upstream(
     request: Request,
     upstream: reqwest::blocking::Response,
@@ -97,6 +99,7 @@ pub(crate) fn respond_with_upstream(
                         stream_terminal_error: None,
                         delivery_error,
                         upstream_error_hint,
+                        bridge_error: None,
                     });
                 }
 
@@ -128,6 +131,7 @@ pub(crate) fn respond_with_upstream(
                     stream_terminal_error: None,
                     delivery_error,
                     upstream_error_hint,
+                    bridge_error: None,
                 });
             }
             if is_stream && !is_sse && status.0 >= 400 {
@@ -159,6 +163,7 @@ pub(crate) fn respond_with_upstream(
                     stream_terminal_error: None,
                     delivery_error,
                     upstream_error_hint,
+                    bridge_error: None,
                 });
             }
             if is_sse || is_stream {
@@ -170,6 +175,7 @@ pub(crate) fn respond_with_upstream(
                         upstream,
                         Arc::clone(&usage_collector),
                         keepalive_frame,
+                        trace_id,
                     ),
                     None,
                     None,
@@ -185,6 +191,7 @@ pub(crate) fn respond_with_upstream(
                     stream_terminal_error: collector.terminal_error,
                     delivery_error,
                     upstream_error_hint: collector.upstream_error_hint,
+                    bridge_error: None,
                 });
             }
             let len = upstream.content_length().map(|v| v as usize);
@@ -196,6 +203,7 @@ pub(crate) fn respond_with_upstream(
                 stream_terminal_error: None,
                 delivery_error,
                 upstream_error_hint: None,
+                bridge_error: None,
             })
         }
         ResponseAdapter::OpenAIChatCompletionsJson
@@ -243,6 +251,12 @@ pub(crate) fn respond_with_upstream(
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or("-")
                 );
+                crate::gateway::trace_log::log_stream_phase(
+                    trace_id,
+                    format!("{response_adapter:?}").as_str(),
+                    "content_type_mismatch",
+                    upstream_content_type.as_deref(),
+                );
             }
 
             if use_openai_sse_adapter && (is_stream || is_sse) && is_sse {
@@ -261,6 +275,7 @@ pub(crate) fn respond_with_upstream(
                                 upstream,
                                 Arc::clone(&usage_collector),
                                 tool_name_restore_map.cloned(),
+                                trace_id,
                             ),
                             None,
                             None,
@@ -270,7 +285,11 @@ pub(crate) fn respond_with_upstream(
                         let response = Response::new(
                             status,
                             headers,
-                            OpenAICompletionsSseReader::new(upstream, Arc::clone(&usage_collector)),
+                            OpenAICompletionsSseReader::new(
+                                upstream,
+                                Arc::clone(&usage_collector),
+                                trace_id,
+                            ),
                             None,
                             None,
                         );
@@ -301,6 +320,7 @@ pub(crate) fn respond_with_upstream(
                     stream_terminal_error: collector.terminal_error,
                     delivery_error,
                     upstream_error_hint: None,
+                    bridge_error: None,
                 });
             }
 
@@ -316,6 +336,7 @@ pub(crate) fn respond_with_upstream(
             if let Ok(value) = serde_json::from_slice::<Value>(upstream_body.as_ref()) {
                 merge_usage(&mut usage, parse_usage_from_json(&value));
             }
+            let mut bridge_error = None;
             let (mut body, mut content_type) =
                 match adapt_upstream_response_with_tool_name_restore_map(
                     response_adapter,
@@ -324,42 +345,68 @@ pub(crate) fn respond_with_upstream(
                     tool_name_restore_map,
                 ) {
                     Ok(result) => result,
-                    Err(err) => (
-                        serde_json::to_vec(&json!({
-                            "error": {
-                                "message": format!("response conversion failed: {err}"),
-                                "type": "server_error"
-                            }
-                        }))
-                        .unwrap_or_else(|_| {
-                            b"{\"error\":{\"message\":\"response conversion failed\",\"type\":\"server_error\"}}"
-                                .to_vec()
-                        }),
-                        "application/json",
-                    ),
+                    Err(err) => {
+                        bridge_error = Some(format!("response conversion failed: {err}"));
+                        (
+                            serde_json::to_vec(&json!({
+                                "error": {
+                                    "message": bridge_error.clone().unwrap_or_else(|| "response conversion failed".to_string()),
+                                    "type": "server_error"
+                                }
+                            }))
+                            .unwrap_or_else(|_| {
+                                b"{\"error\":{\"message\":\"response conversion failed\",\"type\":\"server_error\"}}"
+                                    .to_vec()
+                            }),
+                            "application/json",
+                        )
+                    }
                 };
             if use_openai_sse_adapter
                 && is_stream
                 && status.0 < 400
                 && !content_type.eq_ignore_ascii_case("text/event-stream")
             {
-                if let Ok(mapped_json) = serde_json::from_slice::<Value>(body.as_ref()) {
-                    merge_usage(&mut usage, parse_usage_from_json(&mapped_json));
-                    body = if response_adapter == ResponseAdapter::OpenAIChatCompletionsSse {
-                        super::synthesize_chat_completion_sse_from_json(&mapped_json)
-                    } else {
-                        super::synthesize_completions_sse_from_json(&mapped_json)
-                    };
-                    content_type = "text/event-stream";
-                    log::warn!(
-                        "event=gateway_openai_stream_synthetic_sse adapter={:?} status={} upstream_content_type={}",
-                        response_adapter,
-                        status.0,
-                        upstream_content_type
-                            .as_deref()
-                            .filter(|value| !value.trim().is_empty())
-                            .unwrap_or("-")
+                let upstream_content_type_label = upstream_content_type
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("-");
+                if body.len() <= MAX_SYNTHETIC_SSE_BODY_BYTES {
+                    if let Ok(mapped_json) = serde_json::from_slice::<Value>(body.as_ref()) {
+                        merge_usage(&mut usage, parse_usage_from_json(&mapped_json));
+                        body = if response_adapter == ResponseAdapter::OpenAIChatCompletionsSse {
+                            super::synthesize_chat_completion_sse_from_json(&mapped_json)
+                        } else {
+                            super::synthesize_completions_sse_from_json(&mapped_json)
+                        };
+                        content_type = "text/event-stream";
+                        log::warn!(
+                            "event=gateway_openai_stream_synthetic_sse adapter={:?} status={} upstream_content_type={}",
+                            response_adapter,
+                            status.0,
+                            upstream_content_type_label
+                        );
+                        crate::gateway::trace_log::log_stream_phase(
+                            trace_id,
+                            format!("{response_adapter:?}").as_str(),
+                            "synthetic_sse_fallback",
+                            upstream_content_type.as_deref(),
+                        );
+                    }
+                } else {
+                    let body_len_detail = body.len().to_string();
+                    crate::gateway::trace_log::log_stream_phase(
+                        trace_id,
+                        format!("{response_adapter:?}").as_str(),
+                        "synthetic_sse_skipped_oversize",
+                        Some(body_len_detail.as_str()),
                     );
+                }
+                if !content_type.eq_ignore_ascii_case("text/event-stream") && bridge_error.is_none() {
+                    bridge_error = Some(format!(
+                        "gateway_bridge_error: content_type_mismatch upstream_content_type={} mapped_content_type={}",
+                        upstream_content_type_label, content_type
+                    ));
                 }
             }
             if let Ok(content_type_header) =
@@ -378,6 +425,7 @@ pub(crate) fn respond_with_upstream(
                 stream_terminal_error: None,
                 delivery_error,
                 upstream_error_hint,
+                bridge_error,
             })
         }
         ResponseAdapter::AnthropicJson | ResponseAdapter::AnthropicSse => {
@@ -436,6 +484,7 @@ pub(crate) fn respond_with_upstream(
                     stream_terminal_error: None,
                     delivery_error,
                     upstream_error_hint: None,
+                    bridge_error: None,
                 });
             }
 
@@ -475,6 +524,7 @@ pub(crate) fn respond_with_upstream(
                 stream_terminal_error: None,
                 delivery_error,
                 upstream_error_hint,
+                bridge_error: None,
             })
         }
     }

@@ -63,12 +63,16 @@ pub(crate) use usage::token_refresh as usage_token_refresh;
 pub use app_settings::{
     app_settings_get, app_settings_get_with_overrides, app_settings_set,
     bind_all_interfaces_enabled, current_close_to_tray_on_close_setting,
-    current_gateway_free_account_max_model, current_gateway_sse_keepalive_interval_ms,
-    current_gateway_upstream_stream_timeout_ms, current_lightweight_mode_on_close_to_tray_setting,
-    current_saved_service_addr, current_service_bind_mode, current_ui_low_transparency_enabled,
-    current_ui_theme, current_update_auto_check_enabled, default_listener_bind_addr,
-    listener_bind_addr, set_close_to_tray_on_close_setting, set_gateway_background_tasks,
-    set_gateway_cpa_no_cookie_header_mode, set_gateway_free_account_max_model,
+    current_gateway_free_account_max_model, current_gateway_originator,
+    current_gateway_request_compression_enabled, current_gateway_residency_requirement,
+    current_gateway_sse_keepalive_interval_ms, current_gateway_upstream_stream_timeout_ms,
+    current_lightweight_mode_on_close_to_tray_setting, current_saved_service_addr,
+    current_service_bind_mode, current_ui_low_transparency_enabled, current_ui_theme,
+    current_update_auto_check_enabled, default_listener_bind_addr, listener_bind_addr,
+    residency_requirement_options, set_close_to_tray_on_close_setting,
+    set_gateway_background_tasks, set_gateway_cpa_no_cookie_header_mode,
+    set_gateway_free_account_max_model, set_gateway_originator,
+    set_gateway_request_compression_enabled, set_gateway_residency_requirement,
     set_gateway_route_strategy, set_gateway_sse_keepalive_interval_ms,
     set_gateway_upstream_proxy_url, set_gateway_upstream_stream_timeout_ms,
     set_lightweight_mode_on_close_to_tray_setting, set_saved_service_addr, set_service_bind_mode,
@@ -76,7 +80,9 @@ pub use app_settings::{
     sync_runtime_settings_from_storage, BackgroundTasksInput,
     APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_ENV_OVERRIDES_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_CPA_NO_COOKIE_HEADER_MODE_KEY,
-    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+    APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+    APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY, APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_SERVICE_ADDR_KEY,
@@ -94,8 +100,16 @@ pub use lifecycle::bootstrap::{initialize_storage_if_needed, portable};
 pub use lifecycle::shutdown::{clear_shutdown_flag, request_shutdown, shutdown_requested};
 pub use lifecycle::startup::{start_one_shot_server, start_server, ServerHandle};
 
+#[allow(dead_code)]
 pub(crate) fn handle_request(req: JsonRpcRequest) -> JsonRpcResponse {
     rpc_dispatch::handle_request(req)
+}
+
+pub(crate) fn handle_request_with_context(
+    req: JsonRpcRequest,
+    ctx: &rpc_dispatch::RpcRequestContext,
+) -> JsonRpcResponse {
+    rpc_dispatch::handle_request_with_context(req, ctx)
 }
 
 #[cfg(test)]

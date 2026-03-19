@@ -18,6 +18,7 @@ pub struct JsonRpcResponse {
 pub struct InitializeResult {
     pub server_name: String,
     pub version: String,
+    pub user_agent: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -119,6 +120,33 @@ pub struct UsageSnapshotResult {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UsageReadResult {
     pub snapshot: Option<UsageSnapshotResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitWindowResult {
+    pub used_percent: i64,
+    pub window_duration_mins: Option<i64>,
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitSnapshotResult {
+    pub limit_id: Option<String>,
+    pub limit_name: Option<String>,
+    pub primary: Option<RateLimitWindowResult>,
+    pub secondary: Option<RateLimitWindowResult>,
+    pub credits: Option<serde_json::Value>,
+    pub plan_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRateLimitsReadResult {
+    pub rate_limits: RateLimitSnapshotResult,
+    pub rate_limits_by_limit_id:
+        Option<std::collections::BTreeMap<String, RateLimitSnapshotResult>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -39,10 +39,9 @@ static TOKEN_EXCHANGE_ISSUER: OnceLock<RwLock<String>> = OnceLock::new();
 pub(crate) const DEFAULT_GATEWAY_DEBUG: bool = false;
 const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS: u64 = 120_000;
-// 中文注释：Codex CLI 的测试/推理会话可能长时间无业务 token，
-// 默认 30 分钟容易把“仍在思考的长流”误判成超时；这里抬高到 2 小时，
-// 具体环境仍可通过 CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS 覆盖。
-const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 7_200_000;
+// 中文注释：对齐 openai/codex 当前公开配置口径，stream idle timeout 默认保持 5 分钟。
+// 这不是总时长上限，只用于“上游长期没有任何新字节”的空载超时。
+const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 300_000;
 // 中文注释：默认把单账号并发收紧到 1，避免多个长连接 Codex 会话同时压到同一账号上。
 const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 1;
 const DEFAULT_UPSTREAM_POOL_MAX_IDLE_PER_HOST: usize = 8;
@@ -50,7 +49,7 @@ const DEFAULT_UPSTREAM_POOL_IDLE_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_CPA_NO_COOKIE_HEADER_MODE: bool = false;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = true;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
-const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 300;
 const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL: &str = "gpt-5.2";

@@ -1,7 +1,6 @@
 use codexmanager_core::auth::{
     build_authorize_url, device_redirect_uri, device_token_url, device_usercode_url,
     device_verification_url, generate_pkce, generate_state, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
-    DEFAULT_ORIGINATOR,
 };
 use codexmanager_core::rpc::types::{DeviceAuthInfo, LoginStartResult};
 use codexmanager_core::storage::{now_ts, Event, LoginSession};
@@ -22,8 +21,7 @@ pub(crate) fn login_start(
         std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string());
     let client_id =
         std::env::var("CODEXMANAGER_CLIENT_ID").unwrap_or_else(|_| DEFAULT_CLIENT_ID.to_string());
-    let originator =
-        std::env::var("CODEXMANAGER_ORIGINATOR").unwrap_or_else(|_| DEFAULT_ORIGINATOR.to_string());
+    let originator = crate::gateway::current_originator();
     let mut warning = None;
     if login_type != "device" {
         if let Err(err) = ensure_login_server() {

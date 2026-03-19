@@ -42,17 +42,10 @@ fn cooldown_reason_maps_status() {
         Some(CooldownReason::RateLimited)
     );
     assert_eq!(
-        cooldown_reason_for_status(402),
-        Some(CooldownReason::QuotaExhausted)
-    );
-    assert_eq!(
         cooldown_reason_for_status(503),
         Some(CooldownReason::Upstream5xx)
     );
-    assert_eq!(
-        cooldown_reason_for_status(403),
-        Some(CooldownReason::Upstream4xx)
-    );
+    assert_eq!(cooldown_reason_for_status(403), None);
     assert_eq!(cooldown_reason_for_status(400), None);
     assert_eq!(cooldown_reason_for_status(200), None);
 }

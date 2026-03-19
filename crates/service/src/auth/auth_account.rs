@@ -14,6 +14,10 @@ use crate::app_settings::{get_persisted_app_setting, save_persisted_app_setting}
 use crate::gateway::clear_manual_preferred_account_if;
 use crate::storage_helpers::open_storage;
 use crate::usage_token_refresh::refresh_and_persist_access_token;
+use codexmanager_core::rpc::types::{
+    AccountRateLimitsReadResult, RateLimitSnapshotResult, RateLimitWindowResult,
+};
+use std::collections::BTreeMap;
 
 const CURRENT_AUTH_ACCOUNT_ID_KEY: &str = "auth.current_account_id";
 
@@ -217,7 +221,7 @@ pub(crate) fn read_current_account(refresh_token: bool) -> Result<AccountReadRes
 
     Ok(AccountReadResponse {
         account: Some(current_account_payload(&account, &token)),
-        auth_mode: Some("chatgptAuthTokens".to_string()),
+        auth_mode: Some("chatgpt".to_string()),
         requires_openai_auth: true,
     })
 }
@@ -282,6 +286,45 @@ pub(crate) fn logout_current_account() -> Result<serde_json::Value, String> {
         "ok": true,
         "accountId": current_account_id,
     }))
+}
+
+pub(crate) fn cancel_login(login_id: &str) -> Result<serde_json::Value, String> {
+    let login_id = login_id.trim();
+    if login_id.is_empty() {
+        return Err("loginId is required".to_string());
+    }
+    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
+    let session = storage
+        .get_login_session(login_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "unknown login session".to_string())?;
+    if session.status == "success" {
+        return Err("login session already completed".to_string());
+    }
+    storage
+        .update_login_session_status(login_id, "cancelled", None)
+        .map_err(|err| err.to_string())?;
+    Ok(serde_json::json!({}))
+}
+
+pub(crate) fn read_current_rate_limits() -> Result<AccountRateLimitsReadResult, String> {
+    let storage = open_storage()
+        .ok_or_else(|| "codex account authentication required to read rate limits".to_string())?;
+    let (account, _token) = resolve_current_account_with_token(&storage)?
+        .ok_or_else(|| "codex account authentication required to read rate limits".to_string())?;
+    let snapshot = crate::usage_read::read_usage_snapshot(Some(&account.id))
+        .ok_or_else(|| "no rate limits available for current account".to_string())?;
+    let plan_type = storage
+        .find_token_by_account_id(&account.id)
+        .map_err(|err| err.to_string())?
+        .and_then(|token| resolve_plan_type(&token, None));
+    let rate_limits = build_rate_limit_snapshot("codex", None, &snapshot, plan_type.as_deref());
+    let mut rate_limits_by_limit_id = BTreeMap::new();
+    rate_limits_by_limit_id.insert("codex".to_string(), rate_limits.clone());
+    Ok(AccountRateLimitsReadResult {
+        rate_limits,
+        rate_limits_by_limit_id: Some(rate_limits_by_limit_id),
+    })
 }
 
 fn resolve_current_account_with_token(
@@ -352,6 +395,45 @@ fn current_account_payload(account: &Account, token: &Token) -> CurrentAuthAccou
     }
 }
 
+fn build_rate_limit_snapshot(
+    limit_id: &str,
+    limit_name: Option<&str>,
+    snapshot: &codexmanager_core::rpc::types::UsageSnapshotResult,
+    plan_type: Option<&str>,
+) -> RateLimitSnapshotResult {
+    RateLimitSnapshotResult {
+        limit_id: Some(limit_id.to_string()),
+        limit_name: limit_name.map(|value| value.to_string()),
+        primary: build_rate_limit_window(
+            snapshot.used_percent,
+            snapshot.window_minutes,
+            snapshot.resets_at,
+        ),
+        secondary: build_rate_limit_window(
+            snapshot.secondary_used_percent,
+            snapshot.secondary_window_minutes,
+            snapshot.secondary_resets_at,
+        ),
+        credits: snapshot
+            .credits_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
+        plan_type: plan_type.map(|value| value.to_string()),
+    }
+}
+
+fn build_rate_limit_window(
+    used_percent: Option<f64>,
+    window_minutes: Option<i64>,
+    resets_at: Option<i64>,
+) -> Option<RateLimitWindowResult> {
+    used_percent.map(|used_percent| RateLimitWindowResult {
+        used_percent: used_percent.round() as i64,
+        window_duration_mins: window_minutes,
+        resets_at,
+    })
+}
+
 fn resolve_plan_type(
     token: &Token,
     parsed_claims: Option<&codexmanager_core::auth::IdTokenClaims>,
@@ -364,12 +446,24 @@ fn resolve_plan_type(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
         {
-            return Some(plan_type);
+            return normalize_plan_type(plan_type);
         }
     }
     parse_id_token_claims(&token.id_token)
         .ok()
         .and_then(|claims| claims.auth.and_then(|auth| auth.chatgpt_plan_type))
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .and_then(normalize_plan_type)
+}
+
+fn normalize_plan_type(value: String) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "free" | "go" | "plus" | "pro" | "team" | "business" | "enterprise" | "edu"
+        | "education" => Some(match normalized.as_str() {
+            "education" => "edu".to_string(),
+            _ => normalized,
+        }),
+        "" => None,
+        _ => Some("unknown".to_string()),
+    }
 }

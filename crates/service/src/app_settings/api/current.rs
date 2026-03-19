@@ -6,16 +6,19 @@ use std::collections::BTreeMap;
 
 use super::{
     current_background_tasks_snapshot_value, current_close_to_tray_on_close_setting,
-    current_env_overrides, current_gateway_free_account_max_model,
+    current_env_overrides, current_gateway_free_account_max_model, current_gateway_originator,
+    current_gateway_request_compression_enabled, current_gateway_residency_requirement,
     current_gateway_sse_keepalive_interval_ms, current_gateway_upstream_stream_timeout_ms,
     current_lightweight_mode_on_close_to_tray_setting, current_saved_service_addr,
     current_service_bind_mode, current_ui_low_transparency_enabled, current_ui_theme,
     current_update_auto_check_enabled, env_override_catalog_value, env_override_reserved_keys,
-    env_override_unsupported_keys, save_env_overrides_value, save_persisted_app_setting,
-    save_persisted_bool_setting, sync_runtime_settings_from_storage,
+    env_override_unsupported_keys, residency_requirement_options, save_env_overrides_value,
+    save_persisted_app_setting, save_persisted_bool_setting, sync_runtime_settings_from_storage,
     APP_SETTING_CLOSE_TO_TRAY_ON_CLOSE_KEY, APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY,
     APP_SETTING_GATEWAY_CPA_NO_COOKIE_HEADER_MODE_KEY,
-    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+    APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY, APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+    APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+    APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY, APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
     APP_SETTING_LIGHTWEIGHT_MODE_ON_CLOSE_TO_TRAY_KEY, APP_SETTING_SERVICE_ADDR_KEY,
@@ -55,6 +58,9 @@ pub(super) fn current_app_settings_value(
     let service_listen_mode = current_service_bind_mode();
     let route_strategy = crate::gateway::current_route_strategy().to_string();
     let free_account_max_model = current_gateway_free_account_max_model();
+    let request_compression_enabled = current_gateway_request_compression_enabled();
+    let gateway_originator = current_gateway_originator();
+    let gateway_residency_requirement = current_gateway_residency_requirement().unwrap_or_default();
     let free_account_max_model_options =
         load_free_account_max_model_options(&free_account_max_model);
     let cpa_no_cookie_header_mode_enabled = crate::gateway::cpa_no_cookie_header_mode_enabled();
@@ -75,6 +81,9 @@ pub(super) fn current_app_settings_value(
         &service_listen_mode,
         &route_strategy,
         &free_account_max_model,
+        request_compression_enabled,
+        &gateway_originator,
+        &gateway_residency_requirement,
         cpa_no_cookie_header_mode_enabled,
         upstream_proxy_url.as_deref(),
         upstream_stream_timeout_ms,
@@ -100,6 +109,10 @@ pub(super) fn current_app_settings_value(
         "routeStrategyOptions": ["ordered", "balanced"],
         "freeAccountMaxModel": free_account_max_model,
         "freeAccountMaxModelOptions": free_account_max_model_options,
+        "requestCompressionEnabled": request_compression_enabled,
+        "gatewayOriginator": gateway_originator,
+        "gatewayResidencyRequirement": gateway_residency_requirement,
+        "gatewayResidencyRequirementOptions": residency_requirement_options(),
         "cpaNoCookieHeaderModeEnabled": cpa_no_cookie_header_mode_enabled,
         "upstreamProxyUrl": upstream_proxy_url.unwrap_or_default(),
         "upstreamStreamTimeoutMs": upstream_stream_timeout_ms,
@@ -164,6 +177,9 @@ fn persist_current_snapshot(
     service_listen_mode: &str,
     route_strategy: &str,
     free_account_max_model: &str,
+    request_compression_enabled: bool,
+    gateway_originator: &str,
+    gateway_residency_requirement: &str,
     cpa_no_cookie_header_mode_enabled: bool,
     upstream_proxy_url: Option<&str>,
     upstream_stream_timeout_ms: u64,
@@ -189,6 +205,20 @@ fn persist_current_snapshot(
     let _ = save_persisted_app_setting(
         APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
         Some(free_account_max_model),
+    );
+    let _ = save_persisted_bool_setting(
+        APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+        request_compression_enabled,
+    );
+    let _ =
+        save_persisted_app_setting(APP_SETTING_GATEWAY_ORIGINATOR_KEY, Some(gateway_originator));
+    let _ = save_persisted_app_setting(
+        APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
+        if gateway_residency_requirement.trim().is_empty() {
+            None
+        } else {
+            Some(gateway_residency_requirement)
+        },
     );
     let _ = save_persisted_bool_setting(
         APP_SETTING_GATEWAY_CPA_NO_COOKIE_HEADER_MODE_KEY,

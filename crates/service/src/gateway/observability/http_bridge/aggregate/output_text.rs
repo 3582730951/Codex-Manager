@@ -26,10 +26,14 @@ pub(crate) struct UpstreamResponseBridgeResult {
     pub stream_terminal_error: Option<String>,
     pub delivery_error: Option<String>,
     pub upstream_error_hint: Option<String>,
+    pub bridge_error: Option<String>,
 }
 
 impl UpstreamResponseBridgeResult {
     pub(crate) fn is_ok(&self, is_stream: bool) -> bool {
+        if self.bridge_error.is_some() {
+            return false;
+        }
         if self.delivery_error.is_some() {
             return false;
         }
@@ -45,6 +49,9 @@ impl UpstreamResponseBridgeResult {
     }
 
     pub(crate) fn error_message(&self, is_stream: bool) -> Option<String> {
+        if let Some(err) = self.bridge_error.as_ref() {
+            return Some(err.clone());
+        }
         if let Some(err) = self.stream_terminal_error.as_ref() {
             return Some(err.clone());
         }

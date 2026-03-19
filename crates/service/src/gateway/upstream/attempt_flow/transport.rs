@@ -3,6 +3,12 @@ use codexmanager_core::storage::Account;
 use std::time::Instant;
 use tiny_http::Request;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestCompression {
+    None,
+    Zstd,
+}
+
 fn should_force_connection_close(target_url: &str) -> bool {
     reqwest::Url::parse(target_url)
         .ok()
@@ -42,6 +48,90 @@ fn should_compact_upstream_headers() -> bool {
 
 fn is_compact_request_path(path: &str) -> bool {
     path == "/v1/responses/compact" || path.starts_with("/v1/responses/compact?")
+}
+
+fn has_header(headers: &[(String, String)], name: &str) -> bool {
+    headers
+        .iter()
+        .any(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+}
+
+fn resolve_request_compression_with_flag(
+    enabled: bool,
+    target_url: &str,
+    request_path: &str,
+    is_stream: bool,
+) -> RequestCompression {
+    if !enabled {
+        return RequestCompression::None;
+    }
+    if !is_stream {
+        return RequestCompression::None;
+    }
+    if is_compact_request_path(request_path) || !request_path.starts_with("/v1/responses") {
+        return RequestCompression::None;
+    }
+    if !super::super::config::is_chatgpt_backend_base(target_url) {
+        return RequestCompression::None;
+    }
+    RequestCompression::Zstd
+}
+
+fn resolve_request_compression(
+    target_url: &str,
+    request_path: &str,
+    is_stream: bool,
+) -> RequestCompression {
+    resolve_request_compression_with_flag(
+        super::super::super::request_compression_enabled(),
+        target_url,
+        request_path,
+        is_stream,
+    )
+}
+
+fn encode_request_body(
+    request_path: &str,
+    body: &Bytes,
+    compression: RequestCompression,
+    headers: &mut Vec<(String, String)>,
+) -> Bytes {
+    if body.is_empty() || compression == RequestCompression::None {
+        return body.clone();
+    }
+    if has_header(headers, "Content-Encoding") {
+        log::warn!(
+            "event=gateway_request_compression_skipped reason=content_encoding_exists path={}",
+            request_path
+        );
+        return body.clone();
+    }
+    match compression {
+        RequestCompression::None => body.clone(),
+        RequestCompression::Zstd => {
+            match zstd::stream::encode_all(std::io::Cursor::new(body.as_ref()), 3) {
+                Ok(compressed) => {
+                    let post_bytes = compressed.len();
+                    headers.push(("Content-Encoding".to_string(), "zstd".to_string()));
+                    log::info!(
+                    "event=gateway_request_compressed path={} algorithm=zstd pre_bytes={} post_bytes={}",
+                    request_path,
+                    body.len(),
+                    post_bytes
+                );
+                    Bytes::from(compressed)
+                }
+                Err(err) => {
+                    log::warn!(
+                        "event=gateway_request_compression_failed path={} algorithm=zstd err={}",
+                        request_path,
+                        err
+                    );
+                    body.clone()
+                }
+            }
+        }
+    }
 }
 
 pub(in super::super) fn send_upstream_request(
@@ -146,6 +236,13 @@ pub(in super::super) fn send_upstream_request(
         // 对 localhost/127.0.0.1 强制 close，避免请求落到已失效连接。
         force_connection_close(&mut upstream_headers);
     }
+    let request_compression = resolve_request_compression(target_url, request.url(), is_stream);
+    let body_for_request = encode_request_body(
+        request.url(),
+        body,
+        request_compression,
+        &mut upstream_headers,
+    );
     let build_request = |http: &reqwest::blocking::Client| {
         let mut builder = http.request(method.clone(), target_url);
         if let Some(timeout) =
@@ -156,8 +253,8 @@ pub(in super::super) fn send_upstream_request(
         for (name, value) in upstream_headers.iter() {
             builder = builder.header(name, value);
         }
-        if !body.is_empty() {
-            builder = builder.body(body.clone());
+        if !body_for_request.is_empty() {
+            builder = builder.body(body_for_request.clone());
         }
         builder
     };
@@ -177,4 +274,84 @@ pub(in super::super) fn send_upstream_request(
     let duration_ms = super::super::super::duration_to_millis(attempt_started_at.elapsed());
     super::super::super::metrics::record_gateway_upstream_attempt(duration_ms, result.is_err());
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_request_body, resolve_request_compression_with_flag, RequestCompression};
+    use bytes::Bytes;
+
+    #[test]
+    fn request_compression_only_applies_to_streaming_chatgpt_responses() {
+        assert_eq!(
+            resolve_request_compression_with_flag(
+                true,
+                "https://chatgpt.com/backend-api/codex/responses",
+                "/v1/responses",
+                true
+            ),
+            RequestCompression::Zstd
+        );
+        assert_eq!(
+            resolve_request_compression_with_flag(
+                true,
+                "https://chatgpt.com/backend-api/codex/responses",
+                "/v1/responses/compact",
+                true
+            ),
+            RequestCompression::None
+        );
+        assert_eq!(
+            resolve_request_compression_with_flag(
+                true,
+                "https://api.openai.com/v1/responses",
+                "/v1/responses",
+                true
+            ),
+            RequestCompression::None
+        );
+        assert_eq!(
+            resolve_request_compression_with_flag(
+                true,
+                "https://chatgpt.com/backend-api/codex/responses",
+                "/v1/responses",
+                false
+            ),
+            RequestCompression::None
+        );
+        assert_eq!(
+            resolve_request_compression_with_flag(
+                false,
+                "https://chatgpt.com/backend-api/codex/responses",
+                "/v1/responses",
+                true
+            ),
+            RequestCompression::None
+        );
+    }
+
+    #[test]
+    fn encode_request_body_adds_zstd_content_encoding() {
+        let body = Bytes::from_static(br#"{"model":"gpt-5.4","input":"compress me"}"#);
+        let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
+
+        let actual = encode_request_body(
+            "/v1/responses",
+            &body,
+            RequestCompression::Zstd,
+            &mut headers,
+        );
+
+        assert!(headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("Content-Encoding") && value == "zstd"
+        }));
+        let decoded = zstd::stream::decode_all(std::io::Cursor::new(actual.as_ref()))
+            .expect("decode zstd body");
+        let value: serde_json::Value =
+            serde_json::from_slice(&decoded).expect("parse decompressed json");
+        assert_eq!(
+            value.get("model").and_then(serde_json::Value::as_str),
+            Some("gpt-5.4")
+        );
+    }
 }

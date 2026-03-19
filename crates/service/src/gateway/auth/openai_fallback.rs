@@ -34,53 +34,21 @@ fn body_has_encrypted_content_hint(body: &[u8]) -> bool {
 fn strip_encrypted_content_value(value: &mut Value) -> bool {
     match value {
         Value::Object(map) => {
-            let is_compaction_item = map
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("compaction"));
             let mut changed = map.remove("encrypted_content").is_some();
-            let child_keys = map.keys().cloned().collect::<Vec<_>>();
-            for key in child_keys {
-                let mut remove_child = false;
-                if let Some(child) = map.get_mut(&key) {
-                    if strip_encrypted_content_value(child) {
-                        changed = true;
-                    }
-                    remove_child = child.as_object().is_some_and(|obj| {
-                        obj.get("type")
-                            .and_then(Value::as_str)
-                            .is_some_and(|value| value.eq_ignore_ascii_case("compaction"))
-                            && !obj.contains_key("encrypted_content")
-                    });
+            for v in map.values_mut() {
+                if strip_encrypted_content_value(v) {
+                    changed = true;
                 }
-                if remove_child {
-                    map.remove(&key);
-                }
-            }
-            if is_compaction_item {
-                return true;
             }
             changed
         }
         Value::Array(items) => {
             let mut changed = false;
-            let mut retained = Vec::with_capacity(items.len());
-            for mut item in std::mem::take(items) {
-                let item_changed = strip_encrypted_content_value(&mut item);
-                let should_drop = item.as_object().is_some_and(|obj| {
-                    obj.get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| value.eq_ignore_ascii_case("compaction"))
-                        && !obj.contains_key("encrypted_content")
-                });
-                if item_changed {
+            for item in items.iter_mut() {
+                if strip_encrypted_content_value(item) {
                     changed = true;
                 }
-                if !should_drop {
-                    retained.push(item);
-                }
             }
-            *items = retained;
             changed
         }
         _ => false,

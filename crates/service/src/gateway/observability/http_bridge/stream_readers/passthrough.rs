@@ -1,7 +1,7 @@
 use super::{
-    classify_upstream_stream_read_error, inspect_sse_frame, merge_usage, sse_keepalive_interval,
-    stream_idle_timeout_exceeded, stream_idle_timeout_message, stream_incomplete_message,
-    stream_reader_disconnected_message, Arc, Cursor, Mutex, PassthroughSseCollector, Read,
+    classify_upstream_stream_read_error, inspect_sse_frame, merge_usage, stream_idle_timeout_reached,
+    stream_incomplete_message, stream_poll_timeout, stream_reader_disconnected_message,
+    stream_reader_idle_timeout_message, Arc, Cursor, Mutex, PassthroughSseCollector, Read,
     SseKeepAliveFrame, SseTerminal, UpstreamSseFramePump, UpstreamSseFramePumpItem,
 };
 use crate::gateway::http_bridge::extract_error_hint_from_body;
@@ -12,7 +12,9 @@ pub(crate) struct PassthroughSseUsageReader {
     out_cursor: Cursor<Vec<u8>>,
     usage_collector: Arc<Mutex<PassthroughSseCollector>>,
     keepalive_frame: SseKeepAliveFrame,
-    idle_since: Option<Instant>,
+    trace_id: Option<String>,
+    saw_upstream_frame: bool,
+    last_upstream_activity: Instant,
     finished: bool,
 }
 
@@ -21,13 +23,16 @@ impl PassthroughSseUsageReader {
         upstream: reqwest::blocking::Response,
         usage_collector: Arc<Mutex<PassthroughSseCollector>>,
         keepalive_frame: SseKeepAliveFrame,
+        trace_id: Option<&str>,
     ) -> Self {
         Self {
             upstream: UpstreamSseFramePump::new(upstream),
             out_cursor: Cursor::new(Vec::new()),
             usage_collector,
             keepalive_frame,
-            idle_since: None,
+            trace_id: trace_id.map(str::to_string),
+            saw_upstream_frame: false,
+            last_upstream_activity: Instant::now(),
             finished: false,
         }
     }
@@ -63,14 +68,47 @@ impl PassthroughSseUsageReader {
                 if let SseTerminal::Err(message) = terminal {
                     collector.terminal_error = Some(message);
                 }
+                crate::gateway::trace_log::log_stream_phase(
+                    self.trace_id.as_deref(),
+                    "passthrough",
+                    "terminal_seen",
+                    collector.terminal_error.as_deref().or(Some("ok")),
+                );
             }
         }
     }
 
     fn next_chunk(&mut self) -> std::io::Result<Vec<u8>> {
-        match self.upstream.recv_timeout(sse_keepalive_interval()) {
+        if stream_idle_timeout_reached(self.last_upstream_activity) {
+            if let Ok(mut collector) = self.usage_collector.lock() {
+                collector
+                    .terminal_error
+                    .get_or_insert_with(stream_reader_idle_timeout_message);
+            }
+            crate::gateway::trace_log::log_stream_phase(
+                self.trace_id.as_deref(),
+                "passthrough",
+                "idle_timeout_triggered",
+                None,
+            );
+            self.finished = true;
+            return Ok(Vec::new());
+        }
+        match self
+            .upstream
+            .recv_timeout(stream_poll_timeout(self.last_upstream_activity))
+        {
             Ok(UpstreamSseFramePumpItem::Frame(frame)) => {
-                self.idle_since = None;
+                self.last_upstream_activity = Instant::now();
+                if !self.saw_upstream_frame {
+                    self.saw_upstream_frame = true;
+                    crate::gateway::trace_log::log_stream_phase(
+                        self.trace_id.as_deref(),
+                        "passthrough",
+                        "first_upstream_frame",
+                        None,
+                    );
+                }
                 self.update_usage_from_frame(&frame);
                 Ok(frame.concat().into_bytes())
             }
@@ -80,6 +118,12 @@ impl PassthroughSseUsageReader {
                         collector
                             .terminal_error
                             .get_or_insert_with(stream_incomplete_message);
+                        crate::gateway::trace_log::log_stream_phase(
+                            self.trace_id.as_deref(),
+                            "passthrough",
+                            "eof_without_terminal",
+                            collector.terminal_error.as_deref(),
+                        );
                     }
                 }
                 self.finished = true;
@@ -91,19 +135,37 @@ impl PassthroughSseUsageReader {
                         .terminal_error
                         .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
                 }
+                crate::gateway::trace_log::log_stream_phase(
+                    self.trace_id.as_deref(),
+                    "passthrough",
+                    "read_error",
+                    Some(err.as_str()),
+                );
                 self.finished = true;
                 Ok(Vec::new())
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if stream_idle_timeout_exceeded(&mut self.idle_since) {
+                if stream_idle_timeout_reached(self.last_upstream_activity) {
                     if let Ok(mut collector) = self.usage_collector.lock() {
                         collector
                             .terminal_error
-                            .get_or_insert_with(stream_idle_timeout_message);
+                            .get_or_insert_with(stream_reader_idle_timeout_message);
                     }
+                    crate::gateway::trace_log::log_stream_phase(
+                        self.trace_id.as_deref(),
+                        "passthrough",
+                        "idle_timeout_triggered",
+                        None,
+                    );
                     self.finished = true;
                     return Ok(Vec::new());
                 }
+                crate::gateway::trace_log::log_stream_phase(
+                    self.trace_id.as_deref(),
+                    "passthrough",
+                    "keepalive_emitted",
+                    None,
+                );
                 Ok(self.keepalive_frame.bytes().to_vec())
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -112,6 +174,12 @@ impl PassthroughSseUsageReader {
                         .terminal_error
                         .get_or_insert_with(stream_reader_disconnected_message);
                 }
+                crate::gateway::trace_log::log_stream_phase(
+                    self.trace_id.as_deref(),
+                    "passthrough",
+                    "reader_disconnected",
+                    None,
+                );
                 self.finished = true;
                 Ok(Vec::new())
             }

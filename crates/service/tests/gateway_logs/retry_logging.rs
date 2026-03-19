@@ -264,9 +264,13 @@ fn gateway_request_log_keeps_only_final_result_for_multi_attempt_flow() {
     );
 
     assert!(
-        !trace_log_path.exists(),
-        "successful retried request should not leave gateway trace log"
+        trace_log_path.exists(),
+        "successful retried request should leave lifecycle trace log"
     );
+    let trace_content = fs::read_to_string(&trace_log_path).expect("read gateway trace log");
+    assert!(trace_content.contains("event=ATTEMPT_RESULT"));
+    assert!(trace_content.contains("event=REQUEST_FINAL"));
+    assert!(trace_content.contains("status=200"));
 }
 
 #[test]
@@ -373,123 +377,11 @@ fn gateway_error_logging_writes_only_trace_log_file() {
 
     let trace_content = fs::read_to_string(&trace_log_path).expect("read gateway trace log");
     assert!(trace_content.contains("event=FAILED_REQUEST"));
+    assert!(trace_content.contains("event=REQUEST_FINAL"));
     assert!(!trace_content.contains("event=REQUEST_RECORD"));
-    assert!(trace_content.contains("event=REQUEST_START"));
     assert!(trace_content.contains("event=ATTEMPT_RESULT"));
-    assert!(trace_content.contains("event=BRIDGE_RESULT"));
     assert!(trace_content.contains("trace_id="));
     assert!(trace_content.contains("request_path=/v1/responses"));
     assert!(trace_content.contains("upstream_url="));
     assert!(trace_content.contains("status=502"));
-}
-
-#[test]
-fn gateway_explicit_fallback_recovers_html_challenge_page() {
-    let _lock = lock_env();
-    let dir = new_test_dir("codexmanager-gateway-explicit-fallback-html");
-    let db_path: PathBuf = dir.join("codexmanager.db");
-
-    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
-
-    let primary_html = r#"<!doctype html><html><head><title>Just a moment...</title></head><body>Cloudflare</body></html>"#;
-    let (primary_addr, primary_rx, primary_join) =
-        start_mock_upstream_once_with_content_type(primary_html, "text/html; charset=utf-8");
-    let primary_base = format!("http://{primary_addr}/backend-api/codex");
-    let _primary_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_BASE_URL", &primary_base);
-
-    let fallback_response = serde_json::json!({
-        "id": "resp_fallback_ok",
-        "model": "gpt-5.3-codex",
-        "output": [{
-            "type": "message",
-            "role": "assistant",
-            "content": [{ "type": "output_text", "text": "fallback ok" }]
-        }],
-        "usage": { "input_tokens": 6, "output_tokens": 3, "total_tokens": 9 }
-    });
-    let fallback_response =
-        serde_json::to_string(&fallback_response).expect("serialize fallback response");
-    let (fallback_addr, fallback_rx, fallback_join) = start_mock_upstream_once(&fallback_response);
-    let fallback_base = format!("http://{fallback_addr}/v1");
-    let _fallback_guard = EnvGuard::set("CODEXMANAGER_UPSTREAM_FALLBACK_BASE_URL", &fallback_base);
-
-    let storage = Storage::open(&db_path).expect("open db");
-    storage.init().expect("init db");
-    let now = now_ts();
-
-    storage
-        .insert_account(&Account {
-            id: "acc_explicit_fallback".to_string(),
-            label: "explicit-fallback".to_string(),
-            issuer: "https://auth.openai.com".to_string(),
-            chatgpt_account_id: Some("chatgpt_acc_explicit_fallback".to_string()),
-            workspace_id: None,
-            group_name: None,
-            sort: 1,
-            status: "active".to_string(),
-            created_at: now,
-            updated_at: now,
-        })
-        .expect("insert account");
-    storage
-        .insert_token(&Token {
-            account_id: "acc_explicit_fallback".to_string(),
-            id_token: String::new(),
-            access_token: "access_token_explicit_fallback".to_string(),
-            refresh_token: String::new(),
-            api_key_access_token: Some("api_access_token_explicit_fallback".to_string()),
-            last_refresh: now,
-        })
-        .expect("insert token");
-
-    let platform_key = "pk_explicit_fallback";
-    storage
-        .insert_api_key(&ApiKey {
-            id: "gk_explicit_fallback".to_string(),
-            name: Some("explicit-fallback".to_string()),
-            model_slug: Some("gpt-5.3-codex".to_string()),
-            reasoning_effort: Some("high".to_string()),
-            client_type: "codex".to_string(),
-            protocol_type: "openai_compat".to_string(),
-            auth_scheme: "authorization_bearer".to_string(),
-            upstream_base_url: None,
-            static_headers_json: None,
-            key_hash: hash_platform_key_for_test(platform_key),
-            status: "active".to_string(),
-            created_at: now,
-            last_used_at: None,
-        })
-        .expect("insert api key");
-
-    let server = codexmanager_service::start_one_shot_server().expect("start server");
-    let req_body =
-        serde_json::json!({ "model": "gpt-5.3-codex", "input": "hello", "stream": false })
-            .to_string();
-    let (status, response_body) = post_http_raw(
-        &server.addr,
-        "/v1/responses",
-        &req_body,
-        &[
-            ("Content-Type", "application/json"),
-            ("Authorization", &format!("Bearer {platform_key}")),
-        ],
-    );
-    server.join();
-    assert_eq!(status, 200, "gateway response: {response_body}");
-
-    let value: serde_json::Value = serde_json::from_str(&response_body)
-        .unwrap_or_else(|err| panic!("parse response failed: {err}; body={response_body}"));
-    assert_eq!(value["output"][0]["content"][0]["text"], "fallback ok");
-
-    let primary = primary_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("receive primary upstream request");
-    let fallback = fallback_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("receive fallback upstream request");
-    primary_join.join().expect("join primary upstream");
-    fallback_join.join().expect("join fallback upstream");
-
-    assert_eq!(primary.path, "/backend-api/codex/responses");
-    assert_eq!(fallback.path, "/v1/responses");
 }

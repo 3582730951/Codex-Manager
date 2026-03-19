@@ -8,7 +8,8 @@ enum StreamBridgeFailure {
     ExplicitUpstreamError,
     Timeout,
     Disconnected,
-    IncompleteUnknown,
+    IncompleteBeforeOutput,
+    IncompleteAfterOutput,
     GatewayBridgeError,
 }
 
@@ -18,7 +19,8 @@ impl StreamBridgeFailure {
             Self::Timeout => 504,
             Self::ExplicitUpstreamError
             | Self::Disconnected
-            | Self::IncompleteUnknown => upstream_status_code,
+            | Self::IncompleteBeforeOutput
+            | Self::IncompleteAfterOutput => upstream_status_code,
             Self::GatewayBridgeError => 502,
         }
     }
@@ -26,9 +28,10 @@ impl StreamBridgeFailure {
     fn error_label(self) -> &'static str {
         match self {
             Self::ExplicitUpstreamError => "upstream_stream_terminal_error",
-            Self::Timeout => "upstream_preheader_timeout",
+            Self::Timeout => "upstream_stream_idle_timeout",
             Self::Disconnected => "upstream_disconnect_before_terminal",
-            Self::IncompleteUnknown => "stream_incomplete_unknown",
+            Self::IncompleteBeforeOutput => "stream_incomplete_before_output",
+            Self::IncompleteAfterOutput => "stream_incomplete_after_output",
             Self::GatewayBridgeError => "gateway_bridge_error",
         }
     }
@@ -38,7 +41,7 @@ impl StreamBridgeFailure {
     }
 
     fn should_mark_local_incomplete_strike(self) -> bool {
-        matches!(self, Self::IncompleteUnknown)
+        matches!(self, Self::IncompleteBeforeOutput)
     }
 }
 
@@ -65,34 +68,20 @@ fn is_client_disconnect_error(message: &str) -> bool {
         || normalized.contains("os error 104")
 }
 
-fn error_hint_looks_like_quota_exhausted(message: &str) -> bool {
-    let normalized = message.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return false;
-    }
-    normalized.contains("insufficient_quota")
-        || normalized.contains("quota exceeded")
-        || normalized.contains("exceeded your current quota")
-        || normalized.contains("usage limit")
-        || normalized.contains("out of credits")
-        || normalized.contains("credit balance")
-        || normalized.contains("credits exhausted")
-        || normalized.contains("billing hard limit")
-        || normalized.contains("requires_payment_method")
-        || normalized.contains("payment required")
-        || normalized.contains("余额不足")
-        || normalized.contains("额度不足")
-}
-
 fn classify_stream_bridge_failure(
     stream_terminal_seen: bool,
     stream_terminal_error: Option<&str>,
+    has_output_signal: bool,
 ) -> Option<StreamBridgeFailure> {
     let Some(message) = stream_terminal_error
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return (!stream_terminal_seen).then_some(StreamBridgeFailure::IncompleteUnknown);
+        return (!stream_terminal_seen).then_some(if has_output_signal {
+            StreamBridgeFailure::IncompleteAfterOutput
+        } else {
+            StreamBridgeFailure::IncompleteBeforeOutput
+        });
     };
     if stream_terminal_seen {
         return Some(StreamBridgeFailure::ExplicitUpstreamError);
@@ -114,7 +103,11 @@ fn classify_stream_bridge_failure(
         return Some(StreamBridgeFailure::Disconnected);
     }
     if normalized.contains("中途中断") || normalized.contains("未正常结束") {
-        return Some(StreamBridgeFailure::IncompleteUnknown);
+        return Some(if has_output_signal {
+            StreamBridgeFailure::IncompleteAfterOutput
+        } else {
+            StreamBridgeFailure::IncompleteBeforeOutput
+        });
     }
     Some(StreamBridgeFailure::GatewayBridgeError)
 }
@@ -131,7 +124,7 @@ fn describe_stream_bridge_failure(
             .map(|message| format!("upstream_stream_terminal_error: {message}"))
             .unwrap_or_else(|| failure.error_label().to_string()),
         _ => detail
-            .map(str::to_string)
+            .map(|message| format!("{}: {message}", failure.error_label()))
             .unwrap_or_else(|| failure.error_label().to_string()),
     }
 }
@@ -221,6 +214,8 @@ pub(super) fn finalize_upstream_response(
         .map(str::trim)
         .map(str::len)
         .unwrap_or(0);
+    let bridge_has_output_signal =
+        bridge_output_text_len > 0 || bridge.usage.output_tokens.unwrap_or_default() > 0;
     super::super::super::trace_log::log_bridge_result(
         trace_id,
         format!("{response_adapter:?}").as_str(),
@@ -229,6 +224,7 @@ pub(super) fn finalize_upstream_response(
         bridge.stream_terminal_seen,
         bridge.stream_terminal_error.as_deref(),
         bridge.delivery_error.as_deref(),
+        bridge.bridge_error.as_deref(),
         bridge_output_text_len,
         bridge.usage.output_tokens,
     );
@@ -244,6 +240,7 @@ pub(super) fn finalize_upstream_response(
         classify_stream_bridge_failure(
             bridge.stream_terminal_seen,
             bridge.stream_terminal_error.as_deref(),
+            bridge_has_output_signal,
         )
     } else {
         None
@@ -254,7 +251,9 @@ pub(super) fn finalize_upstream_response(
         .is_some_and(is_client_disconnect_error);
     let bridge_error_message = bridge.error_message(client_is_stream);
     if final_error.is_none() {
-        if client_delivery_failed {
+        if let Some(bridge_error) = bridge.bridge_error.as_deref() {
+            final_error = Some(bridge_error.to_string());
+        } else if client_delivery_failed {
             final_error = Some("client_cancelled".to_string());
         } else if let Some(stream_failure) = stream_failure {
             final_error = Some(describe_stream_bridge_failure(
@@ -297,18 +296,6 @@ pub(super) fn finalize_upstream_response(
         );
         super::super::super::record_route_quality(account_id, 502);
     }
-    if final_error
-        .as_deref()
-        .is_some_and(error_hint_looks_like_quota_exhausted)
-    {
-        super::super::super::mark_account_cooldown(
-            account_id,
-            super::super::super::CooldownReason::QuotaExhausted,
-        );
-    }
-    if status_for_log >= 400 || stream_failure.is_some() {
-        let _ = super::super::super::clear_manual_preferred_account_if(account_id);
-    }
 
     let usage = bridge.usage;
     let usage_for_log = RequestLogUsage {
@@ -341,7 +328,7 @@ mod tests {
     #[test]
     fn stream_bridge_failure_treats_seen_terminal_errors_as_explicit_failures() {
         assert_eq!(
-            classify_stream_bridge_failure(true, Some("model overloaded")),
+            classify_stream_bridge_failure(true, Some("model overloaded"), false),
             Some(StreamBridgeFailure::ExplicitUpstreamError)
         );
     }
@@ -349,7 +336,7 @@ mod tests {
     #[test]
     fn stream_bridge_failure_maps_timeout_messages_to_504_class() {
         assert_eq!(
-            classify_stream_bridge_failure(false, Some("上游请求超时")),
+            classify_stream_bridge_failure(false, Some("上游请求超时"), false),
             Some(StreamBridgeFailure::Timeout)
         );
         assert_eq!(StreamBridgeFailure::Timeout.status_for_log(200), 504);
@@ -358,16 +345,20 @@ mod tests {
     #[test]
     fn stream_bridge_failure_maps_disconnect_and_incomplete_separately() {
         assert_eq!(
-            classify_stream_bridge_failure(false, Some("上游流读取失败（连接中断）")),
+            classify_stream_bridge_failure(false, Some("上游流读取失败（连接中断）"), false),
             Some(StreamBridgeFailure::Disconnected)
         );
         assert_eq!(
-            classify_stream_bridge_failure(false, Some("上游流中途中断（未正常结束）")),
-            Some(StreamBridgeFailure::IncompleteUnknown)
+            classify_stream_bridge_failure(false, Some("上游流中途中断（未正常结束）"), false),
+            Some(StreamBridgeFailure::IncompleteBeforeOutput)
         );
         assert_eq!(
-            classify_stream_bridge_failure(false, None),
-            Some(StreamBridgeFailure::IncompleteUnknown)
+            classify_stream_bridge_failure(false, None, false),
+            Some(StreamBridgeFailure::IncompleteBeforeOutput)
+        );
+        assert_eq!(
+            classify_stream_bridge_failure(false, None, true),
+            Some(StreamBridgeFailure::IncompleteAfterOutput)
         );
     }
 
@@ -375,7 +366,8 @@ mod tests {
     fn upstream_stream_failures_keep_original_http_status_in_request_log() {
         assert_eq!(StreamBridgeFailure::ExplicitUpstreamError.status_for_log(200), 200);
         assert_eq!(StreamBridgeFailure::Disconnected.status_for_log(200), 200);
-        assert_eq!(StreamBridgeFailure::IncompleteUnknown.status_for_log(200), 200);
+        assert_eq!(StreamBridgeFailure::IncompleteBeforeOutput.status_for_log(200), 200);
+        assert_eq!(StreamBridgeFailure::IncompleteAfterOutput.status_for_log(200), 200);
         assert_eq!(StreamBridgeFailure::GatewayBridgeError.status_for_log(200), 502);
     }
 
@@ -388,6 +380,13 @@ mod tests {
             ),
             "upstream_stream_terminal_error: code=server_error request failed"
         );
+        assert_eq!(
+            describe_stream_bridge_failure(
+                StreamBridgeFailure::GatewayBridgeError,
+                Some("content_type_mismatch")
+            ),
+            "gateway_bridge_error: content_type_mismatch"
+        );
     }
 
     #[test]
@@ -396,6 +395,7 @@ mod tests {
         assert!(!StreamBridgeFailure::GatewayBridgeError.should_mark_network_failure());
         assert!(StreamBridgeFailure::Timeout.should_mark_network_failure());
         assert!(!StreamBridgeFailure::ExplicitUpstreamError.should_mark_network_failure());
-        assert!(!StreamBridgeFailure::IncompleteUnknown.should_mark_network_failure());
+        assert!(!StreamBridgeFailure::IncompleteBeforeOutput.should_mark_network_failure());
+        assert!(!StreamBridgeFailure::IncompleteAfterOutput.should_mark_network_failure());
     }
 }

@@ -82,6 +82,9 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized.starts_with("build response failed:") {
         return ErrorCode::BuildResponseFailed;
     }
+    if normalized.starts_with("response conversion failed:") {
+        return ErrorCode::ProtocolMappingError;
+    }
     if normalized.contains("queue is saturated") || normalized.contains("workers are unavailable") {
         return ErrorCode::QueueShed;
     }
@@ -91,13 +94,21 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized == "upstream total timeout exceeded" {
         return ErrorCode::UpstreamTimeout;
     }
+    if normalized == "upstream_stream_idle_timeout"
+        || normalized.starts_with("upstream_stream_idle_timeout:")
+    {
+        return ErrorCode::UpstreamTimeout;
+    }
     if normalized == "upstream_connect_failure" {
         return ErrorCode::UpstreamConnectFailure;
     }
     if normalized == "upstream_preheader_timeout" {
         return ErrorCode::UpstreamPreheaderTimeout;
     }
-    if normalized == "上游请求超时" || normalized.contains("连接超时") {
+    if normalized == "上游请求超时"
+        || normalized.starts_with("上游流空闲超时")
+        || normalized.contains("连接超时")
+    {
         return ErrorCode::UpstreamTimeout;
     }
     if normalized.starts_with("upstream blocked by cloudflare/waf")
@@ -124,6 +135,10 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     }
     if normalized == "upstream_disconnect_before_terminal"
         || normalized.starts_with("upstream_disconnect_before_terminal:")
+        || normalized == "stream_incomplete_before_output"
+        || normalized.starts_with("stream_incomplete_before_output:")
+        || normalized == "stream_incomplete_after_output"
+        || normalized.starts_with("stream_incomplete_after_output:")
         || normalized == "stream_incomplete_unknown"
         || normalized.starts_with("stream_incomplete_unknown:")
     {
@@ -144,7 +159,7 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized == "client_cancelled" {
         return ErrorCode::ClientCancelled;
     }
-    if normalized == "gateway_bridge_error" {
+    if normalized == "gateway_bridge_error" || normalized.starts_with("gateway_bridge_error:") {
         return ErrorCode::GatewayBridgeError;
     }
     if normalized.starts_with("response write failed:") {
@@ -290,11 +305,23 @@ mod tests {
             ErrorCode::StreamInterrupted
         );
         assert_eq!(
+            classify_message("stream_incomplete_before_output: 上游流中途中断（未正常结束）"),
+            ErrorCode::StreamInterrupted
+        );
+        assert_eq!(
+            classify_message("upstream_stream_idle_timeout: 上游流空闲超时"),
+            ErrorCode::UpstreamTimeout
+        );
+        assert_eq!(
             classify_message("client_cancelled"),
             ErrorCode::ClientCancelled
         );
         assert_eq!(
             classify_message("gateway_bridge_error"),
+            ErrorCode::GatewayBridgeError
+        );
+        assert_eq!(
+            classify_message("gateway_bridge_error: content_type_mismatch"),
             ErrorCode::GatewayBridgeError
         );
     }

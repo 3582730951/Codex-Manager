@@ -2,19 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
 
 static ENV_OVERRIDE_BASELINE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
-static ENV_OVERRIDE_LAST_APPLIED: OnceLock<Mutex<HashMap<String, Option<String>>>> =
-    OnceLock::new();
 
 fn env_override_baseline() -> &'static Mutex<HashMap<String, Option<String>>> {
     ENV_OVERRIDE_BASELINE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn env_override_last_applied() -> &'static Mutex<HashMap<String, Option<String>>> {
-    ENV_OVERRIDE_LAST_APPLIED.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-pub(super) fn current_process_env_override_value(key: &str) -> Option<String> {
-    super::normalize_optional_text(std::env::var(key).ok().as_deref())
 }
 
 pub(super) fn env_override_original_process_value(key: &str) -> Option<String> {
@@ -24,17 +14,7 @@ pub(super) fn env_override_original_process_value(key: &str) -> Option<String> {
         return value.clone();
     }
     drop(baseline);
-    current_process_env_override_value(key)
-}
-
-pub(super) fn env_override_process_value_is_explicit(key: &str) -> bool {
-    let current = current_process_env_override_value(key);
-    let last_applied =
-        crate::lock_utils::lock_recover(env_override_last_applied(), "env_override_last_applied");
-    match last_applied.get(key) {
-        Some(applied) => current.is_some() && current != *applied,
-        None => current.is_some(),
-    }
+    super::normalize_optional_text(std::env::var(key).ok().as_deref())
 }
 
 pub(crate) fn apply_env_overrides_to_process(
@@ -50,12 +30,10 @@ pub(crate) fn apply_env_overrides_to_process(
 
     let mut baseline =
         crate::lock_utils::lock_recover(env_override_baseline(), "env_override_baseline");
-    let mut last_applied =
-        crate::lock_utils::lock_recover(env_override_last_applied(), "env_override_last_applied");
     for key in &all_keys {
         baseline
             .entry(key.clone())
-            .or_insert_with(|| current_process_env_override_value(key));
+            .or_insert_with(|| super::normalize_optional_text(std::env::var(key).ok().as_deref()));
     }
 
     for key in all_keys {
@@ -69,7 +47,6 @@ pub(crate) fn apply_env_overrides_to_process(
             } else {
                 std::env::set_var(&key, value);
             }
-            last_applied.insert(key.clone(), current_process_env_override_value(&key));
             continue;
         }
         if let Some(original) = baseline.get(&key).and_then(|value| value.clone()) {
@@ -77,7 +54,6 @@ pub(crate) fn apply_env_overrides_to_process(
         } else {
             std::env::remove_var(&key);
         }
-        last_applied.insert(key.clone(), current_process_env_override_value(&key));
     }
 }
 

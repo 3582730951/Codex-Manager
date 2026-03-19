@@ -110,16 +110,15 @@ impl Drop for RequestGateGuard {
     }
 }
 
-fn gate_key(key_id: &str, path: &str, model: Option<&str>, flow_key: &str) -> String {
+fn gate_key(key_id: &str, path: &str, model: Option<&str>) -> String {
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}",
         key_id.trim(),
         path.trim(),
         model
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .unwrap_or("-"),
-        flow_key.trim()
+            .unwrap_or("-")
     )
 }
 
@@ -127,7 +126,6 @@ pub(crate) fn request_gate_lock(
     key_id: &str,
     path: &str,
     model: Option<&str>,
-    flow_key: &str,
 ) -> Arc<RequestGateLock> {
     let lock = REQUEST_GATE_LOCKS.get_or_init(|| Mutex::new(RequestGateLockTable::default()));
     let mut table = crate::lock_utils::lock_recover(lock, "request_gate_locks");
@@ -135,7 +133,7 @@ pub(crate) fn request_gate_lock(
     maybe_cleanup_request_gate_locks(&mut table, now);
     let entry = table
         .entries
-        .entry(gate_key(key_id, path, model, flow_key))
+        .entry(gate_key(key_id, path, model))
         .or_insert_with(|| RequestGateLockEntry {
             lock: Arc::new(RequestGateLock::new()),
             last_seen_at: now,

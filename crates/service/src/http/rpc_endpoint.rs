@@ -2,6 +2,8 @@ use tiny_http::Request;
 use tiny_http::Response;
 use url::Url;
 
+const RPC_CONNECTION_ID_HEADER: &str = "X-CodexManager-Rpc-Connection-Id";
+
 fn rpc_response_failed(resp: &codexmanager_core::rpc::types::JsonRpcResponse) -> bool {
     if resp.result.get("error").is_some() {
         return true;
@@ -92,7 +94,14 @@ pub fn handle_rpc(mut request: Request) {
             return;
         }
     };
-    let resp = crate::handle_request(req);
+    let connection_id = get_header_value(&request, RPC_CONNECTION_ID_HEADER)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let resp = crate::handle_request_with_context(
+        req,
+        &crate::rpc_dispatch::RpcRequestContext { connection_id },
+    );
     if !rpc_response_failed(&resp) {
         rpc_metrics_guard.mark_success();
     }

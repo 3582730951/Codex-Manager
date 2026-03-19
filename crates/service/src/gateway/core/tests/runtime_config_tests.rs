@@ -39,7 +39,6 @@ impl Drop for EnvGuard {
 #[test]
 fn reload_from_env_updates_timeout_and_cookie() {
     let _guard = test_guard();
-    let _request_gate_guard = EnvGuard::set(ENV_REQUEST_GATE_WAIT_TIMEOUT_MS, "2222");
     let _timeout_guard = EnvGuard::set(ENV_UPSTREAM_TOTAL_TIMEOUT_MS, "777");
     let _stream_timeout_guard = EnvGuard::set(ENV_UPSTREAM_STREAM_TIMEOUT_MS, "888");
     let _inflight_guard = EnvGuard::set(ENV_ACCOUNT_MAX_INFLIGHT, "4");
@@ -53,7 +52,6 @@ fn reload_from_env_updates_timeout_and_cookie() {
 
     reload_from_env();
 
-    assert_eq!(request_gate_wait_timeout(), Duration::from_millis(2222));
     assert_eq!(upstream_total_timeout(), Some(Duration::from_millis(777)));
     assert_eq!(upstream_stream_timeout(), Some(Duration::from_millis(888)));
     assert_eq!(account_max_inflight_limit(), 4);
@@ -76,16 +74,14 @@ fn reload_from_env_updates_timeout_and_cookie() {
 fn reload_from_env_defaults_account_max_inflight_to_one() {
     let _guard = test_guard();
     let _guard = EnvGuard::clear(ENV_ACCOUNT_MAX_INFLIGHT);
-    let _request_gate_guard = EnvGuard::clear(ENV_REQUEST_GATE_WAIT_TIMEOUT_MS);
     let _request_compression_guard = EnvGuard::clear(ENV_ENABLE_REQUEST_COMPRESSION);
     let _stream_timeout_guard = EnvGuard::clear(ENV_UPSTREAM_STREAM_TIMEOUT_MS);
 
     reload_from_env();
 
     assert_eq!(account_max_inflight_limit(), 1);
-    assert_eq!(request_gate_wait_timeout(), Duration::from_millis(5_000));
     assert!(request_compression_enabled());
-    assert_eq!(current_upstream_stream_timeout_ms(), 7_200_000);
+    assert_eq!(current_upstream_stream_timeout_ms(), 300_000);
 }
 
 #[test]

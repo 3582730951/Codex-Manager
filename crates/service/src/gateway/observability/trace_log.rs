@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -11,12 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const DEFAULT_TRACE_QUEUE_CAPACITY: usize = 2048;
 const TRACE_FLUSH_WAIT_TIMEOUT_MS: u64 = 200;
 const ENV_TRACE_QUEUE_CAPACITY: &str = "CODEXMANAGER_TRACE_QUEUE_CAPACITY";
-const MAX_BUFFERED_TRACE_LINES_PER_TRACE: usize = 128;
 
 static TRACE_WRITER: OnceLock<TraceAsyncWriter> = OnceLock::new();
 static TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
 static TRACE_ERROR_TRACES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-static TRACE_BUFFERED_LINES: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
 
 enum TraceCommand {
     Append {
@@ -144,26 +142,8 @@ fn trace_file_path_from_env() -> PathBuf {
     PathBuf::from("gateway-trace.log")
 }
 
-fn current_trace_ts() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 fn sanitize_text(value: &str) -> String {
     value.replace(['\r', '\n'], " ")
-}
-
-fn truncate_utf8_to_bytes(text: &str, max_bytes: usize) -> &str {
-    if max_bytes >= text.len() {
-        return text;
-    }
-    let mut idx = max_bytes;
-    while idx > 0 && !text.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    &text[..idx]
 }
 
 fn short_fingerprint(value: &str) -> String {
@@ -175,63 +155,35 @@ fn short_fingerprint(value: &str) -> String {
     format!("{hash:016x}")
 }
 
-fn short_fingerprint_bytes(value: &[u8]) -> String {
-    let mut hash: u64 = 14695981039346656037;
-    for byte in value {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(1099511628211);
-    }
-    format!("{hash:016x}")
-}
-
 fn append_trace_line(line: String, flush: bool) {
     trace_writer().append_line(line, flush);
 }
 
+pub(crate) fn log_stream_phase(
+    trace_id: Option<&str>,
+    adapter: &str,
+    phase: &str,
+    detail: Option<&str>,
+) {
+    let Some(trace_id) = trace_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let line = format!(
+        "ts={millis} event=STREAM_PHASE trace_id={} adapter={} phase={} detail={}",
+        sanitize_text(trace_id),
+        sanitize_text(adapter),
+        sanitize_text(phase),
+        sanitize_text(detail.unwrap_or("-")),
+    );
+    append_trace_line(line, false);
+}
+
 fn trace_error_traces() -> &'static Mutex<HashSet<String>> {
     TRACE_ERROR_TRACES.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-fn trace_buffered_lines() -> &'static Mutex<HashMap<String, Vec<String>>> {
-    TRACE_BUFFERED_LINES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn buffer_trace_line(trace_id: &str, line: String) {
-    let Ok(mut buffered) = trace_buffered_lines().lock() else {
-        return;
-    };
-    let lines = buffered.entry(trace_id.to_string()).or_default();
-    if lines.len() < MAX_BUFFERED_TRACE_LINES_PER_TRACE {
-        lines.push(line);
-        return;
-    }
-    if let Some(last) = lines.last_mut() {
-        *last = format!(
-            "ts={} event=TRACE_BUFFER_OVERFLOW trace_id={} dropped_after={}",
-            current_trace_ts(),
-            sanitize_text(trace_id),
-            MAX_BUFFERED_TRACE_LINES_PER_TRACE
-        );
-    }
-}
-
-fn flush_buffered_trace(trace_id: &str) {
-    let lines = trace_buffered_lines()
-        .lock()
-        .ok()
-        .and_then(|mut buffered| buffered.remove(trace_id));
-    let Some(lines) = lines else {
-        return;
-    };
-    for line in lines {
-        append_trace_line(line, false);
-    }
-}
-
-fn clear_buffered_trace(trace_id: &str) {
-    if let Ok(mut buffered) = trace_buffered_lines().lock() {
-        buffered.remove(trace_id);
-    }
 }
 
 fn mark_trace_has_error(trace_id: &str) {
@@ -320,9 +272,12 @@ pub(crate) fn log_request_start(
     is_stream: bool,
     protocol_type: &str,
 ) {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
     let line = format!(
-        "ts={} event=REQUEST_START trace_id={} key_id={} method={} request_path={} model={} reasoning={} stream={} protocol={}",
-        current_trace_ts(),
+        "ts={millis} event=REQUEST_START trace_id={} key_id={} method={} path={} model={} reasoning={} is_stream={} protocol={}",
         sanitize_text(trace_id),
         sanitize_text(key_id),
         sanitize_text(method),
@@ -332,50 +287,26 @@ pub(crate) fn log_request_start(
         if is_stream { "1" } else { "0" },
         sanitize_text(protocol_type),
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, false);
 }
 
 pub(crate) fn log_request_body_preview(trace_id: &str, body: &[u8]) {
-    let max_bytes = super::trace_body_preview_max_bytes();
-    let preview = if max_bytes == 0 || body.is_empty() {
-        "-".to_string()
-    } else {
-        let text = String::from_utf8_lossy(body);
-        sanitize_text(truncate_utf8_to_bytes(text.as_ref(), max_bytes))
-    };
-    let line = format!(
-        "ts={} event=REQUEST_BODY trace_id={} body_bytes={} body_fp={} preview={}",
-        current_trace_ts(),
-        sanitize_text(trace_id),
-        body.len(),
-        short_fingerprint_bytes(body),
-        preview,
-    );
-    buffer_trace_line(trace_id, line);
+    let _ = (trace_id, body, super::trace_body_preview_max_bytes());
 }
 
-pub(crate) fn log_request_gate_wait(
-    trace_id: &str,
-    key_id: &str,
-    path: &str,
-    model: Option<&str>,
-    flow_key: Option<&str>,
-) {
+pub(crate) fn log_request_gate_wait(trace_id: &str, key_id: &str, path: &str, model: Option<&str>) {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
     let line = format!(
-        "ts={} event=REQUEST_GATE_WAIT trace_id={} key_id={} request_path={} model={} flow_fp={}",
-        current_trace_ts(),
+        "ts={millis} event=REQUEST_GATE_WAIT trace_id={} key_id={} path={} model={}",
         sanitize_text(trace_id),
         sanitize_text(key_id),
         sanitize_text(path),
         sanitize_text(model.unwrap_or("-")),
-        sanitize_text(
-            flow_key
-                .map(short_fingerprint)
-                .unwrap_or_else(|| "-".to_string())
-                .as_str()
-        ),
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, false);
 }
 
 pub(crate) fn log_request_gate_acquired(
@@ -383,41 +314,34 @@ pub(crate) fn log_request_gate_acquired(
     key_id: &str,
     path: &str,
     model: Option<&str>,
-    flow_key: Option<&str>,
     wait_ms: u128,
 ) {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
     let line = format!(
-        "ts={} event=REQUEST_GATE_ACQUIRED trace_id={} key_id={} request_path={} model={} flow_fp={} wait_ms={}",
-        current_trace_ts(),
+        "ts={millis} event=REQUEST_GATE_ACQUIRED trace_id={} key_id={} path={} model={} wait_ms={}",
         sanitize_text(trace_id),
         sanitize_text(key_id),
         sanitize_text(path),
         sanitize_text(model.unwrap_or("-")),
-        sanitize_text(
-            flow_key
-                .map(short_fingerprint)
-                .unwrap_or_else(|| "-".to_string())
-                .as_str()
-        ),
         wait_ms,
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, false);
 }
 
-pub(crate) fn log_request_gate_skip(trace_id: &str, flow_key: Option<&str>, reason: &str) {
+pub(crate) fn log_request_gate_skip(trace_id: &str, reason: &str) {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
     let line = format!(
-        "ts={} event=REQUEST_GATE_SKIP trace_id={} flow_fp={} reason={}",
-        current_trace_ts(),
+        "ts={millis} event=REQUEST_GATE_SKIP trace_id={} reason={}",
         sanitize_text(trace_id),
-        sanitize_text(
-            flow_key
-                .map(short_fingerprint)
-                .unwrap_or_else(|| "-".to_string())
-                .as_str()
-        ),
         sanitize_text(reason),
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, false);
 }
 
 pub(crate) fn log_candidate_start(
@@ -427,41 +351,44 @@ pub(crate) fn log_candidate_start(
     account_id: &str,
     strip_session_affinity: bool,
 ) {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
     let line = format!(
-        "ts={} event=CANDIDATE_START trace_id={} idx={} total={} account_id={} strip_session_affinity={}",
-        current_trace_ts(),
+        "ts={millis} event=CANDIDATE_START trace_id={} idx={} total={} account_id={} strip_session_affinity={}",
         sanitize_text(trace_id),
         idx,
         total,
         sanitize_text(account_id),
         if strip_session_affinity { "1" } else { "0" },
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, false);
 }
 
 pub(crate) fn log_candidate_pool(
     trace_id: &str,
     key_id: &str,
     strategy: &str,
-    flow_key: &str,
     candidates: &[String],
 ) {
-    let ordered_candidates = if candidates.is_empty() {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let candidates_text = if candidates.is_empty() {
         "-".to_string()
     } else {
-        candidates.join(",")
+        sanitize_text(candidates.join(",").as_str())
     };
     let line = format!(
-        "ts={} event=CANDIDATE_POOL trace_id={} key_id={} strategy={} flow_fp={} size={} ordered_candidates={}",
-        current_trace_ts(),
+        "ts={millis} event=CANDIDATE_POOL trace_id={} key_id={} strategy={} candidates={}",
         sanitize_text(trace_id),
         sanitize_text(key_id),
         sanitize_text(strategy),
-        sanitize_text(short_fingerprint(flow_key).as_str()),
-        candidates.len(),
-        sanitize_text(ordered_candidates.as_str()),
+        candidates_text,
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, false);
 }
 
 pub(crate) fn log_candidate_skip(
@@ -471,16 +398,19 @@ pub(crate) fn log_candidate_skip(
     account_id: &str,
     reason: &str,
 ) {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
     let line = format!(
-        "ts={} event=CANDIDATE_SKIP trace_id={} idx={} total={} account_id={} reason={}",
-        current_trace_ts(),
+        "ts={millis} event=CANDIDATE_SKIP trace_id={} idx={} total={} account_id={} reason={}",
         sanitize_text(trace_id),
         idx,
         total,
         sanitize_text(account_id),
         sanitize_text(reason),
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, false);
 }
 
 pub(crate) fn log_attempt_result(
@@ -494,16 +424,20 @@ pub(crate) fn log_attempt_result(
     if should_mark_error {
         mark_trace_has_error(trace_id);
     }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
     let line = format!(
-        "ts={} event=ATTEMPT_RESULT trace_id={} account_id={} upstream_url={} status={} error={}",
-        current_trace_ts(),
+        "ts={millis} event=ATTEMPT_RESULT trace_id={} account_id={} upstream_url={} status={} code={} error={}",
         sanitize_text(trace_id),
         sanitize_text(account_id),
         sanitize_text(upstream_url.unwrap_or("-")),
         status_code,
+        sanitize_text(crate::error_codes::code_or_dash(error)),
         sanitize_text(error.unwrap_or("-")),
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, should_mark_error);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -515,18 +449,23 @@ pub(crate) fn log_bridge_result(
     stream_terminal_seen: bool,
     stream_terminal_error: Option<&str>,
     delivery_error: Option<&str>,
+    bridge_error: Option<&str>,
     output_text_len: usize,
     output_tokens: Option<i64>,
 ) {
     let bridge_has_error = delivery_error.is_some()
+        || bridge_error.is_some()
         || stream_terminal_error.is_some()
         || (is_stream && !stream_terminal_seen);
     if bridge_has_error {
         mark_trace_has_error(trace_id);
     }
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
     let line = format!(
-        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} request_path={} stream={} terminal_seen={} terminal_error={} delivery_error={} output_text_len={} output_tokens={}",
-        current_trace_ts(),
+        "ts={millis} event=BRIDGE_RESULT trace_id={} adapter={} path={} is_stream={} terminal_seen={} terminal_error={} delivery_error={} bridge_error={} output_text_len={} output_tokens={}",
         sanitize_text(trace_id),
         sanitize_text(adapter),
         sanitize_text(path),
@@ -534,12 +473,13 @@ pub(crate) fn log_bridge_result(
         if stream_terminal_seen { "1" } else { "0" },
         sanitize_text(stream_terminal_error.unwrap_or("-")),
         sanitize_text(delivery_error.unwrap_or("-")),
+        sanitize_text(bridge_error.unwrap_or("-")),
         output_text_len,
         output_tokens
             .map(|value| value.to_string())
             .unwrap_or_else(|| "-".to_string()),
     );
-    buffer_trace_line(trace_id, line);
+    append_trace_line(line, bridge_has_error);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -557,28 +497,21 @@ pub(crate) fn log_attempt_profile(
     body_len: usize,
     body_model: Option<&str>,
 ) {
-    let line = format!(
-        "ts={} event=ATTEMPT_PROFILE trace_id={} account_id={} idx={} total={} strip_session_affinity={} incoming_session={} incoming_turn_state={} incoming_conversation={} prompt_cache_fp={} request_shape={} body_bytes={} body_model={}",
-        current_trace_ts(),
-        sanitize_text(trace_id),
-        sanitize_text(account_id),
+    let _ = (
+        trace_id,
+        account_id,
         candidate_index,
         total,
-        if strip_session_affinity { "1" } else { "0" },
-        if has_incoming_session { "1" } else { "0" },
-        if has_incoming_turn_state { "1" } else { "0" },
-        if has_incoming_conversation { "1" } else { "0" },
-        sanitize_text(
-            prompt_cache_key
-                .map(short_fingerprint)
-                .unwrap_or_else(|| "-".to_string())
-                .as_str()
-        ),
-        sanitize_text(request_shape.unwrap_or("-")),
+        strip_session_affinity,
+        has_incoming_session,
+        has_incoming_turn_state,
+        has_incoming_conversation,
+        prompt_cache_key,
+        request_shape,
         body_len,
-        sanitize_text(body_model.unwrap_or("-")),
+        body_model,
+        short_fingerprint,
     );
-    buffer_trace_line(trace_id, line);
 }
 
 pub(crate) fn log_request_final(
@@ -591,25 +524,24 @@ pub(crate) fn log_request_final(
 ) {
     let should_mark_error = status_code >= 400 || has_error_text(error);
     if should_mark_error {
-        let line = format!(
-            "ts={} event=REQUEST_FINAL trace_id={} account_id={} upstream_url={} status={} elapsed_ms={} error={}",
-            current_trace_ts(),
-            sanitize_text(trace_id),
-            sanitize_text(final_account_id.unwrap_or("-")),
-            sanitize_text(upstream_url.unwrap_or("-")),
-            status_code,
-            elapsed_ms,
-            sanitize_text(error.unwrap_or("-")),
-        );
-        buffer_trace_line(trace_id, line);
-    }
-    if should_mark_error {
         mark_trace_has_error(trace_id);
-    } else {
-        clear_trace_error(trace_id);
-        clear_buffered_trace(trace_id);
     }
-    let _ = (final_account_id, upstream_url, elapsed_ms);
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let line = format!(
+        "ts={millis} event=REQUEST_FINAL trace_id={} account_id={} upstream_url={} status={} elapsed_ms={} code={} error={}",
+        sanitize_text(trace_id),
+        sanitize_text(final_account_id.unwrap_or("-")),
+        sanitize_text(upstream_url.unwrap_or("-")),
+        status_code,
+        elapsed_ms,
+        sanitize_text(crate::error_codes::code_or_dash(error)),
+        sanitize_text(error.unwrap_or("-")),
+    );
+    append_trace_line(line, true);
+    clear_trace_error(trace_id);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -631,9 +563,6 @@ pub(crate) fn log_failed_request(
 ) {
     if !status_code.is_some_and(|status| status >= 400) && !has_error_text(error) {
         return;
-    }
-    if let Some(trace_id) = trace_id {
-        flush_buffered_trace(trace_id);
     }
     let code = crate::error_codes::code_or_dash(error);
     let line = format!(
@@ -658,10 +587,6 @@ pub(crate) fn log_failed_request(
         sanitize_text(error.unwrap_or("-")),
     );
     append_trace_line(line, true);
-    if let Some(trace_id) = trace_id {
-        clear_trace_error(trace_id);
-        clear_buffered_trace(trace_id);
-    }
 }
 
 #[cfg(test)]

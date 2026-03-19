@@ -1,10 +1,7 @@
 use super::sticky_ids::random_session_id;
 
 pub(crate) const CODEX_CLIENT_VERSION: &str = "0.101.0";
-pub(super) const CODEX_USER_AGENT: &str =
-    "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464";
 const CODEX_OPENAI_BETA: &str = "responses=experimental";
-const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
 pub(crate) struct CodexUpstreamHeaderInput<'a> {
     pub(crate) auth_token: &'a str,
@@ -63,8 +60,20 @@ pub(crate) fn build_codex_upstream_headers(
     if input.include_openai_beta {
         headers.push(("Openai-Beta".to_string(), CODEX_OPENAI_BETA.to_string()));
     }
-    headers.push(("User-Agent".to_string(), CODEX_USER_AGENT.to_string()));
-    headers.push(("Originator".to_string(), CODEX_ORIGINATOR.to_string()));
+    headers.push((
+        "User-Agent".to_string(),
+        crate::gateway::current_codex_user_agent(),
+    ));
+    headers.push((
+        "Originator".to_string(),
+        crate::gateway::current_originator(),
+    ));
+    if let Some(residency_requirement) = crate::gateway::current_residency_requirement() {
+        headers.push((
+            crate::gateway::runtime_config::RESIDENCY_HEADER_NAME.to_string(),
+            residency_requirement,
+        ));
+    }
     if let Some(client_request_id) = input
         .incoming_client_request_id
         .map(str::trim)
@@ -134,8 +143,20 @@ pub(crate) fn build_codex_compact_upstream_headers(
     }
     headers.push(("Accept".to_string(), "application/json".to_string()));
     headers.push(("Version".to_string(), CODEX_CLIENT_VERSION.to_string()));
-    headers.push(("User-Agent".to_string(), CODEX_USER_AGENT.to_string()));
-    headers.push(("Originator".to_string(), CODEX_ORIGINATOR.to_string()));
+    headers.push((
+        "User-Agent".to_string(),
+        crate::gateway::current_codex_user_agent(),
+    ));
+    headers.push((
+        "Originator".to_string(),
+        crate::gateway::current_originator(),
+    ));
+    if let Some(residency_requirement) = crate::gateway::current_residency_requirement() {
+        headers.push((
+            crate::gateway::runtime_config::RESIDENCY_HEADER_NAME.to_string(),
+            residency_requirement,
+        ));
+    }
     if let Some(subagent) = input
         .incoming_subagent
         .map(str::trim)

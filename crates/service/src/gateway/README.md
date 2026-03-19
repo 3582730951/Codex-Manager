@@ -161,6 +161,21 @@
 - 请求日志会保留尝试链路；free 首试失败后再回退 team / pro 时，最终日志仍只落一条记录
 - 这个行为是 CodexManager 的可用性优先策略，不是 Codex 开源源码里的默认处理方式
 
+### 请求体压缩
+
+设置入口：
+
+- 前端 `appSettings.requestCompressionEnabled`
+- 持久化键 `gateway.request_compression_enabled`
+- 环境变量 `CODEXMANAGER_ENABLE_REQUEST_COMPRESSION`
+
+行为：
+
+- 默认值是 `true`
+- 对齐官方 Codex：仅在 `ChatGPT Codex backend + /v1/responses + 流式请求` 这条链路上启用
+- 启用后，请求体会在真正发上游前做 `zstd` 压缩，并补 `Content-Encoding: zstd`
+- `compact`、非流式请求、OpenAI API fallback、Azure/Anthropic 路径不会启用这层压缩
+
 ### 单账号并发上限
 
 设置入口：
@@ -173,21 +188,6 @@
 - 含义是同一账号默认只承载一个正在进行中的 gateway 上游请求
 - 当并发 Codex 会话较多时，候选预检会优先跳过已满载账号，避免多个长连接同时压到同一账号上
 - 如果你明确需要更高吞吐，可以显式调大；设置为 `0` 表示关闭该保护
-
-### request gate
-
-设置入口：
-
-- 环境变量 `CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS`
-
-行为：
-
-- 默认等待时间是 `5000ms`
-- gate 不再按 `key_id + path + model` 粗粒度串行，而是按请求流维度串行
-- 请求流优先复用 `prompt_cache_key / session_id / conversation_id / client_request_id`
-- 如果以上字段都没有，才会退回当前请求的本地序号；这意味着无状态独立请求不会再被同一平台 key 全局串行
-- 单账号并发保护仍由 `CODEXMANAGER_ACCOUNT_MAX_INFLIGHT` 控制；request gate 只负责同一请求流的顺序保护
-- 错误 trace 现在会额外记录 `REQUEST_GATE_*` 和 `CANDIDATE_SKIP` 事件，便于区分是 gate 冲突、候选 cooldown，还是 inflight 满载
 
 ### `ordered`
 

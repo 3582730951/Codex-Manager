@@ -24,6 +24,10 @@ fn reset_runtime_defaults() {
     );
     let _ = codexmanager_service::app_settings_set(Some(&json!({
         "routeStrategy": "balanced",
+        "freeAccountMaxModel": "gpt-5.2",
+        "requestCompressionEnabled": true,
+        "gatewayOriginator": "codex_cli_rs",
+        "gatewayResidencyRequirement": "",
         "lightweightModeOnCloseToTray": false,
         "cpaNoCookieHeaderModeEnabled": false,
         "upstreamProxyUrl": "",
@@ -46,23 +50,6 @@ fn reset_runtime_defaults() {
     })));
 }
 
-struct TempDbGuard {
-    db_path: PathBuf,
-    previous_db_path: Option<String>,
-}
-
-impl Drop for TempDbGuard {
-    fn drop(&mut self) {
-        reset_runtime_defaults();
-        if let Some(value) = self.previous_db_path.as_deref() {
-            std::env::set_var("CODEXMANAGER_DB_PATH", value);
-        } else {
-            std::env::remove_var("CODEXMANAGER_DB_PATH");
-        }
-        let _ = std::fs::remove_file(&self.db_path);
-    }
-}
-
 fn with_temp_db(test: impl FnOnce(&PathBuf)) {
     let _guard = env_lock()
         .lock()
@@ -72,12 +59,16 @@ fn with_temp_db(test: impl FnOnce(&PathBuf)) {
     std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
     codexmanager_service::initialize_storage_if_needed().expect("init storage");
     reset_runtime_defaults();
-    let _cleanup = TempDbGuard {
-        db_path: db_path.clone(),
-        previous_db_path,
-    };
 
     test(&db_path);
+
+    reset_runtime_defaults();
+    if let Some(value) = previous_db_path {
+        std::env::set_var("CODEXMANAGER_DB_PATH", value);
+    } else {
+        std::env::remove_var("CODEXMANAGER_DB_PATH");
+    }
+    let _ = std::fs::remove_file(&db_path);
 }
 
 struct EnvRestore(Vec<(String, Option<OsString>)>);
@@ -186,6 +177,10 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
             "serviceAddr": "127.0.0.1:4999",
             "serviceListenMode": "all_interfaces",
             "routeStrategy": "rr",
+            "freeAccountMaxModel": "gpt-5.3-codex",
+            "requestCompressionEnabled": false,
+            "gatewayOriginator": "codex_cli_rs_test",
+            "gatewayResidencyRequirement": "us",
             "cpaNoCookieHeaderModeEnabled": true,
             "upstreamProxyUrl": "http://127.0.0.1:7890",
             "upstreamStreamTimeoutMs": 654321,
@@ -255,6 +250,30 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
         );
         assert_eq!(
             snapshot
+                .get("freeAccountMaxModel")
+                .and_then(|value| value.as_str()),
+            Some("gpt-5.3-codex")
+        );
+        assert_eq!(
+            snapshot
+                .get("requestCompressionEnabled")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            snapshot
+                .get("gatewayOriginator")
+                .and_then(|value| value.as_str()),
+            Some("codex_cli_rs_test")
+        );
+        assert_eq!(
+            snapshot
+                .get("gatewayResidencyRequirement")
+                .and_then(|value| value.as_str()),
+            Some("us")
+        );
+        assert_eq!(
+            snapshot
                 .get("webAccessPasswordConfigured")
                 .and_then(|value| value.as_bool()),
             Some(true)
@@ -271,6 +290,36 @@ fn app_settings_set_persists_snapshot_and_password_hash() {
                 )
                 .expect("read lightweight close to tray"),
             Some("1".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY
+                )
+                .expect("read free account max model"),
+            Some("gpt-5.3-codex".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY
+                )
+                .expect("read request compression enabled"),
+            Some("0".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_ORIGINATOR_KEY)
+                .expect("read gateway originator"),
+            Some("codex_cli_rs_test".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY
+                )
+                .expect("read gateway residency requirement"),
+            Some("us".to_string())
         );
         assert_eq!(
             storage
@@ -331,6 +380,34 @@ fn sync_runtime_settings_from_storage_applies_saved_runtime_values() {
             .expect("save route strategy");
         storage
             .set_app_setting(
+                codexmanager_service::APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+                "gpt-5.1-codex",
+                now_ts(),
+            )
+            .expect("save free account max model");
+        storage
+            .set_app_setting(
+                codexmanager_service::APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+                "0",
+                now_ts(),
+            )
+            .expect("save request compression enabled");
+        storage
+            .set_app_setting(
+                codexmanager_service::APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+                "codex_cli_rs_synced",
+                now_ts(),
+            )
+            .expect("save gateway originator");
+        storage
+            .set_app_setting(
+                codexmanager_service::APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
+                "us",
+                now_ts(),
+            )
+            .expect("save gateway residency requirement");
+        storage
+            .set_app_setting(
                 codexmanager_service::APP_SETTING_GATEWAY_CPA_NO_COOKIE_HEADER_MODE_KEY,
                 "1",
                 now_ts(),
@@ -388,6 +465,7 @@ fn sync_runtime_settings_from_storage_applies_saved_runtime_values() {
             )
             .expect("save env overrides");
         drop(storage);
+        let _env = override_env_vars(&[("CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS", None)]);
 
         codexmanager_service::sync_runtime_settings_from_storage();
 
@@ -398,6 +476,30 @@ fn sync_runtime_settings_from_storage_applies_saved_runtime_values() {
                 .get("routeStrategy")
                 .and_then(|value| value.as_str()),
             Some("balanced")
+        );
+        assert_eq!(
+            snapshot
+                .get("freeAccountMaxModel")
+                .and_then(|value| value.as_str()),
+            Some("gpt-5.1-codex")
+        );
+        assert_eq!(
+            snapshot
+                .get("requestCompressionEnabled")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            snapshot
+                .get("gatewayOriginator")
+                .and_then(|value| value.as_str()),
+            Some("codex_cli_rs_synced")
+        );
+        assert_eq!(
+            snapshot
+                .get("gatewayResidencyRequirement")
+                .and_then(|value| value.as_str()),
+            Some("us")
         );
         assert_eq!(
             snapshot
@@ -461,6 +563,10 @@ fn app_settings_get_loads_env_backed_dedicated_settings_when_storage_missing() {
             codexmanager_service::APP_SETTING_SERVICE_ADDR_KEY,
             codexmanager_service::SERVICE_BIND_MODE_SETTING_KEY,
             codexmanager_service::APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
+            codexmanager_service::APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+            codexmanager_service::APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+            codexmanager_service::APP_SETTING_GATEWAY_ORIGINATOR_KEY,
+            codexmanager_service::APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY,
             codexmanager_service::APP_SETTING_GATEWAY_CPA_NO_COOKIE_HEADER_MODE_KEY,
             codexmanager_service::APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
             codexmanager_service::APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY,
@@ -474,6 +580,10 @@ fn app_settings_get_loads_env_backed_dedicated_settings_when_storage_missing() {
         let _env = override_env_vars(&[
             ("CODEXMANAGER_SERVICE_ADDR", Some("0.0.0.0:4999")),
             ("CODEXMANAGER_ROUTE_STRATEGY", Some("balanced")),
+            ("CODEXMANAGER_FREE_ACCOUNT_MAX_MODEL", Some("gpt-5.2-codex")),
+            ("CODEXMANAGER_ENABLE_REQUEST_COMPRESSION", Some("0")),
+            ("CODEXMANAGER_ORIGINATOR", Some("codex_cli_rs_env")),
+            ("CODEXMANAGER_RESIDENCY_REQUIREMENT", Some("us")),
             ("CODEXMANAGER_CPA_NO_COOKIE_HEADER_MODE", Some("1")),
             (
                 "CODEXMANAGER_UPSTREAM_PROXY_URL",
@@ -511,6 +621,30 @@ fn app_settings_get_loads_env_backed_dedicated_settings_when_storage_missing() {
                 .get("routeStrategy")
                 .and_then(|value| value.as_str()),
             Some("balanced")
+        );
+        assert_eq!(
+            snapshot
+                .get("freeAccountMaxModel")
+                .and_then(|value| value.as_str()),
+            Some("gpt-5.2-codex")
+        );
+        assert_eq!(
+            snapshot
+                .get("requestCompressionEnabled")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            snapshot
+                .get("gatewayOriginator")
+                .and_then(|value| value.as_str()),
+            Some("codex_cli_rs_env")
+        );
+        assert_eq!(
+            snapshot
+                .get("gatewayResidencyRequirement")
+                .and_then(|value| value.as_str()),
+            Some("us")
         );
         assert_eq!(
             snapshot
@@ -583,6 +717,36 @@ fn app_settings_get_loads_env_backed_dedicated_settings_when_storage_missing() {
                 .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY)
                 .expect("read route strategy"),
             Some("balanced".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY
+                )
+                .expect("read free account max model"),
+            Some("gpt-5.2-codex".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY
+                )
+                .expect("read request compression enabled"),
+            Some("0".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_ORIGINATOR_KEY)
+                .expect("read gateway originator"),
+            Some("codex_cli_rs_env".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY
+                )
+                .expect("read gateway residency requirement"),
+            Some("us".to_string())
         );
         assert_eq!(
             storage
@@ -783,6 +947,7 @@ fn app_settings_get_drops_reserved_env_overrides_from_persisted_snapshot() {
             )
             .expect("save env overrides");
         drop(storage);
+        let _env = override_env_vars(&[("CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS", None)]);
 
         let snapshot = codexmanager_service::app_settings_get().expect("get app settings");
 

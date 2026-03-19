@@ -130,7 +130,7 @@ pub(in super::super) fn proxy_validated_request(
         setup.candidate_count,
         setup.account_max_inflight,
     );
-    let allow_openai_fallback = setup.upstream_fallback_base.is_some();
+    let allow_openai_fallback = false;
     let disable_challenge_stateless_retry = !(protocol_type == PROTOCOL_ANTHROPIC_NATIVE
         && body.len() <= 2 * 1024)
         && !path.starts_with("/v1/responses");

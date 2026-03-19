@@ -1,8 +1,6 @@
 use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 
-use super::super::support::outcome::{decide_upstream_outcome, UpstreamOutcomeDecision};
-
 pub(super) enum OpenAiAttemptResult {
     Upstream(reqwest::blocking::Response),
     Failover,
@@ -47,22 +45,25 @@ where
         debug,
     ) {
         Ok(Some(resp)) => {
-            match decide_upstream_outcome(
-                storage,
-                &account.id,
-                resp.status(),
-                resp.headers().get(reqwest::header::CONTENT_TYPE),
-                base,
-                has_more_candidates,
-                &mut log_gateway_result,
-            ) {
-                UpstreamOutcomeDecision::Failover => OpenAiAttemptResult::Failover,
-                UpstreamOutcomeDecision::RespondUpstream => OpenAiAttemptResult::Upstream(resp),
+            let status = resp.status().as_u16();
+            if status < 400 {
+                super::super::super::clear_account_cooldown(&account.id);
+            } else {
+                super::super::super::mark_account_cooldown_for_status(&account.id, status);
             }
+            log_gateway_result(
+                Some(base),
+                status,
+                if status >= 400 {
+                    Some("openai upstream non-success")
+                } else {
+                    None
+                },
+            );
+            OpenAiAttemptResult::Upstream(resp)
         }
         Ok(None) => {
             log_gateway_result(Some(base), 502, Some("upstream_connect_failure"));
-            let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
             // 中文注释：OpenAI 上游不可用时如果还有候选账号就继续 failover，
             // 不这样做会把单账号瞬时抖动放大成整次请求失败。
             if has_more_candidates {
@@ -76,7 +77,6 @@ where
         }
         Err(err) => {
             log_gateway_result(Some(base), 502, Some(err.as_str()));
-            let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
             // 中文注释：异常分支同样优先切换候选账号，
             // 只有最后一个候选才直接向客户端返回错误，避免过早失败。
             if has_more_candidates {

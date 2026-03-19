@@ -1,7 +1,4 @@
-use super::{
-    candidate_usage_pressure_penalty, clear_candidate_cache_for_tests, collect_gateway_candidates,
-    CANDIDATE_CACHE_TTL_ENV,
-};
+use super::{clear_candidate_cache_for_tests, collect_gateway_candidates, CANDIDATE_CACHE_TTL_ENV};
 use codexmanager_core::storage::{now_ts, Account, Storage, Token, UsageSnapshotRecord};
 use std::sync::Mutex;
 
@@ -145,78 +142,6 @@ fn candidates_follow_account_sort_order() {
         .map(|(account, _)| account.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(ordered_ids, vec!["acc-sort-0", "acc-sort-1", "acc-sort-10"]);
-
-    clear_candidate_cache_for_tests();
-    if let Some(value) = previous_ttl {
-        std::env::set_var(CANDIDATE_CACHE_TTL_ENV, value);
-    } else {
-        std::env::remove_var(CANDIDATE_CACHE_TTL_ENV);
-    }
-    if let Some(value) = previous_db_path {
-        std::env::set_var("CODEXMANAGER_DB_PATH", value);
-    } else {
-        std::env::remove_var("CODEXMANAGER_DB_PATH");
-    }
-    super::reload_from_env();
-}
-
-#[test]
-fn candidate_usage_pressure_penalty_tracks_latest_snapshot_pressure() {
-    let _guard = CANDIDATE_CACHE_TEST_LOCK.lock().expect("lock");
-    let previous_ttl = std::env::var(CANDIDATE_CACHE_TTL_ENV).ok();
-    let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
-    std::env::set_var(CANDIDATE_CACHE_TTL_ENV, "0");
-    std::env::set_var("CODEXMANAGER_DB_PATH", "selection-cache-test-3");
-    super::reload_from_env();
-    clear_candidate_cache_for_tests();
-
-    let storage = Storage::open_in_memory().expect("open");
-    storage.init().expect("init");
-    let now = now_ts();
-
-    for (id, used_percent) in [("acc-pressure-high", 96.0), ("acc-pressure-low", 12.0)] {
-        storage
-            .insert_account(&Account {
-                id: id.to_string(),
-                label: id.to_string(),
-                issuer: "issuer".to_string(),
-                chatgpt_account_id: None,
-                workspace_id: None,
-                group_name: None,
-                sort: 0,
-                status: "active".to_string(),
-                created_at: now,
-                updated_at: now,
-            })
-            .expect("insert account");
-        storage
-            .insert_token(&Token {
-                account_id: id.to_string(),
-                id_token: "id".to_string(),
-                access_token: "access".to_string(),
-                refresh_token: "refresh".to_string(),
-                api_key_access_token: None,
-                last_refresh: now,
-            })
-            .expect("insert token");
-        storage
-            .insert_usage_snapshot(&UsageSnapshotRecord {
-                account_id: id.to_string(),
-                used_percent: Some(used_percent),
-                window_minutes: Some(300),
-                resets_at: None,
-                secondary_used_percent: None,
-                secondary_window_minutes: None,
-                secondary_resets_at: None,
-                credits_json: None,
-                captured_at: now,
-            })
-            .expect("insert usage");
-    }
-
-    let _ = collect_gateway_candidates(&storage).expect("collect candidates");
-    assert!(candidate_usage_pressure_penalty("acc-pressure-high") > 0);
-    assert_eq!(candidate_usage_pressure_penalty("acc-pressure-low"), 0);
 
     clear_candidate_cache_for_tests();
     if let Some(value) = previous_ttl {

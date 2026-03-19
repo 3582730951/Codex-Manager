@@ -36,6 +36,19 @@ pub(super) struct CandidateAttemptParams<'a> {
     pub(super) trace: &'a mut CandidateAttemptTrace,
 }
 
+fn should_record_route_quality_penalty(error: Option<&str>) -> bool {
+    let normalized = error
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    !matches!(
+        normalized.as_deref(),
+        Some("likely_model_ineligible_failover")
+            | Some("likely_quota_rejected_failover")
+            | Some("upstream not-found failover")
+    )
+}
+
 pub(super) fn run_candidate_attempt(
     params: CandidateAttemptParams<'_>,
 ) -> CandidateUpstreamDecision {
@@ -65,7 +78,6 @@ pub(super) fn run_candidate_attempt(
         context.key_id(),
         path,
         context.model_for_log(),
-        setup.flow_key.as_str(),
         request_deadline,
     );
     if gate_guard.is_none() {
@@ -88,6 +100,7 @@ pub(super) fn run_candidate_attempt(
         incoming_headers,
         body,
         upstream_is_stream,
+        context.model_for_log(),
         setup.upstream_base.as_str(),
         path,
         setup.url.as_str(),
@@ -105,7 +118,9 @@ pub(super) fn run_candidate_attempt(
         |upstream_url: Option<&str>, status_code, error: Option<&str>| {
             trace.last_attempt_url = upstream_url.map(str::to_string);
             trace.last_attempt_error = error.map(str::to_string);
-            super::super::super::record_route_quality(&account.id, status_code);
+            if should_record_route_quality_penalty(error) {
+                super::super::super::record_route_quality(&account.id, status_code);
+            }
             context.log_attempt_result(&account.id, upstream_url, status_code, error);
         },
     );

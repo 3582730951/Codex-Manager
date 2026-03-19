@@ -6,12 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const DEFAULT_SSE_KEEPALIVE_INTERVAL_MS: u64 = 15_000;
-const DEFAULT_SSE_IDLE_TIMEOUT_MS: u64 = 120_000;
 const ENV_SSE_KEEPALIVE_INTERVAL_MS: &str = "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS";
-const ENV_SSE_IDLE_TIMEOUT_MS: &str = "CODEXMANAGER_SSE_IDLE_TIMEOUT_MS";
 
 static SSE_KEEPALIVE_INTERVAL_MS: AtomicU64 = AtomicU64::new(DEFAULT_SSE_KEEPALIVE_INTERVAL_MS);
-static SSE_IDLE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_SSE_IDLE_TIMEOUT_MS);
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PassthroughSseCollector {
@@ -34,13 +31,8 @@ impl SseKeepAliveFrame {
     pub(crate) fn bytes(self) -> &'static [u8] {
         match self {
             Self::Comment => b": keep-alive\n\n",
-            Self::OpenAIResponses => b"data: {\"type\":\"codexmanager.keepalive\"}\n\n",
-            Self::OpenAIChatCompletions => {
-                b"data: {\"id\":\"cm_keepalive\",\"object\":\"chat.completion.chunk\",\"created\":0,\"model\":\"codexmanager.keepalive\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":null}]}\n\n"
-            }
-            Self::OpenAICompletions => {
-                b"data: {\"id\":\"cm_keepalive\",\"object\":\"text_completion\",\"created\":0,\"model\":\"codexmanager.keepalive\",\"choices\":[{\"index\":0,\"text\":\"\",\"finish_reason\":null}]}\n\n"
-            }
+            Self::OpenAIResponses => b": keep-alive\n\n",
+            Self::OpenAIChatCompletions | Self::OpenAICompletions => b": keep-alive\n\n",
             Self::Anthropic => {
                 b"event: ping\ndata: {\"type\":\"ping\"}\n\n"
             }
@@ -115,13 +107,6 @@ pub(super) fn reload_from_env() {
             .unwrap_or(DEFAULT_SSE_KEEPALIVE_INTERVAL_MS),
         Ordering::Relaxed,
     );
-    SSE_IDLE_TIMEOUT_MS.store(
-        std::env::var(ENV_SSE_IDLE_TIMEOUT_MS)
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_SSE_IDLE_TIMEOUT_MS),
-        Ordering::Relaxed,
-    );
 }
 
 pub(super) fn sse_keepalive_interval() -> Duration {
@@ -129,29 +114,33 @@ pub(super) fn sse_keepalive_interval() -> Duration {
     Duration::from_millis(interval_ms.max(1))
 }
 
+pub(super) fn stream_idle_timeout() -> Option<Duration> {
+    super::super::super::upstream_stream_timeout()
+}
+
+pub(super) fn stream_poll_timeout(last_upstream_activity: Instant) -> Duration {
+    let keepalive = sse_keepalive_interval();
+    let Some(idle_timeout) = stream_idle_timeout() else {
+        return keepalive;
+    };
+    let elapsed = last_upstream_activity.elapsed();
+    if elapsed >= idle_timeout {
+        return Duration::from_millis(1);
+    }
+    let remaining = idle_timeout.saturating_sub(elapsed);
+    if remaining < keepalive {
+        remaining
+    } else {
+        keepalive
+    }
+}
+
+pub(super) fn stream_idle_timeout_reached(last_upstream_activity: Instant) -> bool {
+    stream_idle_timeout().is_some_and(|timeout| last_upstream_activity.elapsed() >= timeout)
+}
+
 pub(super) fn current_sse_keepalive_interval_ms() -> u64 {
     SSE_KEEPALIVE_INTERVAL_MS.load(Ordering::Relaxed).max(1)
-}
-
-pub(super) fn sse_idle_timeout() -> Option<Duration> {
-    match SSE_IDLE_TIMEOUT_MS.load(Ordering::Relaxed) {
-        0 => None,
-        value => Some(Duration::from_millis(value.max(1))),
-    }
-}
-
-pub(super) fn stream_idle_timeout_exceeded(idle_since: &mut Option<Instant>) -> bool {
-    let Some(timeout) = sse_idle_timeout() else {
-        return false;
-    };
-    let now = Instant::now();
-    match idle_since {
-        Some(since) => since.elapsed() >= timeout,
-        None => {
-            *idle_since = Some(now);
-            false
-        }
-    }
 }
 
 pub(super) fn set_sse_keepalive_interval_ms(interval_ms: u64) -> Result<u64, String> {
@@ -187,12 +176,12 @@ pub(super) fn stream_incomplete_message() -> String {
     "上游流中途中断（未正常结束）".to_string()
 }
 
-pub(super) fn stream_idle_timeout_message() -> String {
-    "上游流空闲超时".to_string()
-}
-
 pub(super) fn stream_reader_disconnected_message() -> String {
     "上游流读取失败（连接中断）".to_string()
+}
+
+pub(super) fn stream_reader_idle_timeout_message() -> String {
+    "上游流空闲超时".to_string()
 }
 
 pub(super) fn classify_upstream_stream_read_error(raw: &str) -> String {
@@ -226,7 +215,7 @@ pub(super) fn classify_upstream_stream_read_error(raw: &str) -> String {
 mod tests {
     use super::{
         classify_upstream_stream_read_error, stream_incomplete_message,
-        stream_reader_disconnected_message,
+        stream_reader_disconnected_message, stream_reader_idle_timeout_message,
     };
 
     #[test]
@@ -260,5 +249,6 @@ mod tests {
             stream_reader_disconnected_message(),
             "上游流读取失败（连接中断）"
         );
+        assert_eq!(stream_reader_idle_timeout_message(), "上游流空闲超时");
     }
 }

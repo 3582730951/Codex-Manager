@@ -1,5 +1,35 @@
 use super::*;
 use crate::gateway::{build_codex_compact_upstream_headers, CodexCompactUpstreamHeaderInput};
+use std::sync::{Mutex, MutexGuard};
+
+static HEADER_RUNTIME_MUTEX: Mutex<()> = Mutex::new(());
+
+fn header_runtime_guard() -> MutexGuard<'static, ()> {
+    HEADER_RUNTIME_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct GatewayHeaderRuntimeRestore {
+    originator: String,
+    residency_requirement: Option<String>,
+}
+
+impl GatewayHeaderRuntimeRestore {
+    fn capture() -> Self {
+        Self {
+            originator: crate::current_gateway_originator(),
+            residency_requirement: crate::current_gateway_residency_requirement(),
+        }
+    }
+}
+
+impl Drop for GatewayHeaderRuntimeRestore {
+    fn drop(&mut self) {
+        let _ = crate::set_gateway_originator(&self.originator);
+        let _ = crate::set_gateway_residency_requirement(self.residency_requirement.as_deref());
+    }
+}
 
 fn find_header(headers: &[(String, String)], name: &str) -> Option<String> {
     headers
@@ -158,6 +188,47 @@ fn codex_compact_header_profile_matches_remote_compact_shape() {
     );
     assert!(find_header(&headers, "Conversation_id").is_none());
     assert!(find_header(&headers, "x-codex-turn-state").is_none());
+}
+
+#[test]
+fn codex_header_profile_uses_dynamic_originator_and_residency_requirement() {
+    let _guard = header_runtime_guard();
+    let _restore = GatewayHeaderRuntimeRestore::capture();
+    crate::set_gateway_originator("codex_cli_rs_e2e").expect("set gateway originator");
+    crate::set_gateway_residency_requirement(Some("us"))
+        .expect("set gateway residency requirement");
+
+    let headers = build_codex_upstream_headers(CodexUpstreamHeaderInput {
+        auth_token: "token-dynamic",
+        account_id: None,
+        include_account_id: true,
+        include_openai_beta: true,
+        upstream_cookie: None,
+        incoming_session_id: None,
+        incoming_client_request_id: None,
+        incoming_subagent: None,
+        fallback_session_id: None,
+        incoming_turn_state: None,
+        include_turn_state: true,
+        incoming_conversation_id: None,
+        fallback_conversation_id: None,
+        include_conversation_id: true,
+        strip_session_affinity: false,
+        is_stream: true,
+        has_body: true,
+    });
+
+    assert_eq!(
+        find_header(&headers, "Originator").as_deref(),
+        Some("codex_cli_rs_e2e")
+    );
+    assert_eq!(
+        find_header(&headers, "x-openai-internal-codex-residency").as_deref(),
+        Some("us")
+    );
+    assert!(find_header(&headers, "User-Agent")
+        .as_deref()
+        .is_some_and(|value| value.contains("codex_cli_rs_e2e/0.101.0")));
 }
 
 #[test]

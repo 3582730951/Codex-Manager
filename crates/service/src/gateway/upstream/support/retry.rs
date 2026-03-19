@@ -99,7 +99,6 @@ where
                     &account.id,
                     super::super::super::CooldownReason::Network,
                 );
-                let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
             }
             log_gateway_result(Some(alt_url), status_code, Some(error_code));
             // 中文注释：alt 路径失败时若还有候选账号必须优先切换，

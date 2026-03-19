@@ -69,7 +69,6 @@ where
                     &account.id,
                     super::super::super::CooldownReason::Network,
                 );
-                let _ = super::super::super::clear_manual_preferred_account_if(&account.id);
             }
             log_gateway_result(Some(url), status_code, Some(error_code));
             // 中文注释：主链路首次请求失败不代表所有候选都失败，

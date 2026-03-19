@@ -30,8 +30,9 @@ mod passthrough;
 pub(crate) use anthropic::AnthropicSseReader;
 use common::{
     classify_upstream_stream_read_error, collector_output_text_trimmed,
-    mark_collector_terminal_success, sse_keepalive_interval, stream_idle_timeout_exceeded,
-    stream_idle_timeout_message, stream_incomplete_message, stream_reader_disconnected_message,
+    mark_collector_terminal_success, sse_keepalive_interval, stream_idle_timeout_reached,
+    stream_incomplete_message, stream_poll_timeout,
+    stream_reader_disconnected_message, stream_reader_idle_timeout_message,
 };
 pub(crate) use common::{
     PassthroughSseCollector, SseKeepAliveFrame, UpstreamSseFramePump, UpstreamSseFramePumpItem,
