@@ -1,3 +1,4 @@
+use codexmanager_core::auth::{DEFAULT_CLIENT_ID, DEFAULT_ISSUER};
 use codexmanager_core::rpc::types::JsonRpcRequest;
 use codexmanager_core::storage::{
     now_ts, Account, RequestLog, RequestTokenStat, Storage, UsageSnapshotRecord,
@@ -1150,6 +1151,31 @@ fn rpc_login_start_returns_url() {
     let login_id = result.get("loginId").and_then(|v| v.as_str()).unwrap();
     assert!(auth_url.contains("oauth/authorize"));
     assert!(!login_id.is_empty());
+}
+
+#[test]
+fn rpc_login_start_uses_default_oauth_values_when_env_is_blank() {
+    let _ctx = RpcTestContext::new("rpc-login-start-default-oauth");
+    let _issuer_guard = EnvGuard::set("CODEXMANAGER_ISSUER", "   ");
+    let _client_id_guard = EnvGuard::set("CODEXMANAGER_CLIENT_ID", "");
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+
+    let req = JsonRpcRequest {
+        id: 5,
+        method: "account/login/start".to_string(),
+        params: Some(serde_json::json!({"type": "chatgpt", "openBrowser": false})),
+    };
+    let json = serde_json::to_string(&req).expect("serialize");
+    let v = post_rpc(&server.addr, &json);
+    let result = v.get("result").expect("result");
+    let auth_url = result.get("authUrl").and_then(|v| v.as_str()).unwrap();
+    let issuer = result.get("issuer").and_then(|v| v.as_str()).unwrap();
+    let client_id = result.get("clientId").and_then(|v| v.as_str()).unwrap();
+
+    assert!(auth_url.starts_with("https://auth.openai.com/oauth/authorize?"));
+    assert!(auth_url.contains("client_id=app_EMoamEEZ73f0CkXaXp7hrann"));
+    assert_eq!(issuer, DEFAULT_ISSUER);
+    assert_eq!(client_id, DEFAULT_CLIENT_ID);
 }
 
 #[test]

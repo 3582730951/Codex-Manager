@@ -147,10 +147,8 @@ pub(crate) fn complete_login_with_redirect(
         .ok_or_else(|| "unknown login session".to_string())?;
 
     // 读取 OAuth 配置
-    let issuer =
-        std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string());
-    let client_id =
-        std::env::var("CODEXMANAGER_CLIENT_ID").unwrap_or_else(|_| DEFAULT_CLIENT_ID.to_string());
+    let issuer = crate::env_non_empty_or("CODEXMANAGER_ISSUER", DEFAULT_ISSUER);
+    let client_id = crate::env_non_empty_or("CODEXMANAGER_CLIENT_ID", DEFAULT_CLIENT_ID);
     let redirect_uri = redirect_uri
         .map(|value| value.to_string())
         .or_else(|| resolve_redirect_uri())

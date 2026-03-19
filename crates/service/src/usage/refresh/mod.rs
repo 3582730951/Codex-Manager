@@ -199,10 +199,8 @@ pub(crate) fn refresh_tokens_before_expiry_for_all_accounts() -> Result<(), Stri
         return Ok(());
     }
 
-    let issuer =
-        std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string());
-    let client_id =
-        std::env::var("CODEXMANAGER_CLIENT_ID").unwrap_or_else(|_| DEFAULT_CLIENT_ID.to_string());
+    let issuer = crate::env_non_empty_or("CODEXMANAGER_ISSUER", DEFAULT_ISSUER);
+    let client_id = crate::env_non_empty_or("CODEXMANAGER_CLIENT_ID", DEFAULT_CLIENT_ID);
     let mut refreshed = 0usize;
     let mut skipped = 0usize;
 
@@ -298,10 +296,8 @@ fn refresh_usage_for_token(
     account_cache: Option<&mut HashMap<String, Account>>,
 ) -> Result<UsageRefreshResult, String> {
     // 读取用量接口所需的基础配置
-    let issuer =
-        std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string());
-    let client_id =
-        std::env::var("CODEXMANAGER_CLIENT_ID").unwrap_or_else(|_| DEFAULT_CLIENT_ID.to_string());
+    let issuer = crate::env_non_empty_or("CODEXMANAGER_ISSUER", DEFAULT_ISSUER);
+    let client_id = crate::env_non_empty_or("CODEXMANAGER_CLIENT_ID", DEFAULT_CLIENT_ID);
     let base_url = std::env::var("CODEXMANAGER_USAGE_BASE_URL")
         .unwrap_or_else(|_| "https://chatgpt.com".to_string());
 

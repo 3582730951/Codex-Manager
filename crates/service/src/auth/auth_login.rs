@@ -17,10 +17,8 @@ pub(crate) fn login_start(
     workspace_id: Option<String>,
 ) -> Result<LoginStartResult, String> {
     // 读取登录相关配置
-    let issuer =
-        std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string());
-    let client_id =
-        std::env::var("CODEXMANAGER_CLIENT_ID").unwrap_or_else(|_| DEFAULT_CLIENT_ID.to_string());
+    let issuer = crate::env_non_empty_or("CODEXMANAGER_ISSUER", DEFAULT_ISSUER);
+    let client_id = crate::env_non_empty_or("CODEXMANAGER_CLIENT_ID", DEFAULT_CLIENT_ID);
     let originator = crate::gateway::current_originator();
     let mut warning = None;
     if login_type != "device" {

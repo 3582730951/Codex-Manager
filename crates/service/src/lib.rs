@@ -45,6 +45,7 @@ pub(crate) use requestlog::clear as requestlog_clear;
 pub(crate) use requestlog::list as requestlog_list;
 pub(crate) use requestlog::summary as requestlog_summary;
 pub(crate) use requestlog::today_summary as requestlog_today_summary;
+pub(crate) use runtime::env::env_non_empty_or;
 pub(crate) use runtime::lock_utils;
 pub use runtime::process_env;
 pub(crate) use runtime::reasoning_effort;

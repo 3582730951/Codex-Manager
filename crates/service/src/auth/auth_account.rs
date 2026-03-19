@@ -142,7 +142,7 @@ pub(crate) fn login_with_chatgpt_auth_tokens(
             .email
             .clone()
             .unwrap_or_else(|| resolved_scope_id.clone()),
-        issuer: std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string()),
+        issuer: crate::env_non_empty_or("CODEXMANAGER_ISSUER", DEFAULT_ISSUER),
         chatgpt_account_id: chatgpt_account_id.clone(),
         workspace_id: workspace_id.clone(),
         group_name: existing_account
@@ -207,10 +207,8 @@ pub(crate) fn read_current_account(refresh_token: bool) -> Result<AccountReadRes
 
     let mut token = token;
     if refresh_token && !token.refresh_token.trim().is_empty() {
-        let issuer =
-            std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string());
-        let client_id = std::env::var("CODEXMANAGER_CLIENT_ID")
-            .unwrap_or_else(|_| DEFAULT_CLIENT_ID.to_string());
+        let issuer = crate::env_non_empty_or("CODEXMANAGER_ISSUER", DEFAULT_ISSUER);
+        let client_id = crate::env_non_empty_or("CODEXMANAGER_CLIENT_ID", DEFAULT_CLIENT_ID);
         if let Err(err) =
             refresh_and_persist_access_token(&storage, &mut token, &issuer, &client_id)
         {
@@ -236,10 +234,8 @@ pub(crate) fn refresh_current_chatgpt_auth_tokens(
         return Err("current account does not have refresh_token".to_string());
     }
 
-    let issuer =
-        std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string());
-    let client_id =
-        std::env::var("CODEXMANAGER_CLIENT_ID").unwrap_or_else(|_| DEFAULT_CLIENT_ID.to_string());
+    let issuer = crate::env_non_empty_or("CODEXMANAGER_ISSUER", DEFAULT_ISSUER);
+    let client_id = crate::env_non_empty_or("CODEXMANAGER_CLIENT_ID", DEFAULT_CLIENT_ID);
     if let Err(err) = refresh_and_persist_access_token(&storage, &mut token, &issuer, &client_id) {
         let _ = mark_account_inactive_for_refresh_token_error(&storage, &account.id, &err);
         return Err(err);

@@ -362,8 +362,7 @@ fn import_single_item(
                 .filter(|v| !v.is_empty())
         })
         .unwrap_or_else(|| format!("导入账号{:04}", sequence));
-    let default_issuer =
-        std::env::var("CODEXMANAGER_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_string());
+    let default_issuer = crate::env_non_empty_or("CODEXMANAGER_ISSUER", DEFAULT_ISSUER);
     let issuer = meta
         .issuer
         .clone()
