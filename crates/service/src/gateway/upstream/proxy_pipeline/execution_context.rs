@@ -100,14 +100,17 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
     ) {
         let reason_text = match reason {
             candidates::CandidateSkipReason::Cooldown => "cooldown",
-            candidates::CandidateSkipReason::Inflight => "inflight",
         };
+        self.log_candidate_skip_reason(account_id, idx, reason_text);
+    }
+
+    pub(super) fn log_candidate_skip_reason(&self, account_id: &str, idx: usize, reason: &str) {
         super::super::super::trace_log::log_candidate_skip(
             self.trace_id,
             idx,
             self.candidate_count,
             account_id,
-            reason_text,
+            reason,
         );
     }
 

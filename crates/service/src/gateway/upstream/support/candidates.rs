@@ -7,7 +7,6 @@ const STALE_USAGE_SNAPSHOT_SECS: i64 = 30 * 60;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in super::super) enum CandidateSkipReason {
     Cooldown,
-    Inflight,
 }
 
 pub(crate) fn prepare_gateway_candidates(
@@ -32,27 +31,29 @@ pub(crate) fn prepare_gateway_candidates(
         .into_iter()
         .enumerate()
         .collect::<Vec<(usize, (Account, Token))>>();
-    indexed.sort_by(|(left_idx, (left_account, left_token)), (right_idx, (right_account, right_token))| {
-        let left_priority = candidate_priority(
-            storage,
-            left_account,
-            left_token,
-            usage_by_account.get(left_account.id.as_str()),
-            normalized_request_model.as_deref(),
-            now,
-        );
-        let right_priority = candidate_priority(
-            storage,
-            right_account,
-            right_token,
-            usage_by_account.get(right_account.id.as_str()),
-            normalized_request_model.as_deref(),
-            now,
-        );
-        left_priority
-            .cmp(&right_priority)
-            .then(left_idx.cmp(right_idx))
-    });
+    indexed.sort_by(
+        |(left_idx, (left_account, left_token)), (right_idx, (right_account, right_token))| {
+            let left_priority = candidate_priority(
+                storage,
+                left_account,
+                left_token,
+                usage_by_account.get(left_account.id.as_str()),
+                normalized_request_model.as_deref(),
+                now,
+            );
+            let right_priority = candidate_priority(
+                storage,
+                right_account,
+                right_token,
+                usage_by_account.get(right_account.id.as_str()),
+                normalized_request_model.as_deref(),
+                now,
+            );
+            left_priority
+                .cmp(&right_priority)
+                .then(left_idx.cmp(right_idx))
+        },
+    );
 
     Ok(indexed.into_iter().map(|(_, pair)| pair).collect())
 }
@@ -72,7 +73,7 @@ pub(in super::super) fn candidate_skip_reason_for_proxy(
     account_id: &str,
     idx: usize,
     _candidate_count: usize,
-    account_max_inflight: usize,
+    _account_max_inflight: usize,
 ) -> Option<CandidateSkipReason> {
     // 中文注释：当用户手动“切到当前”后，首候选应持续优先命中；
     // 仅在真实请求失败时由上游流程自动清除手动锁定，再回退常规轮转。
@@ -87,13 +88,6 @@ pub(in super::super) fn candidate_skip_reason_for_proxy(
     if super::super::super::is_account_in_cooldown(account_id) {
         super::super::super::record_gateway_failover_attempt();
         return Some(CandidateSkipReason::Cooldown);
-    }
-
-    if account_max_inflight > 0
-        && super::super::super::account_inflight_count(account_id) >= account_max_inflight
-    {
-        super::super::super::record_gateway_failover_attempt();
-        return Some(CandidateSkipReason::Inflight);
     }
 
     None
@@ -117,11 +111,13 @@ fn candidate_priority(
     request_model: Option<&str>,
     now: i64,
 ) -> CandidatePriority {
-    let request_feedback_rank = match super::super::super::request_feedback_for(&account.id, request_model) {
-        Some(super::super::super::AccountRequestFeedback::ModelIneligible) => 3,
-        Some(super::super::super::AccountRequestFeedback::QuotaRejected) => 2,
-        None => 0,
-    };
+    let request_feedback_rank =
+        match super::super::super::request_feedback_for(&account.id, request_model) {
+            Some(super::super::super::AccountRequestFeedback::ChallengeBlocked) => 1,
+            Some(super::super::super::AccountRequestFeedback::ModelIneligible) => 3,
+            Some(super::super::super::AccountRequestFeedback::QuotaRejected) => 2,
+            None => 0,
+        };
     let requires_model_override = request_model
         .zip(free_account_model_override(storage, account, token))
         .is_some_and(|(requested, override_model)| requested != override_model);
@@ -344,7 +340,12 @@ mod tests {
         let now = now_ts();
         for (id, sort, used_percent, captured_at) in [
             ("acc-missing", 0_i64, None, None),
-            ("acc-stale", 1_i64, Some(12.0), Some(now - (STALE_USAGE_SNAPSHOT_SECS + 60))),
+            (
+                "acc-stale",
+                1_i64,
+                Some(12.0),
+                Some(now - (STALE_USAGE_SNAPSHOT_SECS + 60)),
+            ),
             ("acc-fresh", 2_i64, Some(8.0), Some(now)),
         ] {
             storage
@@ -447,6 +448,64 @@ mod tests {
         }
 
         crate::gateway::record_model_ineligible_feedback("acc-a", "gpt-5.4");
+        let candidates = prepare_gateway_candidates(&storage, Some("gpt-5.4")).expect("candidates");
+        let ordered = candidates
+            .iter()
+            .map(|(account, _)| account.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ordered, vec!["acc-b", "acc-a"]);
+    }
+
+    #[test]
+    fn prepare_gateway_candidates_deprioritizes_recent_challenge_feedback() {
+        let _guard = candidate_support_test_guard();
+        let _db_path = EnvGuard::set("CODEXMANAGER_DB_PATH", "support-candidates-challenge");
+        crate::gateway::reload_runtime_config_from_env();
+        crate::gateway::clear_request_feedback_runtime_state_for_tests();
+        let storage = Storage::open_in_memory().expect("open");
+        storage.init().expect("init");
+        let now = now_ts();
+        for id in ["acc-a", "acc-b"] {
+            storage
+                .insert_account(&Account {
+                    id: id.to_string(),
+                    label: id.to_string(),
+                    issuer: "issuer".to_string(),
+                    chatgpt_account_id: None,
+                    workspace_id: None,
+                    group_name: None,
+                    sort: 0,
+                    status: "active".to_string(),
+                    created_at: now,
+                    updated_at: now,
+                })
+                .expect("insert account");
+            storage
+                .insert_token(&Token {
+                    account_id: id.to_string(),
+                    id_token: "id".to_string(),
+                    access_token: "access".to_string(),
+                    refresh_token: "refresh".to_string(),
+                    api_key_access_token: None,
+                    last_refresh: now,
+                })
+                .expect("insert token");
+            storage
+                .insert_usage_snapshot(&UsageSnapshotRecord {
+                    account_id: id.to_string(),
+                    used_percent: Some(10.0),
+                    window_minutes: Some(300),
+                    resets_at: None,
+                    secondary_used_percent: None,
+                    secondary_window_minutes: None,
+                    secondary_resets_at: None,
+                    credits_json: None,
+                    captured_at: now,
+                })
+                .expect("insert usage");
+        }
+
+        crate::gateway::record_challenge_blocked_feedback("acc-a");
         let candidates = prepare_gateway_candidates(&storage, Some("gpt-5.4")).expect("candidates");
         let ordered = candidates
             .iter()

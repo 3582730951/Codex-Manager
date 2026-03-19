@@ -15,6 +15,12 @@ static STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS: AtomicU64 =
     AtomicU64::new(DEFAULT_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS);
 static COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS: AtomicU64 =
     AtomicU64::new(DEFAULT_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS);
+static ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS);
+static STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: AtomicU64 =
+    AtomicU64::new(DEFAULT_STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS);
+static COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: AtomicU64 =
+    AtomicU64::new(DEFAULT_COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS);
 static TRACE_BODY_PREVIEW_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES);
 static FRONT_PROXY_MAX_BODY_BYTES: AtomicUsize =
@@ -54,8 +60,15 @@ const DEFAULT_CPA_NO_COOKIE_HEADER_MODE: bool = false;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = true;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 300;
-const DEFAULT_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 1_200;
-const DEFAULT_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 600;
+// 中文注释：/v1/responses 在当前 Docker/WSL 部署下真实响应常见会持续数秒到十几秒；
+// 过短的 gate wait 会把“正常排队”误判成 503。
+const DEFAULT_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: u64 = 2_000;
+// 中文注释：每个候选账号的 inflight 等待窗口需要覆盖一轮典型响应时长，
+// 否则在账号池较小、并发略高时会频繁打出 no_available_account。
+const DEFAULT_STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL: &str = "gpt-5.2";
@@ -66,6 +79,11 @@ const ENV_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS: &str =
     "CODEXMANAGER_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS";
 const ENV_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS: &str =
     "CODEXMANAGER_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS";
+const ENV_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: &str = "CODEXMANAGER_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS";
+const ENV_STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: &str =
+    "CODEXMANAGER_STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS";
+const ENV_COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS: &str =
+    "CODEXMANAGER_COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS";
 const ENV_TRACE_BODY_PREVIEW_MAX_BYTES: &str = "CODEXMANAGER_TRACE_BODY_PREVIEW_MAX_BYTES";
 const ENV_FRONT_PROXY_MAX_BODY_BYTES: &str = "CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES";
 const ENV_UPSTREAM_CONNECT_TIMEOUT_SECS: &str = "CODEXMANAGER_UPSTREAM_CONNECT_TIMEOUT_SECS";
@@ -240,6 +258,18 @@ pub(crate) fn request_gate_wait_timeout_for(path: &str, is_stream: bool) -> Dura
     Duration::from_millis(timeout_ms)
 }
 
+pub(crate) fn account_inflight_wait_timeout_for(path: &str, is_stream: bool) -> Duration {
+    ensure_runtime_config_loaded();
+    let timeout_ms = if is_compact_request_path(path) {
+        COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS.load(Ordering::Relaxed)
+    } else if is_stream {
+        STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS.load(Ordering::Relaxed)
+    } else {
+        ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS.load(Ordering::Relaxed)
+    };
+    Duration::from_millis(timeout_ms)
+}
+
 pub(crate) fn trace_body_preview_max_bytes() -> usize {
     ensure_runtime_config_loaded();
     TRACE_BODY_PREVIEW_MAX_BYTES.load(Ordering::Relaxed)
@@ -385,6 +415,27 @@ pub(super) fn reload_from_env() {
         env_u64_or(
             ENV_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS,
             DEFAULT_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS,
+        ),
+        Ordering::Relaxed,
+    );
+    ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS.store(
+        env_u64_or(
+            ENV_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS,
+            DEFAULT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS,
+        ),
+        Ordering::Relaxed,
+    );
+    STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS.store(
+        env_u64_or(
+            ENV_STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS,
+            DEFAULT_STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS,
+        ),
+        Ordering::Relaxed,
+    );
+    COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS.store(
+        env_u64_or(
+            ENV_COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS,
+            DEFAULT_COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS,
         ),
         Ordering::Relaxed,
     );

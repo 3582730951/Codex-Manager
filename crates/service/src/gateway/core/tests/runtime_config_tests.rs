@@ -43,6 +43,11 @@ fn reload_from_env_updates_timeout_and_cookie() {
     let _stream_timeout_guard = EnvGuard::set(ENV_UPSTREAM_STREAM_TIMEOUT_MS, "888");
     let _stream_gate_guard = EnvGuard::set(ENV_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS, "1111");
     let _compact_gate_guard = EnvGuard::set(ENV_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS, "555");
+    let _inflight_wait_guard = EnvGuard::set(ENV_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS, "222");
+    let _stream_inflight_wait_guard =
+        EnvGuard::set(ENV_STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS, "3333");
+    let _compact_inflight_wait_guard =
+        EnvGuard::set(ENV_COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS, "444");
     let _inflight_guard = EnvGuard::set(ENV_ACCOUNT_MAX_INFLIGHT, "4");
     let _cookie_guard = EnvGuard::set(ENV_UPSTREAM_COOKIE, "cookie=abc");
     let _cpa_mode_guard = EnvGuard::set(ENV_CPA_NO_COOKIE_HEADER_MODE, "1");
@@ -63,6 +68,14 @@ fn reload_from_env_updates_timeout_and_cookie() {
     assert_eq!(
         request_gate_wait_timeout_for("/v1/responses/compact", false),
         Duration::from_millis(555)
+    );
+    assert_eq!(
+        account_inflight_wait_timeout_for("/v1/responses", true),
+        Duration::from_millis(3333)
+    );
+    assert_eq!(
+        account_inflight_wait_timeout_for("/v1/responses/compact", false),
+        Duration::from_millis(444)
     );
     assert_eq!(account_max_inflight_limit(), 4);
     assert_eq!(upstream_cookie().as_deref(), Some("cookie=abc"));
@@ -88,6 +101,10 @@ fn reload_from_env_defaults_account_max_inflight_to_one() {
     let _stream_timeout_guard = EnvGuard::clear(ENV_UPSTREAM_STREAM_TIMEOUT_MS);
     let _stream_gate_guard = EnvGuard::clear(ENV_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS);
     let _compact_gate_guard = EnvGuard::clear(ENV_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS);
+    let _inflight_wait_guard = EnvGuard::clear(ENV_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS);
+    let _stream_inflight_wait_guard = EnvGuard::clear(ENV_STREAM_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS);
+    let _compact_inflight_wait_guard =
+        EnvGuard::clear(ENV_COMPACT_ACCOUNT_INFLIGHT_WAIT_TIMEOUT_MS);
 
     reload_from_env();
 
@@ -96,11 +113,19 @@ fn reload_from_env_defaults_account_max_inflight_to_one() {
     assert_eq!(current_upstream_stream_timeout_ms(), 300_000);
     assert_eq!(
         request_gate_wait_timeout_for("/v1/responses", true),
-        Duration::from_millis(1_200)
+        Duration::from_millis(10_000)
     );
     assert_eq!(
         request_gate_wait_timeout_for("/v1/responses/compact", false),
-        Duration::from_millis(600)
+        Duration::from_millis(2_000)
+    );
+    assert_eq!(
+        account_inflight_wait_timeout_for("/v1/responses", true),
+        Duration::from_millis(10_000)
+    );
+    assert_eq!(
+        account_inflight_wait_timeout_for("/v1/responses/compact", false),
+        Duration::from_millis(3_000)
     );
 }
 

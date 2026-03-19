@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 static ACCOUNT_INFLIGHT: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+static ACCOUNT_INFLIGHT_AVAILABLE: OnceLock<Condvar> = OnceLock::new();
 static GATEWAY_REQUEST_LABELS: OnceLock<Mutex<HashMap<GatewayRequestLabelKey, usize>>> =
     OnceLock::new();
 static GATEWAY_TOTAL_REQUESTS: AtomicUsize = AtomicUsize::new(0);
@@ -65,6 +66,11 @@ pub(crate) struct GatewayRequestGuard;
 pub(crate) struct RpcRequestGuard {
     started_at: Instant,
     failed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountInFlightAcquireError {
+    Poisoned,
 }
 
 impl Drop for GatewayRequestGuard {
@@ -363,6 +369,7 @@ impl Drop for AccountInFlightGuard {
                 map.remove(&self.account_id);
             }
         }
+        account_inflight_available().notify_all();
     }
 }
 
@@ -376,11 +383,55 @@ pub(crate) fn acquire_account_inflight(account_id: &str) -> AccountInFlightGuard
     }
 }
 
+pub(crate) fn wait_for_any_account_inflight_slot(
+    account_ids: &[String],
+    limit: usize,
+    timeout: Duration,
+) -> Result<bool, AccountInFlightAcquireError> {
+    if limit == 0 || account_ids.is_empty() {
+        return Ok(true);
+    }
+    let lock = ACCOUNT_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()));
+    let state = match lock.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::warn!("event=lock_poisoned lock=account_inflight action=skip_wait");
+            return Err(AccountInFlightAcquireError::Poisoned);
+        }
+    };
+    if account_ids
+        .iter()
+        .any(|account_id| state.get(account_id).copied().unwrap_or(0) < limit)
+    {
+        return Ok(true);
+    }
+    if timeout.is_zero() {
+        return Ok(false);
+    }
+    let wait_result = account_inflight_available().wait_timeout_while(state, timeout, |state| {
+        account_ids
+            .iter()
+            .all(|account_id| state.get(account_id).copied().unwrap_or(0) >= limit)
+    });
+    let Ok((state, _)) = wait_result else {
+        log::warn!("event=lock_poisoned lock=account_inflight action=skip_wait_timeout");
+        return Err(AccountInFlightAcquireError::Poisoned);
+    };
+    Ok(account_ids
+        .iter()
+        .any(|account_id| state.get(account_id).copied().unwrap_or(0) < limit))
+}
+
 #[cfg(test)]
 pub(crate) fn clear_account_inflight_for_tests() {
     let lock = ACCOUNT_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = crate::lock_utils::lock_recover(lock, "account_inflight");
     map.clear();
+    account_inflight_available().notify_all();
+}
+
+fn account_inflight_available() -> &'static Condvar {
+    ACCOUNT_INFLIGHT_AVAILABLE.get_or_init(Condvar::new)
 }
 
 fn atomic_dec_saturating(value: &AtomicUsize) {
@@ -406,4 +457,64 @@ fn is_db_busy_error(err: &str) -> bool {
     normalized.contains("database is locked")
         || normalized.contains("sqlite_busy")
         || normalized.contains("busy timeout")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        acquire_account_inflight, clear_account_inflight_for_tests,
+        wait_for_any_account_inflight_slot,
+    };
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::time::{Duration, Instant};
+
+    fn test_guard() -> MutexGuard<'static, ()> {
+        static TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_MUTEX
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("metrics test mutex")
+    }
+
+    #[test]
+    fn wait_for_any_account_inflight_slot_returns_false_on_timeout() {
+        let _guard = test_guard();
+        clear_account_inflight_for_tests();
+        let inflight_guard = acquire_account_inflight("acc-a");
+
+        let actual = wait_for_any_account_inflight_slot(
+            &[String::from("acc-a")],
+            1,
+            Duration::from_millis(20),
+        )
+        .expect("wait result");
+
+        drop(inflight_guard);
+        clear_account_inflight_for_tests();
+        assert!(!actual);
+    }
+
+    #[test]
+    fn wait_for_any_account_inflight_slot_wakes_after_release() {
+        let _guard = test_guard();
+        clear_account_inflight_for_tests();
+        let inflight_guard = acquire_account_inflight("acc-a");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            drop(inflight_guard);
+        });
+        let started_at = Instant::now();
+
+        let actual = wait_for_any_account_inflight_slot(
+            &[String::from("acc-a"), String::from("acc-b")],
+            1,
+            Duration::from_millis(200),
+        )
+        .expect("wait result");
+
+        releaser.join().expect("join releaser");
+        clear_account_inflight_for_tests();
+        assert!(actual);
+        assert!(started_at.elapsed() >= Duration::from_millis(20));
+    }
 }
