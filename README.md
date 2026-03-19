@@ -4,13 +4,19 @@
 
 <h1 align="center">CodexManager</h1>
 
-<p align="center">本地桌面端 + 服务进程的 Codex 账号池管理器</p>
+<p align="center">本地桌面端 + 服务进程的 Codex 账号管理器+网关转发</p>
 
 <p align="center">
   <a href="README.en.md">English</a>
 </p>
 
 本地桌面端 + 服务进程的 Codex 账号池管理器，用于统一管理账号、用量与平台 Key，并提供本地网关能力。
+
+## 源码说明：
+> 本产品完全由本人指挥+AI打造 Codex（98%） Gemini (2%) 如果在使用过程中产生问题请友好交流，因为开源只是觉得有人能用的上，基本功能也没什么问题，不喜勿喷。
+> 其次是本人没有足够的环境来验证每个包都有没有问题，本人也要上班(我只是个穷逼买不起mac之类的)，本人只保证win的桌面端的可用性，如果其他端有问题，请在交流群反馈或者在充分测试后提交Issues，有时间我自会处理
+> 最后感谢各位使用者在交流群反馈的各个平台的问题和参与的部分测试。
+
 
 ## 免责声明
 
@@ -147,6 +153,6 @@
 - 公众号：七线牛马
 - 微信： ProsperGao
 
-- 交流圈：
+- 交流群：答案是项目名：CodexManager
 
   <img src="assets/images/qq_group.jpg" alt="交流群二维码" width="280" />

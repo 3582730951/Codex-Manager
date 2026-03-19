@@ -12,6 +12,12 @@
 
 A local desktop + service toolkit for managing Codex-compatible accounts, usage, platform keys, and a built-in local gateway.
 
+## Source Code Description:
+> This product is completely by my command + AI to build Codex (98%) Gemini (2%) If the use of the process of generating problems please friendly exchanges, because the open source just think that someone can use, the basic function is no problem, do not like do not spray.
+> Secondly, I do not have enough environment to verify that each package has no problem, I have to go to work (I'm just a poor bastard can not afford to buy macs and so on), I only guarantee the availability of Win desktop, if there are problems with the other end, please feedback in the exchange group or submit the Issues after sufficient testing, I will deal with it when I have time.
+> Finally, I would like to thank all the users in the A-flow group for their feedback on the various platforms and their participation in some of the tests. 
+
+
 ## Disclaimer
 
 - This project is for learning and development purposes only.
