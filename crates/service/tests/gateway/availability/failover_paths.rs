@@ -1,5 +1,13 @@
 use super::*;
 
+fn set_explicit_fallback(value: Option<&str>) {
+    match value {
+        Some(value) => std::env::set_var("CODEXMANAGER_UPSTREAM_FALLBACK_BASE_URL", value),
+        None => std::env::remove_var("CODEXMANAGER_UPSTREAM_FALLBACK_BASE_URL"),
+    }
+    crate::gateway::reload_runtime_config_from_env();
+}
+
 #[test]
 fn failover_on_missing_usage() {
     let storage = Storage::open_in_memory().expect("open");
@@ -110,6 +118,7 @@ fn normalize_models_path_keeps_existing_query_string() {
 #[test]
 fn models_path_does_not_try_openai_fallback() {
     let content_type = HeaderValue::from_str("text/html; charset=utf-8").ok();
+    set_explicit_fallback(Some("https://api.openai.com/v1"));
     assert!(!should_try_openai_fallback(
         "https://chatgpt.com/backend-api/codex",
         "/v1/models",
@@ -120,10 +129,19 @@ fn models_path_does_not_try_openai_fallback() {
         "/v1/responses",
         content_type.as_ref()
     ));
+    set_explicit_fallback(None);
 }
 
 #[test]
 fn status_fallback_only_triggers_for_responses_path() {
+    set_explicit_fallback(None);
+    assert!(!should_try_openai_fallback_by_status(
+        "https://chatgpt.com/backend-api/codex",
+        "/v1/responses",
+        429
+    ));
+
+    set_explicit_fallback(Some("https://api.openai.com/v1"));
     assert!(!should_try_openai_fallback_by_status(
         "https://chatgpt.com/backend-api/codex",
         "/v1/chat/completions",
@@ -144,4 +162,5 @@ fn status_fallback_only_triggers_for_responses_path() {
         "/v1/chat/completions",
         403
     ));
+    set_explicit_fallback(None);
 }

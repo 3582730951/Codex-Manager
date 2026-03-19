@@ -44,6 +44,15 @@ pub(in super::super) fn resolve_upstream_fallback_base_url(primary_base: &str) -
     fallback.filter(|value| !value.eq_ignore_ascii_case(primary_base.trim()))
 }
 
+pub(in super::super) fn is_upstream_fallback_explicitly_configured() -> bool {
+    ensure_config_loaded();
+    crate::lock_utils::read_recover(
+        upstream_fallback_base_url_cell(),
+        "upstream_fallback_base_url",
+    )
+    .is_some()
+}
+
 pub(in super::super) fn is_openai_api_base(base: &str) -> bool {
     let normalized = base.trim().to_ascii_lowercase();
     normalized.contains("api.openai.com/v1")
@@ -70,6 +79,12 @@ pub(in super::super) fn should_try_openai_fallback(
         // 其余路径保持原有行为，避免扩大 fallback 面。
         return false;
     }
+    if is_responses_path && !is_upstream_fallback_explicitly_configured() {
+        // 中文注释：/v1/responses 的默认 ChatGPT -> OpenAI 隐式 fallback
+        // 很容易在受限 API key 上直接变成 `401 Missing scopes: api.responses.write`，
+        // 反而把原始的 429/403 根因掩盖掉。这里改成显式配置后才允许启用。
+        return false;
+    }
     let Some(content_type) = content_type else {
         return false;
     };
@@ -91,6 +106,9 @@ pub(in super::super) fn should_try_openai_fallback_by_status(
     }
     let is_responses_path = request_path.starts_with("/v1/responses");
     if !is_responses_path {
+        return false;
+    }
+    if !is_upstream_fallback_explicitly_configured() {
         return false;
     }
     if status_code == 429 {
