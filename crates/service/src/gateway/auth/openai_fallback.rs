@@ -31,12 +31,16 @@ fn body_has_encrypted_content_hint(body: &[u8]) -> bool {
         .is_some_and(|text| text.contains("\"encrypted_content\""))
 }
 
-fn strip_encrypted_content_value(value: &mut Value) -> bool {
+fn strip_encrypted_content_value(value: &mut Value, preserve_input_items: bool) -> bool {
     match value {
         Value::Object(map) => {
-            let mut changed = map.remove("encrypted_content").is_some();
-            for v in map.values_mut() {
-                if strip_encrypted_content_value(v) {
+            let mut changed = if preserve_input_items {
+                false
+            } else {
+                map.remove("encrypted_content").is_some()
+            };
+            for (key, v) in map.iter_mut() {
+                if strip_encrypted_content_value(v, preserve_input_items || key == "input") {
                     changed = true;
                 }
             }
@@ -45,7 +49,7 @@ fn strip_encrypted_content_value(value: &mut Value) -> bool {
         Value::Array(items) => {
             let mut changed = false;
             for item in items.iter_mut() {
-                if strip_encrypted_content_value(item) {
+                if strip_encrypted_content_value(item, preserve_input_items) {
                     changed = true;
                 }
             }
@@ -57,7 +61,7 @@ fn strip_encrypted_content_value(value: &mut Value) -> bool {
 
 fn strip_encrypted_content_from_body(body: &[u8]) -> Option<Vec<u8>> {
     let mut value: Value = serde_json::from_slice(body).ok()?;
-    if !strip_encrypted_content_value(&mut value) {
+    if !strip_encrypted_content_value(&mut value, false) {
         return None;
     }
     serde_json::to_vec(&value).ok()

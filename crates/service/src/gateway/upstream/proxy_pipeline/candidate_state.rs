@@ -181,4 +181,47 @@ mod tests {
             Some("gpt-5.2")
         );
     }
+
+    #[test]
+    fn body_for_attempt_keeps_input_item_encrypted_content_when_stripping_affinity() {
+        let mut state = CandidateExecutionState::default();
+        let body = Bytes::from(
+            serde_json::to_vec(&serde_json::json!({
+                "model": "gpt-5.4",
+                "encrypted_content": "top-level",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{ "type": "input_text", "text": "hello" }]
+                    },
+                    {
+                        "type": "compaction",
+                        "encrypted_content": "keep-me"
+                    }
+                ]
+            }))
+            .expect("serialize body"),
+        );
+        let setup = super::super::request_setup::UpstreamRequestSetup {
+            upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
+            upstream_fallback_base: None,
+            url: "https://chatgpt.com/backend-api/codex/responses".to_string(),
+            url_alt: None,
+            upstream_cookie: None,
+            candidate_count: 1,
+            account_max_inflight: 1,
+            anthropic_has_prompt_cache_key: false,
+            has_sticky_fallback_session: false,
+            has_sticky_fallback_conversation: false,
+            has_body_encrypted_content: true,
+        };
+
+        let actual = state.body_for_attempt("/v1/responses", &body, true, &setup, None);
+        let value: serde_json::Value =
+            serde_json::from_slice(actual.as_ref()).expect("parse stripped body");
+
+        assert!(value.get("encrypted_content").is_none());
+        assert_eq!(value["input"][1]["encrypted_content"], "keep-me");
+    }
 }
