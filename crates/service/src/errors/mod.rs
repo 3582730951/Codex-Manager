@@ -23,6 +23,7 @@ pub(crate) enum ErrorCode {
     UpstreamRateLimited,
     UpstreamNotFound,
     UpstreamNonSuccess,
+    FallbackNotConfigured,
     NoAvailableAccount,
     CandidateResolveFailed,
     ClientCancelled,
@@ -51,6 +52,7 @@ impl ErrorCode {
             Self::UpstreamRateLimited => "upstream_rate_limited",
             Self::UpstreamNotFound => "upstream_not_found",
             Self::UpstreamNonSuccess => "upstream_non_success",
+            Self::FallbackNotConfigured => "fallback_not_configured",
             Self::NoAvailableAccount => "no_available_account",
             Self::CandidateResolveFailed => "candidate_resolve_failed",
             Self::ClientCancelled => "client_cancelled",
@@ -79,6 +81,12 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized.starts_with("backend proxy error:") {
         return ErrorCode::BackendProxyError;
     }
+    if normalized.starts_with("upstream blocked by cloudflare/waf")
+        || normalized.starts_with("upstream challenge blocked")
+        || normalized.contains("html challenge")
+    {
+        return ErrorCode::UpstreamChallengeBlocked;
+    }
     if normalized.starts_with("build response failed:") {
         return ErrorCode::BuildResponseFailed;
     }
@@ -88,7 +96,10 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     if normalized.contains("queue is saturated") || normalized.contains("workers are unavailable") {
         return ErrorCode::QueueShed;
     }
-    if normalized == "request gate rejected" {
+    if normalized == "request gate rejected"
+        || normalized.starts_with("request gate rejected:")
+        || normalized == "gate_rejected_timeout"
+    {
         return ErrorCode::GateRejected;
     }
     if normalized == "upstream total timeout exceeded" {
@@ -110,11 +121,6 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
         || normalized.contains("连接超时")
     {
         return ErrorCode::UpstreamTimeout;
-    }
-    if normalized.starts_with("upstream blocked by cloudflare/waf")
-        || normalized == "upstream challenge blocked"
-    {
-        return ErrorCode::UpstreamChallengeBlocked;
     }
     if normalized.contains("cloudflare/waf")
         || normalized.contains("安全验证拦截")
@@ -146,6 +152,9 @@ pub(crate) fn classify_message(message: &str) -> ErrorCode {
     }
     if normalized == "upstream non-success" {
         return ErrorCode::UpstreamNonSuccess;
+    }
+    if normalized == "fallback_not_configured" {
+        return ErrorCode::FallbackNotConfigured;
     }
     if normalized == "no available account" {
         return ErrorCode::NoAvailableAccount;
@@ -258,6 +267,18 @@ mod tests {
         assert_eq!(
             classify_message("claude request body must be an object"),
             ErrorCode::InvalidRequestPayload
+        );
+        assert_eq!(
+            classify_message("request gate rejected: gate_wait_timeout"),
+            ErrorCode::GateRejected
+        );
+        assert_eq!(
+            classify_message("fallback_not_configured"),
+            ErrorCode::FallbackNotConfigured
+        );
+        assert_eq!(
+            classify_message("response conversion failed: upstream returned html challenge"),
+            ErrorCode::UpstreamChallengeBlocked
         );
         assert_eq!(classify_message("上游请求超时"), ErrorCode::UpstreamTimeout);
         assert_eq!(

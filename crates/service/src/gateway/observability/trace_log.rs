@@ -294,17 +294,26 @@ pub(crate) fn log_request_body_preview(trace_id: &str, body: &[u8]) {
     let _ = (trace_id, body, super::trace_body_preview_max_bytes());
 }
 
-pub(crate) fn log_request_gate_wait(trace_id: &str, key_id: &str, path: &str, model: Option<&str>) {
+pub(crate) fn log_request_gate_wait(
+    trace_id: &str,
+    key_id: &str,
+    account_id: &str,
+    path: &str,
+    model: Option<&str>,
+    wait_timeout_ms: u128,
+) {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis())
         .unwrap_or(0);
     let line = format!(
-        "ts={millis} event=REQUEST_GATE_WAIT trace_id={} key_id={} path={} model={}",
+        "ts={millis} event=REQUEST_GATE_WAIT trace_id={} key_id={} account_id={} path={} model={} wait_timeout_ms={}",
         sanitize_text(trace_id),
         sanitize_text(key_id),
+        sanitize_text(account_id),
         sanitize_text(path),
         sanitize_text(model.unwrap_or("-")),
+        wait_timeout_ms,
     );
     append_trace_line(line, false);
 }
@@ -312,6 +321,7 @@ pub(crate) fn log_request_gate_wait(trace_id: &str, key_id: &str, path: &str, mo
 pub(crate) fn log_request_gate_acquired(
     trace_id: &str,
     key_id: &str,
+    account_id: &str,
     path: &str,
     model: Option<&str>,
     wait_ms: u128,
@@ -321,9 +331,10 @@ pub(crate) fn log_request_gate_acquired(
         .map(|value| value.as_millis())
         .unwrap_or(0);
     let line = format!(
-        "ts={millis} event=REQUEST_GATE_ACQUIRED trace_id={} key_id={} path={} model={} wait_ms={}",
+        "ts={millis} event=REQUEST_GATE_ACQUIRED trace_id={} key_id={} account_id={} path={} model={} wait_ms={}",
         sanitize_text(trace_id),
         sanitize_text(key_id),
+        sanitize_text(account_id),
         sanitize_text(path),
         sanitize_text(model.unwrap_or("-")),
         wait_ms,
@@ -331,14 +342,15 @@ pub(crate) fn log_request_gate_acquired(
     append_trace_line(line, false);
 }
 
-pub(crate) fn log_request_gate_skip(trace_id: &str, reason: &str) {
+pub(crate) fn log_request_gate_skip(trace_id: &str, account_id: &str, reason: &str) {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis())
         .unwrap_or(0);
     let line = format!(
-        "ts={millis} event=REQUEST_GATE_SKIP trace_id={} reason={}",
+        "ts={millis} event=REQUEST_GATE_SKIP trace_id={} account_id={} reason={}",
         sanitize_text(trace_id),
+        sanitize_text(account_id),
         sanitize_text(reason),
     );
     append_trace_line(line, false);

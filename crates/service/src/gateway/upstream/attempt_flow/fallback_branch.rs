@@ -16,6 +16,20 @@ fn should_failover_after_fallback_non_success(status: u16, has_more_candidates: 
     matches!(status, 401 | 403 | 404 | 408 | 409 | 429)
 }
 
+fn should_trigger_openai_fallback(
+    upstream_base: &str,
+    path: &str,
+    status: reqwest::StatusCode,
+    upstream_content_type: Option<&HeaderValue>,
+) -> bool {
+    super::super::super::should_try_openai_fallback(upstream_base, path, upstream_content_type)
+        || super::super::super::should_try_openai_fallback_by_status(
+            upstream_base,
+            path,
+            status.as_u16(),
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_openai_fallback_branch<F>(
     client: &reqwest::blocking::Client,
@@ -42,22 +56,24 @@ pub(super) fn handle_openai_fallback_branch<F>(
 where
     F: FnMut(Option<&str>, u16, Option<&str>),
 {
-    if !allow_openai_fallback || fallback_base.is_none() {
+    if !allow_openai_fallback {
         return FallbackBranchResult::NotTriggered;
     }
 
     let should_fallback =
-        super::super::super::should_try_openai_fallback(upstream_base, path, upstream_content_type)
-            || super::super::super::should_try_openai_fallback_by_status(
-                upstream_base,
-                path,
-                status.as_u16(),
-            );
+        should_trigger_openai_fallback(upstream_base, path, status, upstream_content_type);
     if !should_fallback {
         return FallbackBranchResult::NotTriggered;
     }
 
-    let fallback_base = fallback_base.expect("fallback base already checked");
+    let Some(fallback_base) = fallback_base else {
+        log_gateway_result(
+            Some(upstream_base),
+            status.as_u16(),
+            Some("fallback_not_configured"),
+        );
+        return FallbackBranchResult::NotTriggered;
+    };
     if debug {
         log::warn!(
             "event=gateway_upstream_fallback path={} status={} account_id={} from={} to={}",

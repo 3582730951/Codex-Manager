@@ -110,10 +110,14 @@ impl Drop for RequestGateGuard {
     }
 }
 
-fn gate_key(key_id: &str, path: &str, model: Option<&str>) -> String {
+fn gate_key(key_id: &str, account_id: Option<&str>, path: &str, model: Option<&str>) -> String {
     format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}",
         key_id.trim(),
+        account_id
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("-"),
         path.trim(),
         model
             .map(str::trim)
@@ -124,6 +128,7 @@ fn gate_key(key_id: &str, path: &str, model: Option<&str>) -> String {
 
 pub(crate) fn request_gate_lock(
     key_id: &str,
+    account_id: Option<&str>,
     path: &str,
     model: Option<&str>,
 ) -> Arc<RequestGateLock> {
@@ -133,7 +138,7 @@ pub(crate) fn request_gate_lock(
     maybe_cleanup_request_gate_locks(&mut table, now);
     let entry = table
         .entries
-        .entry(gate_key(key_id, path, model))
+        .entry(gate_key(key_id, account_id, path, model))
         .or_insert_with(|| RequestGateLockEntry {
             lock: Arc::new(RequestGateLock::new()),
             last_seen_at: now,

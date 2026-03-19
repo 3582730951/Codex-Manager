@@ -11,6 +11,10 @@ static UPSTREAM_CLIENT_POOL: OnceLock<RwLock<UpstreamClientPool>> = OnceLock::ne
 static RUNTIME_CONFIG_LOADED: OnceLock<()> = OnceLock::new();
 static REQUEST_GATE_WAIT_TIMEOUT_MS: AtomicU64 =
     AtomicU64::new(DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS);
+static STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS: AtomicU64 =
+    AtomicU64::new(DEFAULT_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS);
+static COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS: AtomicU64 =
+    AtomicU64::new(DEFAULT_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS);
 static TRACE_BODY_PREVIEW_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES);
 static FRONT_PROXY_MAX_BODY_BYTES: AtomicUsize =
@@ -50,12 +54,18 @@ const DEFAULT_CPA_NO_COOKIE_HEADER_MODE: bool = false;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = true;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 300;
+const DEFAULT_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 1_200;
+const DEFAULT_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 600;
 const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
 const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL: &str = "gpt-5.2";
 const MAX_UPSTREAM_PROXY_POOL_SIZE: usize = 5;
 
 const ENV_REQUEST_GATE_WAIT_TIMEOUT_MS: &str = "CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS";
+const ENV_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS: &str =
+    "CODEXMANAGER_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS";
+const ENV_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS: &str =
+    "CODEXMANAGER_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS";
 const ENV_TRACE_BODY_PREVIEW_MAX_BYTES: &str = "CODEXMANAGER_TRACE_BODY_PREVIEW_MAX_BYTES";
 const ENV_FRONT_PROXY_MAX_BODY_BYTES: &str = "CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES";
 const ENV_UPSTREAM_CONNECT_TIMEOUT_SECS: &str = "CODEXMANAGER_UPSTREAM_CONNECT_TIMEOUT_SECS";
@@ -218,9 +228,16 @@ pub(super) fn set_cpa_no_cookie_header_mode_enabled(enabled: bool) {
     CPA_NO_COOKIE_HEADER_MODE.store(enabled, Ordering::Relaxed);
 }
 
-pub(crate) fn request_gate_wait_timeout() -> Duration {
+pub(crate) fn request_gate_wait_timeout_for(path: &str, is_stream: bool) -> Duration {
     ensure_runtime_config_loaded();
-    Duration::from_millis(REQUEST_GATE_WAIT_TIMEOUT_MS.load(Ordering::Relaxed))
+    let timeout_ms = if is_compact_request_path(path) {
+        COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS.load(Ordering::Relaxed)
+    } else if is_stream {
+        STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS.load(Ordering::Relaxed)
+    } else {
+        REQUEST_GATE_WAIT_TIMEOUT_MS.load(Ordering::Relaxed)
+    };
+    Duration::from_millis(timeout_ms)
 }
 
 pub(crate) fn trace_body_preview_max_bytes() -> usize {
@@ -354,6 +371,20 @@ pub(super) fn reload_from_env() {
         env_u64_or(
             ENV_REQUEST_GATE_WAIT_TIMEOUT_MS,
             DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS,
+        ),
+        Ordering::Relaxed,
+    );
+    STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS.store(
+        env_u64_or(
+            ENV_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS,
+            DEFAULT_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS,
+        ),
+        Ordering::Relaxed,
+    );
+    COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS.store(
+        env_u64_or(
+            ENV_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS,
+            DEFAULT_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS,
         ),
         Ordering::Relaxed,
     );
@@ -521,6 +552,10 @@ fn refresh_upstream_clients_from_runtime_config() {
     let mut pool_lock =
         crate::lock_utils::write_recover(upstream_client_pool_lock(), "upstream_client_pool");
     *pool_lock = pool;
+}
+
+fn is_compact_request_path(path: &str) -> bool {
+    path == "/v1/responses/compact" || path.starts_with("/v1/responses/compact?")
 }
 
 fn build_upstream_client_pool() -> UpstreamClientPool {

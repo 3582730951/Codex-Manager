@@ -12,6 +12,7 @@ use super::request_setup::UpstreamRequestSetup;
 #[derive(Default)]
 pub(super) struct CandidateAttemptTrace {
     pub(super) last_attempt_url: Option<String>,
+    pub(super) last_attempt_status_code: Option<u16>,
     pub(super) last_attempt_error: Option<String>,
 }
 
@@ -76,20 +77,27 @@ pub(super) fn run_candidate_attempt(
     let gate_guard = super::request_gate::acquire_request_gate(
         context.trace_id(),
         context.key_id(),
+        account.id.as_str(),
         path,
         context.model_for_log(),
+        upstream_is_stream,
         request_deadline,
     );
     if gate_guard.is_none() {
+        trace.last_attempt_status_code = Some(503);
+        trace.last_attempt_error = Some("gate_rejected_timeout".to_string());
         if super::super::support::deadline::is_expired(request_deadline) {
             return CandidateUpstreamDecision::Terminal {
                 status_code: 504,
                 message: "upstream total timeout exceeded".to_string(),
             };
         }
+        if has_more_candidates {
+            return CandidateUpstreamDecision::Failover;
+        }
         return CandidateUpstreamDecision::Terminal {
             status_code: 503,
-            message: "request gate rejected".to_string(),
+            message: "request gate rejected: gate_wait_timeout".to_string(),
         };
     }
 
@@ -117,6 +125,7 @@ pub(super) fn run_candidate_attempt(
         has_more_candidates,
         |upstream_url: Option<&str>, status_code, error: Option<&str>| {
             trace.last_attempt_url = upstream_url.map(str::to_string);
+            trace.last_attempt_status_code = Some(status_code);
             trace.last_attempt_error = error.map(str::to_string);
             if should_record_route_quality_penalty(error) {
                 super::super::super::record_route_quality(&account.id, status_code);

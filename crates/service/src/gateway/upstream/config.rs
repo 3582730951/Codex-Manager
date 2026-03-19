@@ -2,10 +2,12 @@ use reqwest::header::HeaderValue;
 use std::sync::{OnceLock, RwLock};
 
 const ENV_UPSTREAM_BASE_URL: &str = "CODEXMANAGER_UPSTREAM_BASE_URL";
+const ENV_UPSTREAM_FALLBACK_BASE_URL: &str = "CODEXMANAGER_UPSTREAM_FALLBACK_BASE_URL";
 const DEFAULT_UPSTREAM_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 static CONFIG_LOADED: OnceLock<()> = OnceLock::new();
 static UPSTREAM_BASE_URL: OnceLock<RwLock<String>> = OnceLock::new();
+static UPSTREAM_FALLBACK_BASE_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 
 pub(in super::super) fn normalize_upstream_base_url(base: &str) -> String {
     let mut normalized = base.trim().trim_end_matches('/').to_string();
@@ -24,8 +26,17 @@ pub(in super::super) fn resolve_upstream_base_url() -> String {
     crate::lock_utils::read_recover(upstream_base_url_cell(), "upstream_base_url").clone()
 }
 
-pub(in super::super) fn resolve_upstream_fallback_base_url(_primary_base: &str) -> Option<String> {
-    None
+pub(in super::super) fn resolve_upstream_fallback_base_url(primary_base: &str) -> Option<String> {
+    ensure_config_loaded();
+    if is_openai_api_base(primary_base) {
+        return None;
+    }
+    let fallback = crate::lock_utils::read_recover(
+        upstream_fallback_base_url_cell(),
+        "upstream_fallback_base_url",
+    )
+    .clone();
+    fallback.filter(|value| !value.eq_ignore_ascii_case(primary_base.trim()))
 }
 
 pub(in super::super) fn is_openai_api_base(base: &str) -> bool {
@@ -95,6 +106,15 @@ pub(in super::super) fn reload_from_env() {
     let mut cached_base =
         crate::lock_utils::write_recover(upstream_base_url_cell(), "upstream_base_url");
     *cached_base = base;
+    drop(cached_base);
+
+    let fallback = env_non_empty(ENV_UPSTREAM_FALLBACK_BASE_URL)
+        .map(|value| normalize_upstream_base_url(&value));
+    let mut cached_fallback = crate::lock_utils::write_recover(
+        upstream_fallback_base_url_cell(),
+        "upstream_fallback_base_url",
+    );
+    *cached_fallback = fallback;
 }
 
 fn ensure_config_loaded() {
@@ -103,6 +123,10 @@ fn ensure_config_loaded() {
 
 fn upstream_base_url_cell() -> &'static RwLock<String> {
     UPSTREAM_BASE_URL.get_or_init(|| RwLock::new(DEFAULT_UPSTREAM_BASE_URL.to_string()))
+}
+
+fn upstream_fallback_base_url_cell() -> &'static RwLock<Option<String>> {
+    UPSTREAM_FALLBACK_BASE_URL.get_or_init(|| RwLock::new(None))
 }
 
 fn env_non_empty(name: &str) -> Option<String> {

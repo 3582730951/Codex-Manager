@@ -9,6 +9,7 @@
 - `chat_tools_hit_probe.ps1`
 - `chat_tools_hit_probe.cmd`
 - `codex_stream_probe.ps1`
+- `docker_gateway_probe.sh`
 - `gateway_regression_suite.ps1`
 
 特点：
@@ -33,14 +34,19 @@
 
 1. 改脚本参数或流程：先跑对应 `.test.ps1`
 2. 改协议适配或转发：再跑 `gateway_regression_suite.ps1`
-3. 改 tools/tool_calls：至少补跑 `chat_tools_hit_probe.ps1` 与 `-Stream`
-4. 改 responses/chat stream：补跑 `codex_stream_probe.ps1`
+3. 改 Docker / WSL 部署链路：补跑 `docker_gateway_probe.sh`
+4. 改 tools/tool_calls：至少补跑 `chat_tools_hit_probe.ps1` 与 `-Stream`
+5. 改 responses/chat stream：补跑 `codex_stream_probe.ps1`
 
 ## 示例
 
 ```powershell
 pwsh -NoLogo -NoProfile -File scripts/tests/gateway_regression_suite.ps1 `
   -Base http://localhost:48760 -ApiKey <key> -Model gpt-5.3-codex
+```
+
+```bash
+./scripts/tests/docker_gateway_probe.sh --rebuild
 ```
 
 ## 维护约定

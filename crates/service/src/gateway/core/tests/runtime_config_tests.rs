@@ -41,6 +41,8 @@ fn reload_from_env_updates_timeout_and_cookie() {
     let _guard = test_guard();
     let _timeout_guard = EnvGuard::set(ENV_UPSTREAM_TOTAL_TIMEOUT_MS, "777");
     let _stream_timeout_guard = EnvGuard::set(ENV_UPSTREAM_STREAM_TIMEOUT_MS, "888");
+    let _stream_gate_guard = EnvGuard::set(ENV_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS, "1111");
+    let _compact_gate_guard = EnvGuard::set(ENV_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS, "555");
     let _inflight_guard = EnvGuard::set(ENV_ACCOUNT_MAX_INFLIGHT, "4");
     let _cookie_guard = EnvGuard::set(ENV_UPSTREAM_COOKIE, "cookie=abc");
     let _cpa_mode_guard = EnvGuard::set(ENV_CPA_NO_COOKIE_HEADER_MODE, "1");
@@ -54,6 +56,14 @@ fn reload_from_env_updates_timeout_and_cookie() {
 
     assert_eq!(upstream_total_timeout(), Some(Duration::from_millis(777)));
     assert_eq!(upstream_stream_timeout(), Some(Duration::from_millis(888)));
+    assert_eq!(
+        request_gate_wait_timeout_for("/v1/responses", true),
+        Duration::from_millis(1111)
+    );
+    assert_eq!(
+        request_gate_wait_timeout_for("/v1/responses/compact", false),
+        Duration::from_millis(555)
+    );
     assert_eq!(account_max_inflight_limit(), 4);
     assert_eq!(upstream_cookie().as_deref(), Some("cookie=abc"));
     assert!(cpa_no_cookie_header_mode_enabled());
@@ -76,12 +86,22 @@ fn reload_from_env_defaults_account_max_inflight_to_one() {
     let _guard = EnvGuard::clear(ENV_ACCOUNT_MAX_INFLIGHT);
     let _request_compression_guard = EnvGuard::clear(ENV_ENABLE_REQUEST_COMPRESSION);
     let _stream_timeout_guard = EnvGuard::clear(ENV_UPSTREAM_STREAM_TIMEOUT_MS);
+    let _stream_gate_guard = EnvGuard::clear(ENV_STREAM_REQUEST_GATE_WAIT_TIMEOUT_MS);
+    let _compact_gate_guard = EnvGuard::clear(ENV_COMPACT_REQUEST_GATE_WAIT_TIMEOUT_MS);
 
     reload_from_env();
 
     assert_eq!(account_max_inflight_limit(), 1);
     assert!(request_compression_enabled());
     assert_eq!(current_upstream_stream_timeout_ms(), 300_000);
+    assert_eq!(
+        request_gate_wait_timeout_for("/v1/responses", true),
+        Duration::from_millis(1_200)
+    );
+    assert_eq!(
+        request_gate_wait_timeout_for("/v1/responses/compact", false),
+        Duration::from_millis(600)
+    );
 }
 
 #[test]

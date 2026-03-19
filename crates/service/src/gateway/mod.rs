@@ -13,8 +13,6 @@ mod incoming_headers;
 mod instance_id;
 #[path = "routing/local_burn.rs"]
 mod local_burn;
-#[path = "routing/model_feedback.rs"]
-mod model_feedback;
 #[path = "request/local_count_tokens.rs"]
 mod local_count_tokens;
 #[path = "request/local_models.rs"]
@@ -22,6 +20,8 @@ mod local_models;
 mod local_validation;
 #[path = "observability/metrics.rs"]
 mod metrics;
+#[path = "routing/model_feedback.rs"]
+mod model_feedback;
 mod model_picker;
 #[path = "auth/openai_fallback.rs"]
 mod openai_fallback;
@@ -122,7 +122,7 @@ use route_quality::record_route_quality;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
 use runtime_config::{
     account_max_inflight_limit, fresh_upstream_client, fresh_upstream_client_for_account,
-    request_gate_wait_timeout, trace_body_preview_max_bytes, upstream_client,
+    trace_body_preview_max_bytes, upstream_client,
     upstream_client_for_account, upstream_cookie, upstream_stream_timeout, upstream_total_timeout,
     DEFAULT_GATEWAY_DEBUG,
 };
@@ -272,6 +272,10 @@ pub(crate) fn record_model_ineligible_feedback(account_id: &str, request_model: 
 
 pub(crate) fn record_quota_rejected_feedback(account_id: &str, request_model: Option<&str>) {
     model_feedback::record_quota_rejected_feedback(account_id, request_model);
+}
+
+pub(crate) fn record_challenge_blocked_feedback(account_id: &str) {
+    model_feedback::record_challenge_blocked_feedback(account_id);
 }
 
 pub(crate) fn clear_request_feedback(account_id: &str, request_model: Option<&str>) {
