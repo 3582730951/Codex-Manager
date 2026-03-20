@@ -66,13 +66,15 @@ macro_rules! invoke_handler {
             crate::commands::apikey::service_apikey_enable,
             // system
             crate::commands::system::open_in_browser,
+            crate::commands::system::open_in_file_manager,
             crate::commands::system::app_window_unsaved_draft_sections_set,
             // updater
             crate::commands::updater::app_update_check,
             crate::commands::updater::app_update_prepare,
             crate::commands::updater::app_update_apply_portable,
             crate::commands::updater::app_update_launch_installer,
-            crate::commands::updater::app_update_status
+            crate::commands::updater::app_update_status,
+            crate::commands::updater::app_update_open_logs_dir
         ]
     };
 }

@@ -2,10 +2,15 @@ use reqwest::blocking::Client;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 use zip::ZipArchive;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 use super::apply::resolve_portable_restart_exe;
 use super::github::fetch_latest_release;
@@ -19,6 +24,26 @@ use super::state::{set_last_check, updates_root_dir, write_pending_update};
 pub(super) struct ResolvedUpdateContext {
     pub(super) check: UpdateCheckResponse,
     payload_asset: Option<GitHubAsset>,
+}
+
+fn append_prepare_log(log_path: &Path, message: &str) {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    let line = format!("[{timestamp}] {message}\n");
+
+    if let Some(parent) = log_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
+    }
 }
 
 pub(super) fn portable_asset_names_for_platform(latest_version: &str) -> Vec<String> {
@@ -264,6 +289,145 @@ fn stage_portable_payload(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn detach_macos_dmg_mount(mount_dir: &Path) -> Result<(), String> {
+    let status = Command::new("hdiutil")
+        .arg("detach")
+        .arg(mount_dir)
+        .arg("-force")
+        .status()
+        .map_err(|err| format!("卸载 dmg 挂载点失败：{err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("卸载 dmg 挂载点失败，退出码：{status}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn find_first_app_bundle(root: &Path) -> Result<PathBuf, String> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir)
+            .map_err(|err| format!("读取 app 包目录失败 {}：{err}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|err| format!("读取 app 包目录项失败：{err}"))?;
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.eq_ignore_ascii_case("app"))
+                .unwrap_or(false)
+                && path.is_dir()
+            {
+                return Ok(path);
+            }
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+
+    Err(format!(
+        "在 dmg 挂载目录中未找到 .app 包：{}",
+        root.display()
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn copy_macos_app_bundle(source: &Path, target: &Path) -> Result<(), String> {
+    if target.exists() {
+        fs::remove_dir_all(target)
+            .map_err(|err| format!("清理暂存 app 包失败 {}：{err}", target.display()))?;
+    }
+    let status = Command::new("ditto")
+        .arg(source)
+        .arg(target)
+        .status()
+        .map_err(|err| format!("复制 app 包失败：{err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "复制 app 包失败：{} -> {}，退出码：{status}",
+            source.display(),
+            target.display()
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stage_macos_dmg_payload(
+    payload_path: &Path,
+    staging_dir: &Path,
+    log_path: &Path,
+) -> Result<(), String> {
+    append_prepare_log(
+        log_path,
+        &format!("开始挂载 dmg：{}", payload_path.display()),
+    );
+    let mount_dir = staging_dir.join("__dmg_mount");
+    if mount_dir.exists() {
+        fs::remove_dir_all(&mount_dir)
+            .map_err(|err| format!("清理旧的 dmg 挂载目录失败：{err}"))?;
+    }
+    fs::create_dir_all(&mount_dir).map_err(|err| format!("创建 dmg 挂载目录失败：{err}"))?;
+
+    let attach_status = Command::new("hdiutil")
+        .arg("attach")
+        .arg(payload_path)
+        .arg("-nobrowse")
+        .arg("-readonly")
+        .arg("-mountpoint")
+        .arg(&mount_dir)
+        .status()
+        .map_err(|err| format!("挂载 dmg 失败：{err}"))?;
+    if !attach_status.success() {
+        append_prepare_log(log_path, &format!("挂载 dmg 失败，退出码：{attach_status}"));
+        let _ = fs::remove_dir_all(&mount_dir);
+        return Err(format!("挂载 dmg 失败，退出码：{attach_status}"));
+    }
+    append_prepare_log(log_path, &format!("dmg 已挂载到：{}", mount_dir.display()));
+
+    let stage_result = (|| {
+        let app_bundle = find_first_app_bundle(&mount_dir)?;
+        append_prepare_log(
+            log_path,
+            &format!("在 dmg 中发现 app 包：{}", app_bundle.display()),
+        );
+        let app_name = app_bundle
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| format!("无法解析 app 包名称：{}", app_bundle.display()))?;
+        let target_bundle = staging_dir.join(app_name);
+        let copied = copy_macos_app_bundle(&app_bundle, &target_bundle);
+        if copied.is_ok() {
+            append_prepare_log(
+                log_path,
+                &format!("已复制 app 包到暂存目录：{}", target_bundle.display()),
+            );
+        }
+        copied
+    })();
+
+    let detach_result = detach_macos_dmg_mount(&mount_dir);
+    let cleanup_result =
+        fs::remove_dir_all(&mount_dir).map_err(|err| format!("清理 dmg 挂载目录失败：{err}"));
+
+    if detach_result.is_ok() {
+        append_prepare_log(log_path, "dmg 挂载点已卸载");
+    }
+    if cleanup_result.is_ok() {
+        append_prepare_log(log_path, "dmg 挂载临时目录已清理");
+    }
+
+    stage_result?;
+    detach_result?;
+    cleanup_result?;
+    append_prepare_log(log_path, "macOS dmg 更新暂存完成");
+    Ok(())
+}
+
 pub(super) fn resolve_update_context() -> Result<ResolvedUpdateContext, String> {
     let repo = resolve_update_repo();
     let (mode, is_portable, _, _) = current_mode_and_marker()?;
@@ -333,9 +497,22 @@ pub(super) fn prepare_update_impl(app: &tauri::AppHandle) -> Result<UpdatePrepar
         .ok_or_else(|| "缺少可下载安装的发布资产".to_string())?;
     let release_dir = updates_root_dir(app)?.join(sanitize_tag(&context.check.release_tag));
     fs::create_dir_all(&release_dir).map_err(|err| format!("创建发布目录失败：{err}"))?;
+    let logs_dir = release_dir.join("logs");
+    let prepare_log_path = logs_dir.join("prepare-update.log");
+    append_prepare_log(
+        &prepare_log_path,
+        &format!(
+            "开始准备更新，tag={}, asset={}",
+            context.check.release_tag, payload_asset.name
+        ),
+    );
 
     let payload_path = release_dir.join(&payload_asset.name);
     download_to_file(&client, &payload_asset.browser_download_url, &payload_path)?;
+    append_prepare_log(
+        &prepare_log_path,
+        &format!("更新资产下载完成：{}", payload_path.display()),
+    );
 
     let mut pending = PendingUpdate {
         mode: context.check.mode.clone(),
@@ -365,9 +542,22 @@ pub(super) fn prepare_update_impl(app: &tauri::AppHandle) -> Result<UpdatePrepar
         pending.staging_dir = Some(staging_dir.display().to_string());
     } else {
         pending.installer_path = Some(payload_path.display().to_string());
+        #[cfg(target_os = "macos")]
+        if is_dmg_asset(&payload_asset.name) {
+            let staging_dir = release_dir.join("staging");
+            if staging_dir.is_dir() {
+                fs::remove_dir_all(&staging_dir)
+                    .map_err(|err| format!("清理暂存目录失败：{err}"))?;
+            }
+            fs::create_dir_all(&staging_dir)
+                .map_err(|err| format!("创建暂存目录失败：{err}"))?;
+            stage_macos_dmg_payload(&payload_path, &staging_dir, &prepare_log_path)?;
+            pending.staging_dir = Some(staging_dir.display().to_string());
+        }
     }
 
     write_pending_update(app, &pending)?;
+    append_prepare_log(&prepare_log_path, "待更新状态已写入 pending-update.json");
 
     Ok(UpdatePrepareResponse {
         prepared: true,

@@ -40,6 +40,7 @@ import {
   Cpu,
   Download,
   ExternalLink,
+  FolderOpen,
   Globe,
   Info,
   Palette,
@@ -174,6 +175,11 @@ type UpdatePrepareSummary = {
   downloaded: boolean;
 };
 
+type UpdateStatusSummary = {
+  pending: UpdatePrepareSummary | null;
+  lastCheck: UpdateCheckSummary | null;
+};
+
 type CheckUpdateRequest = {
   silent?: boolean;
 };
@@ -220,6 +226,31 @@ function normalizeUpdatePrepareSummary(payload: unknown): UpdatePrepareSummary {
     assetName: readStringField(source, "assetName"),
     assetPath: readStringField(source, "assetPath"),
     downloaded: readBooleanField(source, "downloaded"),
+  };
+}
+
+function normalizePendingUpdateSummary(payload: unknown): UpdatePrepareSummary | null {
+  const source = asRecord(payload);
+  if (!source) {
+    return null;
+  }
+  return {
+    prepared: true,
+    mode: readStringField(source, "mode"),
+    isPortable: readBooleanField(source, "isPortable"),
+    releaseTag: readStringField(source, "releaseTag"),
+    latestVersion: readStringField(source, "latestVersion"),
+    assetName: readStringField(source, "assetName"),
+    assetPath: readStringField(source, "assetPath"),
+    downloaded: true,
+  };
+}
+
+function normalizeUpdateStatusSummary(payload: unknown): UpdateStatusSummary {
+  const source = asRecord(payload) ?? {};
+  return {
+    pending: normalizePendingUpdateSummary(source.pending),
+    lastCheck: source.lastCheck ? normalizeUpdateCheckSummary(source.lastCheck) : null,
   };
 }
 
@@ -297,20 +328,18 @@ export default function SettingsPage() {
     onSuccess: (result, request) => {
       const summary = normalizeUpdateCheckSummary(result);
       setLastUpdateCheck(summary);
+      setUpdateDialogCheck(summary);
       if (summary.hasUpdate) {
-        setUpdateDialogCheck(summary);
         setPreparedUpdate((current) =>
           current && current.latestVersion === summary.latestVersion ? current : null
         );
-        setUpdateDialogOpen(true);
         if (!request?.silent) {
-          toast.success(
-            `发现新版本 ${summary.latestVersion || summary.releaseTag || "可用"}`
-          );
+          toast.success(`发现新版本 ${summary.latestVersion || summary.releaseTag || "可用"}，可立即下载更新`);
         }
         return;
       }
       setPreparedUpdate(null);
+      setUpdateDialogOpen(false);
       if (!request?.silent) {
         toast.success(
           summary.reason
@@ -338,8 +367,8 @@ export default function SettingsPage() {
       setUpdateDialogOpen(true);
       toast.success(
         summary.isPortable
-          ? `更新已下载，重启应用后即可更新到 ${summary.latestVersion || "新版本"}`
-          : `安装包已下载完成，可立即安装 ${summary.latestVersion || "新版本"}`
+          ? `更新已下载完成，确认后即可替换到 ${summary.latestVersion || "新版本"}`
+          : `更新包已下载完成，确认后开始替换到 ${summary.latestVersion || "新版本"}`
       );
     },
     onError: (error: unknown) => {
@@ -350,16 +379,48 @@ export default function SettingsPage() {
   const applyPreparedUpdate = useMutation({
     mutationFn: (payload: { isPortable: boolean }) =>
       payload.isPortable ? appClient.applyUpdatePortable() : appClient.launchInstaller(),
-    onSuccess: (_result, payload) => {
+    onSuccess: (result, payload) => {
+      setPreparedUpdate(null);
+      setLastUpdateCheck(null);
+      setUpdateDialogCheck(null);
       setUpdateDialogOpen(false);
-      toast.success(payload.isPortable ? "即将重启并应用更新" : "安装程序已启动");
+      const message = readStringField(asRecord(result) ?? {}, "message");
+      toast.success(message || (payload.isPortable ? "即将重启并替换更新" : "已开始替换更新流程"));
     },
     onError: (error: unknown, payload) => {
       toast.error(
-        `${payload.isPortable ? "应用更新" : "启动安装程序"}失败: ${getAppErrorMessage(error)}`
+        `${payload.isPortable ? "替换更新" : "启动安装程序"}失败: ${getAppErrorMessage(error)}`
       );
     },
   });
+
+  useEffect(() => {
+    if (!isDesktopRuntime) {
+      return;
+    }
+
+    let cancelled = false;
+    void appClient
+      .getStatus()
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        const summary = normalizeUpdateStatusSummary(result);
+        if (summary.lastCheck) {
+          setLastUpdateCheck(summary.lastCheck);
+          setUpdateDialogCheck(summary.lastCheck);
+        }
+        if (summary.pending) {
+          setPreparedUpdate(summary.pending);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isDesktopRuntime]);
 
   useEffect(() => {
     if (!snapshot?.theme) return;
@@ -400,7 +461,7 @@ export default function SettingsPage() {
 
   const handleOpenReleasePage = () => {
     void appClient
-      .openInBrowser(buildReleaseUrl(updateDialogCheck))
+      .openInBrowser(buildReleaseUrl(updateDialogCheck ?? lastUpdateCheck))
       .catch((error) => {
         toast.error(`打开发布页失败: ${getAppErrorMessage(error)}`);
       });
@@ -410,6 +471,58 @@ export default function SettingsPage() {
     manualUpdateCheckPendingRef.current = true;
     setManualUpdateCheckPending(true);
     checkUpdate.mutate({ silent: false });
+  };
+
+  const hasPreparedUpdate = Boolean(preparedUpdate);
+  const canDownloadUpdate = Boolean(
+    !preparedUpdate && lastUpdateCheck?.hasUpdate && lastUpdateCheck.canPrepare
+  );
+  const shouldShowUpdateLogsEntry = Boolean(
+    isDesktopRuntime && (preparedUpdate || lastUpdateCheck)
+  );
+  const updateActionLabel = hasPreparedUpdate
+    ? "替换更新"
+    : canDownloadUpdate
+      ? "下载更新"
+      : "检查更新";
+  const updateActionDescription = !isDesktopRuntime
+    ? "Web / Docker 版不提供桌面应用更新检查"
+    : hasPreparedUpdate
+      ? "更新包已下载完成，点击后确认替换当前版本"
+      : canDownloadUpdate
+        ? "已发现新版本，点击后开始下载更新包"
+        : "立即检查 GitHub Releases 是否有新版本可用";
+  const updateActionBusy = Boolean(
+    manualUpdateCheckPending || prepareUpdate.isPending || applyPreparedUpdate.isPending
+  );
+  const updateActionBusyLabel = manualUpdateCheckPending
+    ? "正在检查..."
+    : prepareUpdate.isPending
+      ? "正在下载..."
+      : applyPreparedUpdate.isPending
+        ? "正在替换..."
+        : updateActionLabel;
+
+  const handleUpdateAction = () => {
+    if (preparedUpdate) {
+      setUpdateDialogCheck((current) => current ?? lastUpdateCheck);
+      setUpdateDialogOpen(true);
+      return;
+    }
+
+    if (lastUpdateCheck?.hasUpdate && lastUpdateCheck.canPrepare) {
+      setUpdateDialogCheck(lastUpdateCheck);
+      prepareUpdate.mutate();
+      return;
+    }
+
+    handleManualCheckUpdate();
+  };
+
+  const handleOpenUpdateLogsDir = () => {
+    void appClient.openUpdateLogsDir(preparedUpdate?.assetPath).catch((error) => {
+      toast.error(`打开日志目录失败: ${getAppErrorMessage(error)}`);
+    });
   };
 
   const filteredEnvCatalog = useMemo(() => {
@@ -698,19 +811,30 @@ export default function SettingsPage() {
               </div>
               <div className="flex flex-col gap-3 rounded-2xl border border-border/50 bg-background/45 p-4 md:flex-row md:items-center md:justify-between">
                 <div className="space-y-1">
-                  <Label>检查更新</Label>
-                  <p className="text-xs text-muted-foreground">
-                    {isDesktopRuntime
-                      ? "立即检查 GitHub Releases 是否有新版本可用"
-                      : "Web / Docker 版不提供桌面应用更新检查"}
-                  </p>
+                  <Label>{updateActionLabel}</Label>
+                  <p className="text-xs text-muted-foreground">{updateActionDescription}</p>
                   {lastUpdateCheck ? (
                     <p className="text-xs text-muted-foreground">
-                      {lastUpdateCheck.hasUpdate
-                        ? `发现新版本 ${lastUpdateCheck.latestVersion || lastUpdateCheck.releaseTag || "可用"}`
-                        : lastUpdateCheck.reason ||
-                          `当前版本 ${lastUpdateCheck.currentVersion || "未知"} 已是最新`}
+                      {preparedUpdate
+                        ? `已下载 ${preparedUpdate.latestVersion || preparedUpdate.releaseTag || "新版本"}，等待替换更新`
+                        : lastUpdateCheck.hasUpdate
+                          ? `发现新版本 ${lastUpdateCheck.latestVersion || lastUpdateCheck.releaseTag || "可用"}`
+                          : lastUpdateCheck.reason ||
+                            `当前版本 ${lastUpdateCheck.currentVersion || "未知"} 已是最新`}
                     </p>
+                  ) : null}
+                  {shouldShowUpdateLogsEntry ? (
+                    <div className="pt-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto px-0 text-xs text-muted-foreground hover:text-foreground"
+                        onClick={handleOpenUpdateLogsDir}
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                        打开日志目录
+                      </Button>
+                    </div>
                   ) : null}
                 </div>
                 <Button
@@ -718,16 +842,24 @@ export default function SettingsPage() {
                   className="gap-2 self-start md:self-auto"
                   disabled={
                     !isDesktopRuntime ||
-                    manualUpdateCheckPending ||
-                    prepareUpdate.isPending ||
-                    applyPreparedUpdate.isPending
+                    updateActionBusy
                   }
-                  onClick={handleManualCheckUpdate}
+                  onClick={handleUpdateAction}
                 >
-                  <RefreshCw
-                    className={cn("h-4 w-4", manualUpdateCheckPending && "animate-spin")}
-                  />
-                  检查更新
+                  {manualUpdateCheckPending ? (
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                  ) : prepareUpdate.isPending ? (
+                    <Download className="h-4 w-4 animate-pulse" />
+                  ) : applyPreparedUpdate.isPending ? (
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                  ) : hasPreparedUpdate ? (
+                    <Check className="h-4 w-4" />
+                  ) : canDownloadUpdate ? (
+                    <Download className="h-4 w-4" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                  {updateActionBusyLabel}
                 </Button>
               </div>
               <div className="flex items-center justify-between">
@@ -1396,12 +1528,12 @@ export default function SettingsPage() {
           className="glass-card border-none p-6 sm:max-w-[480px]"
         >
           <DialogHeader>
-            <DialogTitle>{preparedUpdate ? "更新已准备完成" : "发现新版本"}</DialogTitle>
+            <DialogTitle>{preparedUpdate ? "替换更新" : "发现新版本"}</DialogTitle>
             <DialogDescription>
               {preparedUpdate
                 ? preparedUpdate.isPortable
                   ? "更新包已下载完成。确认后将重启应用并替换当前程序。"
-                  : "安装包已下载完成。确认后会启动系统安装程序。"
+                  : "更新包已下载完成。确认后会开始替换流程。"
                 : `当前版本 ${updateDialogCheck?.currentVersion || "未知"}，发现新版本 ${
                     updateDialogCheck?.latestVersion ||
                     updateDialogCheck?.releaseTag ||
@@ -1475,11 +1607,9 @@ export default function SettingsPage() {
                 <Download className="h-4 w-4" />
                 {applyPreparedUpdate.isPending
                   ? preparedUpdate.isPortable
-                    ? "正在应用更新..."
-                    : "正在启动安装程序..."
-                  : preparedUpdate.isPortable
-                    ? "重启并更新"
-                    : "立即安装"}
+                    ? "正在替换更新..."
+                    : "正在启动替换..."
+                  : "替换更新"}
               </Button>
             ) : updateDialogCheck?.canPrepare ? (
               <Button

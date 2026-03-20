@@ -124,6 +124,16 @@ const WEB_COMMAND_MAP: Record<string, WebCommandDescriptor> = {
       return { ok: true };
     },
   },
+  open_in_file_manager: {
+    direct: async () => {
+      throw new Error("当前环境不支持打开本地目录");
+    },
+  },
+  app_update_open_logs_dir: {
+    direct: async () => {
+      throw new Error("当前环境不支持打开更新日志目录");
+    },
+  },
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
