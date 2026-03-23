@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="README.en.md">English</a>|
+  <a href="https://github.com/qxcnm/Codex-Manager">GitHub 主仓库</a>|
   <a href="#赞助支持">赞助支持</a>
 </p>
 
