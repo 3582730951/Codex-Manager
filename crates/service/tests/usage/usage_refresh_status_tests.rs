@@ -381,6 +381,10 @@ fn deactivation_reason_detects_workspace_and_account_scope() {
         Some("account_deactivated")
     );
     assert_eq!(
+        deactivation_reason_from_message("unexpected upstream code: team_deactivated"),
+        Some("account_deactivated")
+    );
+    assert_eq!(
         deactivation_reason_from_message("usage endpoint status 429"),
         None
     );
@@ -414,6 +418,93 @@ fn deactivation_error_marks_account_unavailable() {
         .expect("find")
         .expect("exists");
     assert_eq!(unavailable.status, "unavailable");
+}
+
+#[test]
+fn generic_deactivated_error_marks_account_unavailable() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let account = Account {
+        id: "acc-generic-deactivated".to_string(),
+        label: "main".to_string(),
+        issuer: "issuer".to_string(),
+        chatgpt_account_id: None,
+        workspace_id: None,
+        group_name: None,
+        sort: 0,
+        status: "active".to_string(),
+        created_at: now_ts(),
+        updated_at: now_ts(),
+    };
+    storage.insert_account(&account).expect("insert");
+
+    assert!(mark_account_unavailable_for_deactivation_error(
+        &storage,
+        "acc-generic-deactivated",
+        "unexpected upstream code: team_deactivated"
+    ));
+    let unavailable = storage
+        .find_account_by_id("acc-generic-deactivated")
+        .expect("find")
+        .expect("exists");
+    assert_eq!(unavailable.status, "unavailable");
+
+    let reasons = storage
+        .latest_account_status_reasons(&["acc-generic-deactivated".to_string()])
+        .expect("load reasons");
+    assert_eq!(
+        reasons
+            .get("acc-generic-deactivated")
+            .map(String::as_str),
+        Some("account_deactivated")
+    );
+}
+
+#[test]
+fn deactivation_error_updates_reason_for_existing_unavailable_account() {
+    let storage = Storage::open_in_memory().expect("open");
+    storage.init().expect("init");
+    let account = Account {
+        id: "acc-deactivated-reason-update".to_string(),
+        label: "main".to_string(),
+        issuer: "issuer".to_string(),
+        chatgpt_account_id: None,
+        workspace_id: None,
+        group_name: None,
+        sort: 0,
+        status: "active".to_string(),
+        created_at: now_ts(),
+        updated_at: now_ts(),
+    };
+    storage.insert_account(&account).expect("insert");
+
+    mark_usage_unreachable_if_needed(
+        &storage,
+        "acc-deactivated-reason-update",
+        "usage endpoint status 401 Unauthorized",
+    );
+    assert!(mark_account_unavailable_for_deactivation_error(
+        &storage,
+        "acc-deactivated-reason-update",
+        "account_deactivated"
+    ));
+
+    let unavailable = storage
+        .find_account_by_id("acc-deactivated-reason-update")
+        .expect("find")
+        .expect("exists");
+    assert_eq!(unavailable.status, "unavailable");
+
+    let reasons = storage
+        .latest_account_status_reasons(&["acc-deactivated-reason-update".to_string()])
+        .expect("load reasons");
+    assert_eq!(
+        reasons
+            .get("acc-deactivated-reason-update")
+            .map(String::as_str),
+        Some("account_deactivated")
+    );
+    assert_eq!(storage.event_count().expect("count events"), 2);
 }
 
 #[test]

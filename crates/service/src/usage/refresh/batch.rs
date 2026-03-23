@@ -285,12 +285,14 @@ mod tests {
                 token("acc-active"),
                 token("acc-disabled"),
                 token("acc-inactive"),
+                token("acc-unavailable"),
                 token("acc-missing"),
             ],
             &[
                 account("acc-active", "active", Some("ws-active")),
                 account("acc-disabled", "disabled", Some("ws-disabled")),
                 account("acc-inactive", "inactive", Some("ws-inactive")),
+                account("acc-unavailable", "unavailable", Some("ws-unavailable")),
             ],
         );
 
@@ -300,10 +302,16 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             account_ids,
-            vec!["acc-active", "acc-inactive", "acc-missing"]
+            vec![
+                "acc-active",
+                "acc-inactive",
+                "acc-unavailable",
+                "acc-missing"
+            ]
         );
         assert_eq!(tasks[0].workspace_id.as_deref(), Some("ws-active"));
         assert_eq!(tasks[1].workspace_id.as_deref(), Some("ws-inactive"));
-        assert_eq!(tasks[2].workspace_id, None);
+        assert_eq!(tasks[2].workspace_id.as_deref(), Some("ws-unavailable"));
+        assert_eq!(tasks[3].workspace_id, None);
     }
 }

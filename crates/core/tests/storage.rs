@@ -143,6 +143,61 @@ fn token_upsert_keeps_refresh_schedule_columns() {
 }
 
 #[test]
+fn tokens_due_for_refresh_include_unavailable_accounts() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+    let now = now_ts();
+
+    for (id, status) in [
+        ("acc-active-refresh", "active"),
+        ("acc-unavailable-refresh", "unavailable"),
+    ] {
+        storage
+            .insert_account(&Account {
+                id: id.to_string(),
+                label: id.to_string(),
+                issuer: "https://auth.openai.com".to_string(),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: None,
+                sort: 0,
+                status: status.to_string(),
+                created_at: now,
+                updated_at: now,
+            })
+            .expect("insert account");
+        storage
+            .insert_token(&Token {
+                account_id: id.to_string(),
+                id_token: format!("id-{id}"),
+                access_token: format!("access-{id}"),
+                refresh_token: format!("refresh-{id}"),
+                api_key_access_token: None,
+                last_refresh: now,
+            })
+            .expect("insert token");
+        storage
+            .update_token_refresh_schedule(id, Some(4_102_444_800), Some(4_102_444_200))
+            .expect("set schedule");
+    }
+
+    let due = storage
+        .list_tokens_due_for_refresh(4_102_444_300, 10)
+        .expect("list due");
+    let account_ids = due
+        .into_iter()
+        .map(|token| token.account_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        account_ids,
+        vec![
+            "acc-active-refresh".to_string(),
+            "acc-unavailable-refresh".to_string()
+        ]
+    );
+}
+
+#[test]
 fn storage_login_session_roundtrip() {
     let storage = Storage::open_in_memory().expect("open in memory");
     storage.init().expect("init schema");
