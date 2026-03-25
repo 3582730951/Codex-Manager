@@ -100,13 +100,15 @@ pub struct ConversationBinding {
     pub last_used_at: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RequestLog {
     pub trace_id: Option<String>,
     pub key_id: Option<String>,
     pub account_id: Option<String>,
     pub initial_account_id: Option<String>,
     pub attempted_account_ids_json: Option<String>,
+    pub initial_aggregate_api_id: Option<String>,
+    pub attempted_aggregate_api_ids_json: Option<String>,
     pub request_path: String,
     pub original_path: Option<String>,
     pub adapted_path: Option<String>,
@@ -129,7 +131,7 @@ pub struct RequestLog {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RequestTokenStat {
     pub request_log_id: i64,
     pub key_id: Option<String>,
@@ -415,6 +417,11 @@ impl Storage {
             "038_request_logs_aggregate_api_context",
             include_str!("../../migrations/038_request_logs_aggregate_api_context.sql"),
             |s| s.ensure_request_log_aggregate_api_context_columns(),
+        )?;
+        self.apply_sql_or_compat_migration(
+            "039_request_logs_aggregate_api_attempt_chain",
+            include_str!("../../migrations/039_request_logs_aggregate_api_attempt_chain.sql"),
+            |s| s.ensure_request_log_aggregate_api_attempt_chain_columns(),
         )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;

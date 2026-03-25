@@ -412,6 +412,14 @@ export function normalizeRequestLog(item: unknown): RequestLog | null {
     attemptedAccountIds: asArray(source.attemptedAccountIds ?? source.attempted_account_ids)
       .map((value) => asString(value))
       .filter((value) => value.length > 0),
+    initialAggregateApiId: asString(
+      source.initialAggregateApiId ?? source.initial_aggregate_api_id
+    ),
+    attemptedAggregateApiIds: asArray(
+      source.attemptedAggregateApiIds ?? source.attempted_aggregate_api_ids
+    )
+      .map((value) => asString(value))
+      .filter((value) => value.length > 0),
     requestPath,
     originalPath: asString(source.originalPath ?? source.original_path),
     adaptedPath: asString(source.adaptedPath ?? source.adapted_path),

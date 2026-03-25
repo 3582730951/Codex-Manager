@@ -225,6 +225,7 @@ pub(in super::super) fn proxy_aggregate_request(
 
     let client = super::super::super::fresh_upstream_client();
     let mut request = Some(request);
+    let mut attempted_aggregate_api_ids = Vec::new();
     let mut last_attempt_url: Option<String> = None;
     let mut last_attempt_supplier_name: Option<String> = None;
     let mut last_attempt_error: Option<String> = None;
@@ -232,6 +233,7 @@ pub(in super::super) fn proxy_aggregate_request(
 
     let total_candidates = aggregate_api_candidates.len();
     for (candidate_idx, candidate) in aggregate_api_candidates.into_iter().enumerate() {
+        attempted_aggregate_api_ids.push(candidate.id.clone());
         let candidate_supplier_name = candidate.supplier_name.clone();
         let candidate_url = candidate.url.clone();
         let Some(secret) = storage
@@ -274,6 +276,7 @@ pub(in super::super) fn proxy_aggregate_request(
                         response_adapter: Some(response_adapter),
                         aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
                         aggregate_api_url: Some(candidate_url.as_str()),
+                        attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
                         ..Default::default()
                     },
                     Some(key_id),
@@ -456,6 +459,7 @@ pub(in super::super) fn proxy_aggregate_request(
                     response_adapter: Some(response_adapter),
                     aggregate_api_supplier_name: candidate_supplier_name.as_deref(),
                     aggregate_api_url: Some(candidate_url.as_str()),
+                    attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
                     ..Default::default()
                 },
                 Some(key_id),
@@ -513,6 +517,7 @@ pub(in super::super) fn proxy_aggregate_request(
             response_adapter: Some(response_adapter),
             aggregate_api_supplier_name: last_attempt_supplier_name.as_deref(),
             aggregate_api_url: last_attempt_url.as_deref(),
+            attempted_aggregate_api_ids: Some(attempted_aggregate_api_ids.as_slice()),
             ..Default::default()
         },
         Some(key_id),

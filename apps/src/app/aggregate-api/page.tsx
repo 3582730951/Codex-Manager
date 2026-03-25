@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowUp,
   Copy,
   Eye,
   EyeOff,
@@ -191,6 +192,43 @@ export default function AggregateApiPage() {
     onError: (error: unknown) => {
       toast.error(
         `删除失败: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    },
+  });
+
+  const prioritizeMutation = useMutation({
+    mutationFn: async (api: AggregateApi) => {
+      const currentMinSort = aggregateApis.reduce(
+        (min, item) => Math.min(min, Number(item.sort) || 0),
+        Number(api.sort) || 0,
+      );
+      const nextSort =
+        (Number(api.sort) || 0) <= currentMinSort ? currentMinSort : currentMinSort - 5;
+
+      if ((Number(api.sort) || 0) === nextSort) {
+        return false;
+      }
+
+      await accountClient.updateAggregateApi(api.id, {
+        providerType: api.providerType,
+        supplierName: api.supplierName || "",
+        sort: nextSort,
+        url: api.url,
+        key: null,
+      });
+      return true;
+    },
+    onSuccess: async (changed) => {
+      if (!changed) {
+        toast.info("当前聚合 API 已是优先渠道");
+        return;
+      }
+      await queryClient.invalidateQueries({ queryKey: ["aggregate-apis"] });
+      toast.success("已设为优先渠道");
+    },
+    onError: (error: unknown) => {
+      toast.error(
+        `设置优先失败: ${error instanceof Error ? error.message : String(error)}`,
       );
     },
   });
@@ -518,6 +556,15 @@ export default function AggregateApiPage() {
                                   onClick={() => openEditModal(api.id)}
                                 >
                                   编辑聚合 API
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="gap-2"
+                                  disabled={
+                                    !isServiceReady || prioritizeMutation.isPending
+                                  }
+                                  onClick={() => prioritizeMutation.mutate(api)}
+                                >
+                                  <ArrowUp className="h-4 w-4" /> 设为优先
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                   className="gap-2 text-red-500"

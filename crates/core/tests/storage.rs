@@ -630,6 +630,7 @@ fn request_logs_support_prefixed_query_filters() {
             estimated_cost_usd: Some(0.0),
             error: None,
             created_at: now_ts() - 2,
+            ..Default::default()
         })
         .expect("insert request log 0");
 
@@ -660,6 +661,7 @@ fn request_logs_support_prefixed_query_filters() {
             estimated_cost_usd: Some(0.0),
             error: None,
             created_at: now_ts() - 1,
+            ..Default::default()
         })
         .expect("insert request log 1");
 
@@ -690,6 +692,7 @@ fn request_logs_support_prefixed_query_filters() {
             estimated_cost_usd: Some(0.0),
             error: Some("upstream timeout".to_string()),
             created_at: now_ts(),
+            ..Default::default()
         })
         .expect("insert request log 2");
 
@@ -782,6 +785,7 @@ fn request_log_today_summary_reads_from_token_stats_table() {
             estimated_cost_usd: None,
             error: None,
             created_at,
+            ..Default::default()
         })
         .expect("insert request log");
 
@@ -845,6 +849,7 @@ fn insert_request_log_with_token_stat_writes_both_tables_in_one_call() {
                 estimated_cost_usd: None,
                 error: None,
                 created_at,
+                ..Default::default()
             },
             &RequestTokenStat {
                 request_log_id: 0,
@@ -913,6 +918,7 @@ fn clear_request_logs_keeps_token_stats_for_usage_summary() {
             estimated_cost_usd: None,
             error: None,
             created_at,
+            ..Default::default()
         })
         .expect("insert request log");
     storage

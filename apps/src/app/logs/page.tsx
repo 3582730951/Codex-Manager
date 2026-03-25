@@ -270,6 +270,22 @@ function resolveAggregateApiTooltipUrl(
   return "-";
 }
 
+function resolveAggregateApiDisplayNameById(
+  aggregateApiId: string,
+  aggregateApiMap: Map<string, AggregateApi>,
+): string {
+  const normalized = String(aggregateApiId || "").trim();
+  if (!normalized) return "";
+  const aggregateApi = aggregateApiMap.get(normalized);
+  if (aggregateApi?.supplierName && aggregateApi.supplierName.trim()) {
+    return aggregateApi.supplierName.trim();
+  }
+  if (aggregateApi?.url && aggregateApi.url.trim()) {
+    return aggregateApi.url.trim();
+  }
+  return normalized;
+}
+
 function normalizeAggregateApiUrl(value: string): string {
   return String(value || "").trim().replace(/\/+$/, "");
 }
@@ -310,6 +326,15 @@ function AccountKeyInfoCell({
     log.initialAccountId,
     accountNameMap,
   );
+  const attemptedAggregateApiLabels = log.attemptedAggregateApiIds
+    .map((aggregateApiId) =>
+      resolveAggregateApiDisplayNameById(aggregateApiId, aggregateApiMap),
+    )
+    .filter((value) => value.trim().length > 0);
+  const initialAggregateApiLabel = resolveAggregateApiDisplayNameById(
+    log.initialAggregateApiId,
+    aggregateApiMap,
+  );
   const apiKey = apiKeyMap.get(log.keyId) || null;
   const aggregateApiById = apiKey?.aggregateApiId
     ? aggregateApiMap.get(apiKey.aggregateApiId) || null
@@ -325,6 +350,7 @@ function AccountKeyInfoCell({
     return null;
   })();
   const aggregateApi = aggregateApiById || aggregateApiByUrl;
+  const selectedAggregateApiId = aggregateApi?.id || "";
   const isAggregateApi = Boolean(
     log.aggregateApiSupplierName || log.aggregateApiUrl || aggregateApi,
   );
@@ -342,6 +368,10 @@ function AccountKeyInfoCell({
     attemptedAccountLabels.length > 1 &&
     initialAccountLabel &&
     initialAccountLabel !== displayAccount;
+  const showAggregateAttemptHint =
+    attemptedAggregateApiLabels.length > 1 &&
+    initialAggregateApiLabel &&
+    String(log.initialAggregateApiId || "").trim() !== selectedAggregateApiId;
 
   if (isAggregateApi) {
     return (
@@ -361,6 +391,11 @@ function AccountKeyInfoCell({
               <Shield className="h-2.5 w-2.5" />
               <span className="font-mono">{formatCompactKeyLabel(log.keyId)}</span>
             </div>
+            {showAggregateAttemptHint ? (
+              <div className="text-[9px] text-amber-500">
+                先试 {initialAggregateApiLabel}
+              </div>
+            ) : null}
           </div>
         </TooltipTrigger>
         <TooltipContent className="max-w-sm">
@@ -383,6 +418,22 @@ function AccountKeyInfoCell({
                 {log.keyId || "-"}
               </div>
             </div>
+            {attemptedAggregateApiLabels.length > 1 ? (
+              <div className="space-y-0.5">
+                <div className="text-[10px] text-background/70">尝试链路</div>
+                <div className="break-all font-mono text-[11px]">
+                  {attemptedAggregateApiLabels.join(" -> ")}
+                </div>
+              </div>
+            ) : null}
+            {initialAggregateApiLabel ? (
+              <div className="space-y-0.5">
+                <div className="text-[10px] text-background/70">首尝试渠道</div>
+                <div className="break-all font-mono text-[11px]">
+                  {initialAggregateApiLabel}
+                </div>
+              </div>
+            ) : null}
           </div>
         </TooltipContent>
       </Tooltip>

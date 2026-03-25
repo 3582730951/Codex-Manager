@@ -17,6 +17,7 @@ pub(super) struct RequestLogTraceContext<'a> {
     pub response_adapter: Option<super::ResponseAdapter>,
     pub aggregate_api_supplier_name: Option<&'a str>,
     pub aggregate_api_url: Option<&'a str>,
+    pub attempted_aggregate_api_ids: Option<&'a [String]>,
 }
 
 const MODEL_PRICE_PER_1K_TOKENS: &[(&str, f64, f64, f64)] = &[
@@ -176,6 +177,14 @@ pub(super) fn write_request_log_with_attempts(
     let attempted_account_ids_json = attempted_account_ids
         .filter(|items| !items.is_empty())
         .and_then(|items| serde_json::to_string(items).ok());
+    let initial_aggregate_api_id = trace_context
+        .attempted_aggregate_api_ids
+        .and_then(|items| items.first())
+        .map(String::as_str);
+    let attempted_aggregate_api_ids_json = trace_context
+        .attempted_aggregate_api_ids
+        .filter(|items| !items.is_empty())
+        .and_then(|items| serde_json::to_string(items).ok());
     let input_tokens = normalize_token(usage.input_tokens);
     let cached_input_tokens = normalize_token(usage.cached_input_tokens);
     let output_tokens = normalize_token(usage.output_tokens);
@@ -234,6 +243,8 @@ pub(super) fn write_request_log_with_attempts(
             account_id: account_id.map(|v| v.to_string()),
             initial_account_id: initial_account_id.map(str::to_string),
             attempted_account_ids_json,
+            initial_aggregate_api_id: initial_aggregate_api_id.map(str::to_string),
+            attempted_aggregate_api_ids_json,
             request_path: request_path.to_string(),
             original_path: Some(original_path.to_string()),
             adapted_path: Some(adapted_path.to_string()),

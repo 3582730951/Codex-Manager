@@ -104,6 +104,7 @@ fn request_log_summary_serialization_includes_trace_route_fields() {
         estimated_cost_usd: Some(0.12),
         error: Some("internal_error".to_string()),
         created_at: 1,
+        ..Default::default()
     };
 
     let value = serde_json::to_value(summary).expect("serialize request log summary");
@@ -162,6 +163,7 @@ fn request_log_list_result_serialization_includes_pagination_fields() {
             estimated_cost_usd: Some(0.12),
             error: None,
             created_at: 1,
+            ..Default::default()
         }],
         total: 88,
         page: 3,

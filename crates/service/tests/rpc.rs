@@ -1196,6 +1196,7 @@ fn rpc_requestlog_list_and_summary_support_pagination() {
                     None
                 },
                 created_at,
+                ..Default::default()
             })
             .expect("insert request log");
         storage

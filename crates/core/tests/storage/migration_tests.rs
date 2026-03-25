@@ -239,6 +239,12 @@ fn init_tracks_schema_migrations_and_is_idempotent() {
         .has_column("request_logs", "attempted_account_ids_json")
         .expect("check request_logs.attempted_account_ids_json"));
     assert!(storage
+        .has_column("request_logs", "initial_aggregate_api_id")
+        .expect("check request_logs.initial_aggregate_api_id"));
+    assert!(storage
+        .has_column("request_logs", "attempted_aggregate_api_ids_json")
+        .expect("check request_logs.attempted_aggregate_api_ids_json"));
+    assert!(storage
         .has_column("app_settings", "value")
         .expect("check app_settings.value"));
     assert!(storage

@@ -79,6 +79,7 @@ fn insert_request_log_with_token_stat_is_visible_via_join() {
         estimated_cost_usd: None,
         error: None,
         created_at,
+        ..Default::default()
     };
 
     let stat = RequestTokenStat {
@@ -161,6 +162,7 @@ fn token_stat_failure_still_commits_request_log() {
         estimated_cost_usd: None,
         error: None,
         created_at,
+        ..Default::default()
     };
 
     let stat = RequestTokenStat {
@@ -233,6 +235,7 @@ fn request_logs_support_backend_pagination_and_status_filters() {
                 estimated_cost_usd: None,
                 error,
                 created_at,
+                ..Default::default()
             })
             .expect("insert request log");
         storage
@@ -302,6 +305,7 @@ fn request_logs_filtered_summary_aggregates_counts_and_tokens() {
                 estimated_cost_usd: None,
                 error: error.map(|value| value.to_string()),
                 created_at,
+                ..Default::default()
             })
             .expect("insert request log");
         storage

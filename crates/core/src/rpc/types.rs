@@ -282,7 +282,7 @@ pub struct ApiKeyModelListResult {
     pub items: Vec<ModelOption>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestLogSummary {
     pub trace_id: Option<String>,
@@ -291,6 +291,9 @@ pub struct RequestLogSummary {
     pub initial_account_id: Option<String>,
     #[serde(default)]
     pub attempted_account_ids: Vec<String>,
+    pub initial_aggregate_api_id: Option<String>,
+    #[serde(default)]
+    pub attempted_aggregate_api_ids: Vec<String>,
     pub request_path: String,
     pub original_path: Option<String>,
     pub adapted_path: Option<String>,

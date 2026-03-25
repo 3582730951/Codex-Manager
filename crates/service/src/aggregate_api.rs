@@ -117,12 +117,8 @@ fn build_claude_probe_body() -> serde_json::Value {
     })
 }
 
-fn probe_order_for_provider(provider_type: &str) -> [bool; 2] {
-    if provider_type == AGGREGATE_API_PROVIDER_CLAUDE {
-        [false, true]
-    } else {
-        [true, false]
-    }
+fn probe_codex_only_for_provider(provider_type: &str) -> bool {
+    provider_type != AGGREGATE_API_PROVIDER_CLAUDE
 }
 
 fn probe_codex_endpoint(
@@ -345,27 +341,14 @@ pub(crate) fn test_aggregate_api_connection(
     let client = gateway::fresh_upstream_client();
     let started_at = Instant::now();
     let provider_type = normalize_provider_type_value(api.provider_type.as_str());
-    let probe_order = probe_order_for_provider(provider_type.as_str());
-    let mut last_error = None;
-    let mut status_code = None;
-    let mut ok = false;
-    for is_codex_first in probe_order {
-        let result = if is_codex_first {
-            probe_codex_endpoint(&client, api.url.as_str(), &secret)
-        } else {
-            probe_claude_endpoint(&client, api.url.as_str(), &secret)
-        };
-        match result {
-            Ok(code) => {
-                ok = true;
-                status_code = Some(code);
-                last_error = None;
-                break;
-            }
-            Err(err) => {
-                last_error = Some(err);
-            }
-        }
+    let result = if probe_codex_only_for_provider(provider_type.as_str()) {
+        probe_codex_endpoint(&client, api.url.as_str(), &secret)
+    } else {
+        probe_claude_endpoint(&client, api.url.as_str(), &secret)
+    };
+    let (ok, status_code, last_error) = match result {
+        Ok(code) => (true, Some(code), None),
+        Err(err) => (false, None, Some(err)),
     };
     let message = last_error.map(|err| {
         format!("provider={provider_type}; {err}")

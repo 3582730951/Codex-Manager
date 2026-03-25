@@ -96,12 +96,19 @@ fn to_request_log_summary(item: RequestLog) -> RequestLogSummary {
         .as_deref()
         .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
         .unwrap_or_default();
+    let attempted_aggregate_api_ids = item
+        .attempted_aggregate_api_ids_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .unwrap_or_default();
     RequestLogSummary {
         trace_id: item.trace_id,
         key_id: item.key_id,
         account_id: item.account_id,
         initial_account_id: item.initial_account_id,
         attempted_account_ids,
+        initial_aggregate_api_id: item.initial_aggregate_api_id,
+        attempted_aggregate_api_ids,
         request_path: item.request_path,
         original_path: item.original_path,
         adapted_path: item.adapted_path,

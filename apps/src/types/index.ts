@@ -146,6 +146,8 @@ export interface RequestLog {
   accountId: string;
   initialAccountId: string;
   attemptedAccountIds: string[];
+  initialAggregateApiId: string;
+  attemptedAggregateApiIds: string[];
   requestPath: string;
   originalPath: string;
   adaptedPath: string;

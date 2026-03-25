@@ -143,6 +143,7 @@ export function AggregateApiModal({
         queryClient.invalidateQueries({ queryKey: ["apikeys"] }),
         queryClient.invalidateQueries({ queryKey: ["startup-snapshot"] }),
       ]);
+      onOpenChange(false);
     } catch (error: unknown) {
       toast.error(
         `操作失败: ${error instanceof Error ? error.message : String(error)}`
