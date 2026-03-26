@@ -32,7 +32,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
             richColors 
             expand={false} 
             visibleToasts={3}
+            closeButton
+            duration={4000}
             theme="system"
+            toastOptions={{
+              closeButton: true,
+            }}
           />
         </TooltipProvider>
       </ThemeProvider>

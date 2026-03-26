@@ -24,11 +24,12 @@ import { AddAccountModal } from "@/components/modals/add-account-modal";
 import { ConfirmDialog } from "@/components/modals/confirm-dialog";
 import UsageModal from "@/components/modals/usage-modal";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -1220,13 +1221,13 @@ export default function AccountsPage() {
             </div>
           </div>
           <DialogFooter className="gap-2 sm:gap-2">
-            <Button
-              variant="outline"
+            <DialogClose
+              className={buttonVariants({ variant: "outline" })}
+              type="button"
               disabled={Boolean(isUpdatingProfileAccountId)}
-              onClick={() => setAccountEditorState(null)}
             >
               取消
-            </Button>
+            </DialogClose>
             <Button
               disabled={Boolean(isUpdatingProfileAccountId)}
               onClick={() => void handleConfirmAccountEditor()}

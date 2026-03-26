@@ -2,13 +2,14 @@
 
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -43,9 +44,12 @@ export function ConfirmDialog({
         </DialogHeader>
 
         <DialogFooter className="gap-2 sm:gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <DialogClose
+            className={buttonVariants({ variant: "outline" })}
+            type="button"
+          >
             {cancelText}
-          </Button>
+          </DialogClose>
           <Button
             variant={confirmVariant}
             onClick={() => {

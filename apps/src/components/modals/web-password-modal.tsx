@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { 
-  Dialog, 
-  DialogContent, 
-  DialogDescription, 
-  DialogHeader, 
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
   DialogTitle,
   DialogFooter
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useRuntimeCapabilities } from "@/hooks/useRuntimeCapabilities";
@@ -175,6 +176,12 @@ export function WebPasswordModal({ open, onOpenChange }: WebPasswordModalProps) 
               <Trash2 className="h-4 w-4 mr-2" /> 清除密码
             </Button>
           )}
+          <DialogClose
+            className={buttonVariants({ variant: "outline" })}
+            type="button"
+          >
+            取消
+          </DialogClose>
           <Button onClick={handleSave} disabled={!canAccessManagementRpc || isLoading}>
             {isLoading ? "保存中..." : "保存设置"}
           </Button>

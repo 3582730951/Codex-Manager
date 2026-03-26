@@ -9,13 +9,14 @@ import {
 } from "lucide-react";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import {
@@ -151,9 +152,12 @@ export default function UsageModal({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <DialogClose
+            className={buttonVariants({ variant: "ghost" })}
+            type="button"
+          >
             关闭
-          </Button>
+          </DialogClose>
           <Button onClick={() => onRefresh(account.id)} disabled={isRefreshing} className="gap-2">
             <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
             {isRefreshing ? "正在刷新..." : "立即刷新"}
