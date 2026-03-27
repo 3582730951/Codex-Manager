@@ -219,9 +219,9 @@ use route_quality::record_route_quality as record_route_quality_inner;
 pub(crate) use runtime_config::fresh_upstream_client;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
 use runtime_config::{
-    account_max_inflight_limit, fresh_upstream_client_for_account, request_gate_wait_timeout,
-    trace_body_preview_max_bytes, upstream_client, upstream_client_for_account,
-    upstream_stream_timeout, upstream_total_timeout, DEFAULT_GATEWAY_DEBUG,
+    account_max_inflight_limit, fresh_upstream_client_for_account, trace_body_preview_max_bytes,
+    upstream_client, upstream_client_for_account, upstream_stream_timeout, upstream_total_timeout,
+    DEFAULT_GATEWAY_DEBUG,
 };
 use selection::collect_gateway_candidates;
 #[cfg(test)]

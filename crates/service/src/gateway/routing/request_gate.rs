@@ -63,6 +63,7 @@ impl RequestGateLock {
         }))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn acquire_with_timeout(
         self: &Arc<Self>,
         timeout: Duration,

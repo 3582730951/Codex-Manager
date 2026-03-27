@@ -27,8 +27,20 @@ const ENV_HTTP_STREAM_QUEUE_FACTOR: &str = "CODEXMANAGER_HTTP_STREAM_QUEUE_FACTO
 const ENV_HTTP_STREAM_QUEUE_MIN: &str = "CODEXMANAGER_HTTP_STREAM_QUEUE_MIN";
 
 pub(crate) struct BackendServer {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) addr: String,
     pub(crate) join: thread::JoinHandle<()>,
+}
+
+fn localhost_bind_variants(bind_addr: &str) -> Option<[String; 2]> {
+    let trimmed = bind_addr.trim();
+    if trimmed.len() <= "localhost:".len()
+        || !trimmed[..("localhost:".len())].eq_ignore_ascii_case("localhost:")
+    {
+        return None;
+    }
+    let port = &trimmed["localhost:".len()..];
+    Some([format!("127.0.0.1:{port}"), format!("[::1]:{port}")])
 }
 
 fn http_worker_count() -> usize {
@@ -154,17 +166,7 @@ fn enqueue_request(
     }
 }
 
-fn run_backend_server(server: Server) {
-    let worker_count = http_worker_count();
-    let stream_worker_count = http_stream_worker_count();
-    let queue_size = http_queue_size(worker_count);
-    let stream_queue_size = http_stream_queue_size(stream_worker_count);
-    let (normal_tx, normal_rx) = bounded::<Request>(queue_size);
-    let (stream_tx, stream_rx) = bounded::<Request>(stream_queue_size);
-    crate::gateway::record_http_queue_capacity(queue_size, stream_queue_size);
-    spawn_request_workers(worker_count, normal_rx, false);
-    spawn_request_workers(stream_worker_count, stream_rx, true);
-
+fn run_backend_accept_loop(server: Server, normal_tx: Sender<Request>, stream_tx: Sender<Request>) {
     for request in server.incoming_requests() {
         if crate::shutdown_requested() || request.url() == "/__shutdown" {
             let _ = request.respond(tiny_http::Response::from_string("shutdown"));
@@ -177,18 +179,61 @@ fn run_backend_server(server: Server) {
     }
 }
 
+fn run_backend_servers(servers: Vec<Server>) {
+    let worker_count = http_worker_count();
+    let stream_worker_count = http_stream_worker_count();
+    let queue_size = http_queue_size(worker_count);
+    let stream_queue_size = http_stream_queue_size(stream_worker_count);
+    let (normal_tx, normal_rx) = bounded::<Request>(queue_size);
+    let (stream_tx, stream_rx) = bounded::<Request>(stream_queue_size);
+    crate::gateway::record_http_queue_capacity(queue_size, stream_queue_size);
+    spawn_request_workers(worker_count, normal_rx, false);
+    spawn_request_workers(stream_worker_count, stream_rx, true);
+    let acceptors = servers
+        .into_iter()
+        .map(|server| {
+            let normal_tx = normal_tx.clone();
+            let stream_tx = stream_tx.clone();
+            thread::spawn(move || run_backend_accept_loop(server, normal_tx, stream_tx))
+        })
+        .collect::<Vec<_>>();
+    drop(normal_tx);
+    drop(stream_tx);
+    for join in acceptors {
+        let _ = join.join();
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn start_backend_server() -> io::Result<BackendServer> {
-    let server =
-        Server::http("127.0.0.1:0").map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-    let addr = server
-        .server_addr()
-        .to_ip()
-        .map(|address| address.to_string())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "backend addr missing"))?;
-    let join = thread::spawn(move || run_backend_server(server));
+    start_backend_server_at("127.0.0.1:0")
+}
+
+pub(crate) fn start_backend_server_at(bind_addr: &str) -> io::Result<BackendServer> {
+    let (servers, addr) = if let Some([v4, v6]) = localhost_bind_variants(bind_addr) {
+        let v4_server = Server::http(&v4).map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+        let v6_server = Server::http(&v6).map_err(|err| io::Error::new(io::ErrorKind::Other, err));
+        let servers = match (v4_server, v6_server) {
+            (Ok(v4_server), Ok(v6_server)) => vec![v4_server, v6_server],
+            (Ok(server), Err(_)) | (Err(_), Ok(server)) => vec![server],
+            (Err(err), Err(_)) => return Err(err),
+        };
+        (servers, bind_addr.trim().to_string())
+    } else {
+        let server =
+            Server::http(bind_addr).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let addr = server
+            .server_addr()
+            .to_ip()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| bind_addr.trim().to_string());
+        (vec![server], addr)
+    };
+    let join = thread::spawn(move || run_backend_servers(servers));
     Ok(BackendServer { addr, join })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn wake_backend_shutdown(addr: &str) {
     let Ok(mut stream) = TcpStream::connect(addr) else {
         return;

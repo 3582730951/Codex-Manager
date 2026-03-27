@@ -97,6 +97,7 @@ fn handle_rpc_body(body: &str) -> (u16, String, bool) {
     (200, json, success)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn is_axum_json_content_type(headers: &HeaderMap) -> bool {
     headers
         .get("Content-Type")
@@ -106,6 +107,7 @@ fn is_axum_json_content_type(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn validate_axum_headers(headers: &HeaderMap) -> Option<AxumResponse> {
     if !is_axum_json_content_type(headers) {
         return Some((StatusCode::UNSUPPORTED_MEDIA_TYPE, "{}").into_response());
@@ -147,6 +149,7 @@ fn validate_axum_headers(headers: &HeaderMap) -> Option<AxumResponse> {
     None
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn handle_rpc_http(headers: HeaderMap, body: String) -> AxumResponse {
     let mut rpc_metrics_guard = crate::gateway::begin_rpc_request();
     if let Some(response) = validate_axum_headers(&headers) {

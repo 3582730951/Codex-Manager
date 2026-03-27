@@ -188,6 +188,7 @@ pub(crate) fn strict_request_param_allowlist_enabled() -> bool {
     STRICT_REQUEST_PARAM_ALLOWLIST.load(Ordering::Relaxed)
 }
 
+#[allow(dead_code)]
 pub(crate) fn request_gate_wait_timeout() -> Duration {
     ensure_runtime_config_loaded();
     Duration::from_millis(REQUEST_GATE_WAIT_TIMEOUT_MS.load(Ordering::Relaxed))
