@@ -3,19 +3,14 @@ use super::{
     resolve_logical_account_id, ExistingAccountIndex, ImportTokenPayload,
 };
 use crate::account_identity::build_account_storage_id;
+use crate::test_support;
 use codexmanager_core::storage::{now_ts, Account, Storage};
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TEST_ID_TOKEN_WS_A: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdWItMSIsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsIndvcmtzcGFjZV9pZCI6IndzLWEiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiY2dwdC0xIn19.sig";
 const TEST_ID_TOKEN_META: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdWItMSIsImVtYWlsIjoibWV0YUBleGFtcGxlLmNvbSIsIndvcmtzcGFjZV9pZCI6IndzLW1ldGEiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiY2dwdC1tZXRhIn19.sig";
-
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
 
 fn unique_temp_db_path() -> PathBuf {
     let unique = SystemTime::now()
@@ -264,7 +259,7 @@ fn import_single_item_prefers_meta_fields_for_new_account() {
 
 #[test]
 fn import_account_auth_json_keeps_valid_items_when_one_content_is_invalid() {
-    let _guard = env_lock().lock().expect("env lock");
+    let _guard = test_support::env_lock().lock().expect("env lock");
     let db_path = unique_temp_db_path();
     let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
     std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);

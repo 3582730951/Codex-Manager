@@ -15,7 +15,10 @@ pub(crate) fn has_thread_anchor_conflict(
     conversation_id: Option<&str>,
     prompt_cache_key: Option<&str>,
 ) -> bool {
-    match (normalize_anchor(conversation_id), normalize_anchor(prompt_cache_key)) {
+    match (
+        normalize_anchor(conversation_id),
+        normalize_anchor(prompt_cache_key),
+    ) {
         (Some(conversation_id), Some(prompt_cache_key)) => conversation_id != prompt_cache_key,
         _ => false,
     }
@@ -118,7 +121,10 @@ mod tests {
         );
 
         assert_eq!(actual.incoming_session_id, Some("conv_anchor_fallback"));
-        assert_eq!(actual.incoming_client_request_id, Some("conv_anchor_fallback"));
+        assert_eq!(
+            actual.incoming_client_request_id,
+            Some("conv_anchor_fallback")
+        );
         assert_eq!(
             actual.incoming_turn_state,
             Some("legacy_turn_state_should_not_win")
@@ -137,15 +143,23 @@ mod tests {
         );
 
         assert_eq!(actual.incoming_session_id, Some("conversation_anchor"));
-        assert_eq!(actual.incoming_client_request_id, Some("conversation_anchor"));
+        assert_eq!(
+            actual.incoming_client_request_id,
+            Some("conversation_anchor")
+        );
         assert_eq!(actual.incoming_turn_state, None);
         assert_eq!(actual.fallback_session_id, Some("prompt_thread_anchor"));
     }
 
     #[test]
     fn drops_orphan_turn_state_without_conversation_anchor() {
-        let actual =
-            derive_outgoing_session_affinity(None, Some("explicit_client_request_id"), Some("turn_state_ok"), None, None);
+        let actual = derive_outgoing_session_affinity(
+            None,
+            Some("explicit_client_request_id"),
+            Some("turn_state_ok"),
+            None,
+            None,
+        );
 
         assert_eq!(actual.incoming_session_id, None);
         assert_eq!(
@@ -166,6 +180,9 @@ mod tests {
             Some("conversation_anchor"),
             Some("conversation_anchor")
         ));
-        assert!(!has_thread_anchor_conflict(Some("conversation_anchor"), None));
+        assert!(!has_thread_anchor_conflict(
+            Some("conversation_anchor"),
+            None
+        ));
     }
 }

@@ -43,7 +43,13 @@ fn apply_passthrough_request_overrides(
     path: &str,
     body: Vec<u8>,
     api_key: &ApiKey,
-) -> (Vec<u8>, Option<String>, Option<String>, bool, Option<String>) {
+) -> (
+    Vec<u8>,
+    Option<String>,
+    Option<String>,
+    bool,
+    Option<String>,
+) {
     let (effective_model, effective_reasoning, effective_service_tier) =
         resolve_effective_request_overrides(api_key);
     let rewritten_body =
@@ -60,7 +66,9 @@ fn apply_passthrough_request_overrides(
     (
         rewritten_body,
         request_meta.model.or(api_key.model_slug.clone()),
-        request_meta.reasoning_effort.or(api_key.reasoning_effort.clone()),
+        request_meta
+            .reasoning_effort
+            .or(api_key.reasoning_effort.clone()),
         request_meta.has_prompt_cache_key,
         request_meta.request_shape,
     )
@@ -85,8 +93,8 @@ pub(super) fn build_local_validation_result(
     if api_key.rotation_strategy == ROTATION_AGGREGATE_API {
         let (rewritten_body, model_for_log, reasoning_for_log, has_prompt_cache_key, request_shape) =
             apply_passthrough_request_overrides(&normalized_path, body, &api_key);
-        let incoming_headers =
-            incoming_headers.with_conversation_id_override(initial_local_conversation_id.as_deref());
+        let incoming_headers = incoming_headers
+            .with_conversation_id_override(initial_local_conversation_id.as_deref());
         return Ok(LocalValidationResult {
             trace_id,
             incoming_headers,

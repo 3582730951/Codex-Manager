@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use codexmanager_core::storage::{Account, ConversationBinding, Token};
 
 use super::super::super::IncomingHeaderSnapshot;
@@ -11,6 +13,7 @@ pub(in super::super) struct UpstreamRequestSetup {
     pub(in super::super) url_alt: Option<String>,
     pub(in super::super) candidate_count: usize,
     pub(in super::super) account_max_inflight: usize,
+    pub(in super::super) account_dynamic_limits: HashMap<String, usize>,
     pub(in super::super) anthropic_has_prompt_cache_key: bool,
     pub(in super::super) has_sticky_fallback_session: bool,
     pub(in super::super) has_sticky_fallback_conversation: bool,
@@ -19,6 +22,7 @@ pub(in super::super) struct UpstreamRequestSetup {
 }
 
 pub(in super::super) fn prepare_request_setup(
+    storage: &codexmanager_core::storage::Storage,
     path: &str,
     protocol_type: &str,
     has_prompt_cache_key: bool,
@@ -54,6 +58,15 @@ pub(in super::super) fn prepare_request_setup(
         key_id,
         model_for_log,
     );
+    let preserve_head = conversation_routing.as_ref().is_some_and(|routing| {
+        routing.binding_selected || routing.manual_preferred_account_id.is_some()
+    });
+    let account_dynamic_limits = super::super::super::rebalance_scheduler_candidates(
+        storage,
+        candidates,
+        account_max_inflight,
+        preserve_head,
+    );
     let candidate_order = candidates
         .iter()
         .map(|(account, _)| format!("{}#sort={}", account.id, account.sort))
@@ -74,6 +87,7 @@ pub(in super::super) fn prepare_request_setup(
         url_alt,
         candidate_count,
         account_max_inflight,
+        account_dynamic_limits,
         anthropic_has_prompt_cache_key,
         has_sticky_fallback_session: false,
         has_sticky_fallback_conversation:

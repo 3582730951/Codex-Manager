@@ -2,17 +2,25 @@ use super::{
     build_usage_request_headers, summarize_usage_error_response, usage_http_client,
     CHATGPT_ACCOUNT_ID_HEADER_NAME,
 };
+use codexmanager_core::storage::Storage;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::StatusCode;
-use std::sync::{Mutex, MutexGuard};
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use std::path::PathBuf;
+use std::sync::MutexGuard;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn lock_env() -> MutexGuard<'static, ()> {
-    // 中文注释：单进程并行跑测试时，环境变量是全局共享的；这里串行化避免用例互相污染导致偶发失败。
-    ENV_LOCK
+    crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn unique_temp_db_path() -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    std::env::temp_dir().join(format!("codexmanager-usage-http-test-{unique}.db"))
 }
 
 fn usage_header_runtime_guard() -> MutexGuard<'static, ()> {
@@ -218,6 +226,15 @@ fn refresh_token_auth_error_reason_from_message_tracks_canonical_messages() {
 
 #[test]
 fn usage_http_default_headers_follow_gateway_runtime_profile() {
+    let _env_lock = lock_env();
+    let db_path = unique_temp_db_path();
+    let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
+    std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
+
+    let storage = Storage::open(&db_path).expect("open storage");
+    storage.init().expect("init storage");
+    drop(storage);
+
     let (_guard, _restore) = usage_header_runtime_scope();
     crate::set_gateway_originator("codex_cli_rs_usage").expect("set gateway originator");
     crate::set_gateway_residency_requirement(Some("us"))
@@ -237,6 +254,12 @@ fn usage_http_default_headers_follow_gateway_runtime_profile() {
             .and_then(|value| value.to_str().ok()),
         Some("us")
     );
+
+    match previous_db_path {
+        Some(value) => std::env::set_var("CODEXMANAGER_DB_PATH", value),
+        None => std::env::remove_var("CODEXMANAGER_DB_PATH"),
+    }
+    let _ = std::fs::remove_file(&db_path);
 }
 
 #[test]

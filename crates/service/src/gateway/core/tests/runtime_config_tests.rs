@@ -65,14 +65,14 @@ fn reload_from_env_updates_timeout_and_proxy() {
 }
 
 #[test]
-fn reload_from_env_defaults_account_max_inflight_to_one() {
+fn reload_from_env_defaults_account_max_inflight_to_dynamic_scheduler_mode() {
     let _guard = test_guard();
     let _guard = EnvGuard::clear(ENV_ACCOUNT_MAX_INFLIGHT);
     let _request_compression_guard = EnvGuard::clear(ENV_ENABLE_REQUEST_COMPRESSION);
 
     reload_from_env();
 
-    assert_eq!(account_max_inflight_limit(), 1);
+    assert_eq!(account_max_inflight_limit(), 0);
     assert!(request_compression_enabled());
 }
 

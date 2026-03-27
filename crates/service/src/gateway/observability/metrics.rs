@@ -356,13 +356,16 @@ impl Drop for AccountInFlightGuard {
     fn drop(&mut self) {
         let lock = ACCOUNT_INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()));
         let mut map = crate::lock_utils::lock_recover(lock, "account_inflight");
+        let mut next_inflight = 0usize;
         if let Some(value) = map.get_mut(&self.account_id) {
             if *value > 1 {
                 *value -= 1;
+                next_inflight = *value;
             } else {
                 map.remove(&self.account_id);
             }
         }
+        crate::gateway::scheduler_set_account_inflight(&self.account_id, next_inflight, true);
     }
 }
 
@@ -371,6 +374,7 @@ pub(crate) fn acquire_account_inflight(account_id: &str) -> AccountInFlightGuard
     let mut map = crate::lock_utils::lock_recover(lock, "account_inflight");
     let entry = map.entry(account_id.to_string()).or_insert(0);
     *entry += 1;
+    crate::gateway::scheduler_set_account_inflight(account_id, *entry, false);
     AccountInFlightGuard {
         account_id: account_id.to_string(),
     }

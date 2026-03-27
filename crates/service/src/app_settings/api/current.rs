@@ -1,6 +1,6 @@
+use crate::app_settings::{list_app_settings_map, listener_bind_addr_for_mode};
 use crate::initialize_storage_if_needed;
 use crate::web_access_password_configured;
-use crate::app_settings::{list_app_settings_map, listener_bind_addr_for_mode};
 use codexmanager_core::rpc::types::ModelOption;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -49,9 +49,7 @@ fn normalize_service_bind_mode_value(raw: Option<&str>) -> &'static str {
     };
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "all_interfaces" | "all-interfaces" | "all" | "0.0.0.0" => {
-            SERVICE_BIND_MODE_ALL_INTERFACES
-        }
+        "all_interfaces" | "all-interfaces" | "all" | "0.0.0.0" => SERVICE_BIND_MODE_ALL_INTERFACES,
         _ => SERVICE_BIND_MODE_LOOPBACK,
     }
 }

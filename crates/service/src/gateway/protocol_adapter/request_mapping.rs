@@ -610,10 +610,7 @@ fn resolve_anthropic_parallel_tool_calls(source: &serde_json::Map<String, Value>
 fn fix_array_items_in_schema(mut value: Value) -> Value {
     match &mut value {
         Value::Object(obj) => {
-            let schema_type = obj
-                .get("type")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let schema_type = obj.get("type").and_then(Value::as_str).map(str::to_string);
             if schema_type.as_deref() == Some("array") && !obj.contains_key("items") {
                 obj.insert("items".to_string(), json!({}));
             }

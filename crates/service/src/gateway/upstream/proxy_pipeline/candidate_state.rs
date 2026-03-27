@@ -184,6 +184,7 @@ mod tests {
             url_alt: None,
             candidate_count: 1,
             account_max_inflight: 1,
+            account_dynamic_limits: std::collections::HashMap::new(),
             anthropic_has_prompt_cache_key: false,
             has_sticky_fallback_session: false,
             has_sticky_fallback_conversation: false,

@@ -73,7 +73,9 @@ pub(super) fn fingerprint_prompt_cache_key(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fingerprint_prompt_cache_key, resolve_prompt_cache_key_rewrite, PromptCacheKeyRewriteSource};
+    use super::{
+        fingerprint_prompt_cache_key, resolve_prompt_cache_key_rewrite, PromptCacheKeyRewriteSource,
+    };
 
     #[test]
     fn missing_input_keeps_existing_value() {

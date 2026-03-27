@@ -50,9 +50,9 @@ impl Storage {
     }
 
     pub fn list_aggregate_apis(&self) -> Result<Vec<AggregateApi>> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("{AGGREGATE_API_SELECT_SQL} ORDER BY sort ASC, updated_at DESC"))?;
+        let mut stmt = self.conn.prepare(&format!(
+            "{AGGREGATE_API_SELECT_SQL} ORDER BY sort ASC, updated_at DESC"
+        ))?;
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
@@ -112,8 +112,10 @@ impl Storage {
     }
 
     pub fn delete_aggregate_api(&self, api_id: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM aggregate_api_secrets WHERE aggregate_api_id = ?1", [api_id])?;
+        self.conn.execute(
+            "DELETE FROM aggregate_api_secrets WHERE aggregate_api_id = ?1",
+            [api_id],
+        )?;
         self.conn
             .execute("DELETE FROM aggregate_apis WHERE id = ?1", [api_id])?;
         Ok(())

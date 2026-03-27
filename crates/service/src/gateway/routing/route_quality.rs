@@ -38,7 +38,8 @@ where
     mutator(&mut state.entries, now);
 }
 
-pub(crate) fn record_route_quality(account_id: &str, status_code: u16) {
+pub(crate) fn record_route_quality(account_id: &str, status_code: u16) -> i32 {
+    let mut next_health = DEFAULT_ROUTE_HEALTH_SCORE;
     with_map_mut(|map, now| {
         let record = map.entry(account_id.to_string()).or_default();
         if record.updated_at == 0 {
@@ -66,7 +67,9 @@ pub(crate) fn record_route_quality(account_id: &str, status_code: u16) {
             }
             _ => {}
         }
+        next_health = record.health_score;
     });
+    next_health
 }
 
 pub(crate) fn route_health_score(account_id: &str) -> i32 {

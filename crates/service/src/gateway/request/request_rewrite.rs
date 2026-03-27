@@ -459,11 +459,12 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
                         .get("prompt_cache_key")
                         .and_then(Value::as_str)
                         .map(str::to_string);
-                    let prompt_cache_key_decision = request_rewrite_prompt_cache::resolve_prompt_cache_key_rewrite(
-                        existing_prompt_cache_key.as_deref(),
-                        prompt_cache_key,
-                        force_prompt_cache_key,
-                    );
+                    let prompt_cache_key_decision =
+                        request_rewrite_prompt_cache::resolve_prompt_cache_key_rewrite(
+                            existing_prompt_cache_key.as_deref(),
+                            prompt_cache_key,
+                            force_prompt_cache_key,
+                        );
                     if responses::ensure_prompt_cache_key(
                         path,
                         obj,

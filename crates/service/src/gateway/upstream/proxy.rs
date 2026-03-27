@@ -1,5 +1,5 @@
-use crate::apikey_profile::{PROTOCOL_ANTHROPIC_NATIVE, PROTOCOL_AZURE_OPENAI};
 use crate::apikey_profile::ROTATION_AGGREGATE_API;
+use crate::apikey_profile::{PROTOCOL_ANTHROPIC_NATIVE, PROTOCOL_AZURE_OPENAI};
 use crate::gateway::request_log::RequestLogUsage;
 use std::time::Instant;
 use tiny_http::Request;
@@ -104,57 +104,58 @@ pub(in super::super) fn proxy_validated_request(
     super::super::trace_log::log_request_body_preview(trace_id.as_str(), body.as_ref());
 
     if rotation_strategy == ROTATION_AGGREGATE_API {
-        let aggregate_api_candidates = match super::protocol::aggregate_api::resolve_aggregate_api_rotation_candidates(
-            &storage,
-            protocol_type.as_str(),
-            aggregate_api_id.as_deref(),
-        ) {
-            Ok(candidates) => candidates,
-            Err(err) => {
-                let message = err;
-                super::super::record_gateway_request_outcome(
-                    path.as_str(),
-                    404,
-                    Some("aggregate_api"),
-                );
-                super::super::trace_log::log_request_final(
-                    trace_id.as_str(),
-                    404,
-                    Some(key_id.as_str()),
-                    None,
-                    Some(message.as_str()),
-                    started_at.elapsed().as_millis(),
-                );
-                super::super::write_request_log(
-                    &storage,
-                    super::super::request_log::RequestLogTraceContext {
-                        trace_id: Some(trace_id.as_str()),
-                        original_path: Some(original_path.as_str()),
-                        adapted_path: Some(path.as_str()),
-                        response_adapter: Some(super::super::ResponseAdapter::Passthrough),
-                        ..Default::default()
-                    },
-                    Some(key_id.as_str()),
-                    None,
-                    path.as_str(),
-                    request_method.as_str(),
-                    model_for_log.as_deref(),
-                    reasoning_for_log.as_deref(),
-                    None,
-                    Some(404),
-                    super::super::request_log::RequestLogUsage::default(),
-                    Some(message.as_str()),
-                    Some(started_at.elapsed().as_millis()),
-                );
-                let response = super::super::error_response::terminal_text_response(
-                    404,
-                    message,
-                    Some(trace_id.as_str()),
-                );
-                let _ = request.respond(response);
-                return Ok(());
-            }
-        };
+        let aggregate_api_candidates =
+            match super::protocol::aggregate_api::resolve_aggregate_api_rotation_candidates(
+                &storage,
+                protocol_type.as_str(),
+                aggregate_api_id.as_deref(),
+            ) {
+                Ok(candidates) => candidates,
+                Err(err) => {
+                    let message = err;
+                    super::super::record_gateway_request_outcome(
+                        path.as_str(),
+                        404,
+                        Some("aggregate_api"),
+                    );
+                    super::super::trace_log::log_request_final(
+                        trace_id.as_str(),
+                        404,
+                        Some(key_id.as_str()),
+                        None,
+                        Some(message.as_str()),
+                        started_at.elapsed().as_millis(),
+                    );
+                    super::super::write_request_log(
+                        &storage,
+                        super::super::request_log::RequestLogTraceContext {
+                            trace_id: Some(trace_id.as_str()),
+                            original_path: Some(original_path.as_str()),
+                            adapted_path: Some(path.as_str()),
+                            response_adapter: Some(super::super::ResponseAdapter::Passthrough),
+                            ..Default::default()
+                        },
+                        Some(key_id.as_str()),
+                        None,
+                        path.as_str(),
+                        request_method.as_str(),
+                        model_for_log.as_deref(),
+                        reasoning_for_log.as_deref(),
+                        None,
+                        Some(404),
+                        super::super::request_log::RequestLogUsage::default(),
+                        Some(message.as_str()),
+                        Some(started_at.elapsed().as_millis()),
+                    );
+                    let response = super::super::error_response::terminal_text_response(
+                        404,
+                        message,
+                        Some(trace_id.as_str()),
+                    );
+                    let _ = request.respond(response);
+                    return Ok(());
+                }
+            };
 
         return super::protocol::aggregate_api::proxy_aggregate_request(
             request,
@@ -218,6 +219,7 @@ pub(in super::super) fn proxy_validated_request(
         CandidatePrecheckResult::Responded => return Ok(()),
     };
     let setup = prepare_request_setup(
+        &storage,
         path.as_str(),
         protocol_type.as_str(),
         has_prompt_cache_key,
@@ -246,6 +248,7 @@ pub(in super::super) fn proxy_validated_request(
         reasoning_for_log.as_deref(),
         setup.candidate_count,
         setup.account_max_inflight,
+        setup.account_dynamic_limits.clone(),
     );
     let allow_openai_fallback = false;
     let disable_challenge_stateless_retry = !(protocol_type == PROTOCOL_ANTHROPIC_NATIVE

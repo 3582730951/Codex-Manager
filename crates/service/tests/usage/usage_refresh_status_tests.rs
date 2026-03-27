@@ -163,7 +163,10 @@ fn mark_usage_unreachable_marks_401_403_429_as_unavailable() {
     let reasons = storage
         .latest_account_status_reasons(&["acc-2".to_string()])
         .expect("load reasons");
-    assert_eq!(reasons.get("acc-2").map(String::as_str), Some("usage_http_401"));
+    assert_eq!(
+        reasons.get("acc-2").map(String::as_str),
+        Some("usage_http_401")
+    );
 
     mark_usage_unreachable_if_needed(&storage, "acc-2", "usage endpoint status 403 Forbidden");
     let unavailable_after_403 = storage
@@ -177,9 +180,16 @@ fn mark_usage_unreachable_marks_401_403_429_as_unavailable() {
     let reasons = storage
         .latest_account_status_reasons(&["acc-2".to_string()])
         .expect("load reasons");
-    assert_eq!(reasons.get("acc-2").map(String::as_str), Some("usage_http_403"));
+    assert_eq!(
+        reasons.get("acc-2").map(String::as_str),
+        Some("usage_http_403")
+    );
 
-    mark_usage_unreachable_if_needed(&storage, "acc-2", "usage endpoint status 429 Too Many Requests");
+    mark_usage_unreachable_if_needed(
+        &storage,
+        "acc-2",
+        "usage endpoint status 429 Too Many Requests",
+    );
     let unavailable_after_429 = storage
         .list_accounts()
         .expect("list")
@@ -191,7 +201,10 @@ fn mark_usage_unreachable_marks_401_403_429_as_unavailable() {
     let reasons = storage
         .latest_account_status_reasons(&["acc-2".to_string()])
         .expect("load reasons");
-    assert_eq!(reasons.get("acc-2").map(String::as_str), Some("usage_http_429"));
+    assert_eq!(
+        reasons.get("acc-2").map(String::as_str),
+        Some("usage_http_429")
+    );
 
     mark_usage_unreachable_if_needed(
         &storage,
@@ -209,7 +222,10 @@ fn mark_usage_unreachable_marks_401_403_429_as_unavailable() {
     let reasons = storage
         .latest_account_status_reasons(&["acc-2".to_string()])
         .expect("load reasons");
-    assert_eq!(reasons.get("acc-2").map(String::as_str), Some("usage_http_429"));
+    assert_eq!(
+        reasons.get("acc-2").map(String::as_str),
+        Some("usage_http_429")
+    );
 }
 
 #[test]

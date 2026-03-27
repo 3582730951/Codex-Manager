@@ -1,6 +1,7 @@
 param(
     [string]$Base = "http://localhost:48760",
     [string]$ApiKey = "",
+    [string]$ApiKeyFile = "",
     [string]$Model = "gpt-5.3-codex",
     [int]$TimeoutSeconds = 90,
     [string]$OutDir = "",
@@ -27,10 +28,23 @@ function Resolve-OutDir {
 }
 
 function Resolve-ApiKey {
-    param([string]$ExplicitApiKey)
+    param(
+        [string]$ExplicitApiKey,
+        [string]$InputApiKeyFile
+    )
 
     if ($ExplicitApiKey -and $ExplicitApiKey.Trim().Length -gt 0) {
         return $ExplicitApiKey.Trim()
+    }
+    if ($InputApiKeyFile -and $InputApiKeyFile.Trim().Length -gt 0) {
+        if (-not (Test-Path -LiteralPath $InputApiKeyFile)) {
+            throw "ApiKeyFile not found: $InputApiKeyFile"
+        }
+        $fileValue = Get-Content -LiteralPath $InputApiKeyFile -Raw
+        if ($fileValue -and $fileValue.Trim().Length -gt 0) {
+            return $fileValue.Trim()
+        }
+        throw "ApiKeyFile is empty: $InputApiKeyFile"
     }
     foreach ($name in @("CODEX_API_KEY", "OPENAI_API_KEY")) {
         $value = [Environment]::GetEnvironmentVariable($name)
@@ -54,7 +68,8 @@ function Invoke-Probe {
         [string]$ScriptPath,
         [string[]]$Args,
         [string]$LogPath,
-        [switch]$EnableDryRun
+        [switch]$EnableDryRun,
+        [string]$InheritedApiKey = ""
     )
 
     $commandLine = "& `"$ScriptPath`" " + (Join-ArgLine -Args $Args)
@@ -69,7 +84,32 @@ function Invoke-Probe {
         }
     }
 
-    $output = & $ScriptPath @Args 2>&1
+    $shellExe = Join-Path $PSHOME "pwsh.exe"
+    if (-not (Test-Path -LiteralPath $shellExe)) {
+        throw "pwsh.exe not found under PSHOME: $PSHOME"
+    }
+
+    $probeArgs = @("-NoLogo", "-NoProfile", "-File", $ScriptPath) + $Args
+    $previousCodexApiKey = $env:CODEX_API_KEY
+    $previousOpenAiApiKey = $env:OPENAI_API_KEY
+    try {
+        if ($InheritedApiKey -and $InheritedApiKey.Trim().Length -gt 0) {
+            $env:CODEX_API_KEY = $InheritedApiKey
+            $env:OPENAI_API_KEY = $InheritedApiKey
+        }
+        $output = & $shellExe @probeArgs 2>&1
+    } finally {
+        if ($null -eq $previousCodexApiKey) {
+            Remove-Item Env:CODEX_API_KEY -ErrorAction SilentlyContinue
+        } else {
+            $env:CODEX_API_KEY = $previousCodexApiKey
+        }
+        if ($null -eq $previousOpenAiApiKey) {
+            Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
+        } else {
+            $env:OPENAI_API_KEY = $previousOpenAiApiKey
+        }
+    }
     $output | Tee-Object -FilePath $LogPath | Out-Null
     $success = ($LASTEXITCODE -eq 0)
 
@@ -83,7 +123,7 @@ function Invoke-Probe {
 }
 
 $suiteOutDir = Resolve-OutDir -InputOutDir $OutDir
-$apiKey = if ($DryRun) { "<dry-run>" } else { Resolve-ApiKey -ExplicitApiKey $ApiKey }
+$apiKey = if ($DryRun) { "<dry-run>" } else { Resolve-ApiKey -ExplicitApiKey $ApiKey -InputApiKeyFile $ApiKeyFile }
 $scriptRoot = $PSScriptRoot
 
 $steps = New-Object System.Collections.Generic.List[object]
@@ -95,7 +135,6 @@ if (-not $SkipTools) {
         script = $toolsScript
         args = @(
             "-Base", $Base,
-            "-ApiKey", $apiKey,
             "-Model", $Model,
             "-TimeoutSeconds", "$TimeoutSeconds"
         )
@@ -106,7 +145,6 @@ if (-not $SkipTools) {
         script = $toolsScript
         args = @(
             "-Base", $Base,
-            "-ApiKey", $apiKey,
             "-Model", $Model,
             "-TimeoutSeconds", "$TimeoutSeconds",
             "-Stream"
@@ -122,7 +160,6 @@ if (-not $SkipStreams) {
         script = $streamScript
         args = @(
             "-Base", $Base,
-            "-ApiKey", $apiKey,
             "-Model", $Model,
             "-TimeoutSeconds", "$TimeoutSeconds",
             "-OutDir", (Join-Path $suiteOutDir "codex_stream_probe")
@@ -136,7 +173,7 @@ if ($steps.Count -eq 0) {
 }
 
 $results = foreach ($step in $steps) {
-    Invoke-Probe -Name $step.name -ScriptPath $step.script -Args $step.args -LogPath $step.log -EnableDryRun:$DryRun
+    Invoke-Probe -Name $step.name -ScriptPath $step.script -Args $step.args -LogPath $step.log -EnableDryRun:$DryRun -InheritedApiKey $apiKey
 }
 
 $failed = @($results | Where-Object { -not $_.success })

@@ -92,252 +92,275 @@ pub(in super::super) fn execute_candidate_sequence(
     } = params;
     let mut request = Some(request);
     let mut state = CandidateExecutionState::default();
+    let mut candidates = candidates;
     let mut attempted_account_ids = Vec::new();
     let mut skipped_cooldown = 0usize;
     let mut skipped_inflight = 0usize;
     let mut last_attempt_url = None;
     let mut last_attempt_error = None;
-    for (idx, (account, mut token)) in candidates.into_iter().enumerate() {
-        if deadline::is_expired(request_deadline) {
-            let request = request
-                .take()
-                .expect("request should be available before timeout response");
-            respond_total_timeout(
-                request,
-                context,
-                trace_id,
-                started_at,
-                model_for_log,
-                Some(attempted_account_ids.as_slice()),
-            )?;
-            return Ok(CandidateExecutionResult::Handled);
-        }
 
-        let strip_session_affinity =
-            state.strip_session_affinity(&account, idx, setup.anthropic_has_prompt_cache_key);
-        let attempt_thread = super::super::super::conversation_binding::resolve_attempt_thread(
-            setup.conversation_routing.as_ref(),
-            &account,
-        );
-        let attempt_headers = attempt_thread
-            .as_ref()
-            .map(|thread| {
-                incoming_headers.with_thread_affinity_override(
-                    Some(thread.thread_anchor.as_str()),
-                    thread.reset_session_affinity,
-                )
-            })
-            .unwrap_or_else(|| incoming_headers.clone());
-        let attempt_model_override = free_account_model_override(storage, &account, &token);
-        let attempt_model_for_log = attempt_model_override.as_deref().or(model_for_log);
-        let body_for_attempt = state.body_for_attempt(
-            path,
-            body,
-            strip_session_affinity,
-            setup,
-            attempt_model_override.as_deref(),
-            attempt_thread
-                .as_ref()
-                .map(|thread| thread.thread_anchor.as_str()),
-        );
-        context.log_candidate_start(&account.id, idx, strip_session_affinity);
-        if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx) {
-            context.log_candidate_skip(&account.id, idx, skip_reason);
-            match skip_reason {
-                super::super::support::candidates::CandidateSkipReason::Cooldown => {
-                    skipped_cooldown += 1;
-                }
-                super::super::support::candidates::CandidateSkipReason::Inflight => {
-                    skipped_inflight += 1;
-                }
-            }
-            continue;
-        }
-        attempted_account_ids.push(account.id.clone());
-
-        let request_ref = request
-            .as_ref()
-            .ok_or_else(|| "request already consumed".to_string())?;
-        let request_ctx = UpstreamRequestContext::from_request(request_ref);
-        let incoming_session_id = attempt_headers.session_id();
-        let incoming_turn_state = attempt_headers.turn_state();
-        let incoming_conversation_id = attempt_headers.conversation_id();
-        let prompt_cache_key_for_trace =
-            extract_prompt_cache_key_for_trace(body_for_attempt.as_ref());
-        super::super::super::trace_log::log_attempt_profile(
-            trace_id,
-            &account.id,
-            idx,
-            setup.candidate_count,
-            strip_session_affinity,
-            incoming_session_id.is_some() || setup.has_sticky_fallback_session,
-            incoming_turn_state.is_some(),
-            incoming_conversation_id.is_some() || setup.has_sticky_fallback_conversation,
-            prompt_cache_key_for_trace.as_deref(),
-            request_shape,
-            body_for_attempt.len(),
-            attempt_model_for_log,
-        );
-
-        let mut inflight_guard = Some(super::super::super::acquire_account_inflight(&account.id));
-        let mut attempt_trace = CandidateAttemptTrace::default();
-        let decision = run_candidate_attempt(CandidateAttemptParams {
-            storage,
-            method,
-            request_ctx,
-            incoming_headers: &attempt_headers,
-            body: &body_for_attempt,
-            upstream_is_stream,
-            path,
-            request_deadline,
-            account: &account,
-            token: &mut token,
-            strip_session_affinity,
-            debug,
-            allow_openai_fallback,
-            disable_challenge_stateless_retry,
-            has_more_candidates: context.has_more_candidates(idx),
-            context,
-            setup,
-            trace: &mut attempt_trace,
-        });
-
-        match decision {
-            CandidateUpstreamDecision::Failover => {
-                super::super::super::record_gateway_failover_attempt();
-                last_attempt_url = attempt_trace.last_attempt_url.take();
-                last_attempt_error = attempt_trace.last_attempt_error.take();
-                continue;
-            }
-            CandidateUpstreamDecision::Terminal {
-                status_code,
-                message,
-            } => {
+    loop {
+        let mut skipped_this_round = 0usize;
+        for idx in 0..candidates.len() {
+            if deadline::is_expired(request_deadline) {
                 let request = request
                     .take()
-                    .expect("request should be available before terminal response");
-                finalize_terminal_candidate(
+                    .expect("request should be available before timeout response");
+                respond_total_timeout(
                     request,
                     context,
-                    &account.id,
-                    attempt_trace.last_attempt_url.as_deref(),
-                    status_code,
-                    message,
                     trace_id,
                     started_at,
-                    attempt_model_for_log,
+                    model_for_log,
                     Some(attempted_account_ids.as_slice()),
                 )?;
                 return Ok(CandidateExecutionResult::Handled);
             }
-            CandidateUpstreamDecision::RespondUpstream(mut resp) => {
-                if resp.status().as_u16() == 400
-                    && !strip_session_affinity
-                    && (incoming_turn_state.is_some() || setup.has_body_encrypted_content)
-                {
-                    let retry_body = state.retry_body(
-                        path,
-                        body,
-                        setup,
-                        attempt_model_override.as_deref(),
-                        attempt_thread
-                            .as_ref()
-                            .map(|thread| thread.thread_anchor.as_str()),
-                    );
-                    let retry_decision = run_candidate_attempt(CandidateAttemptParams {
-                        storage,
-                        method,
-                        request_ctx,
-                        incoming_headers: &attempt_headers,
-                        body: &retry_body,
-                        upstream_is_stream,
-                        path,
-                        request_deadline,
-                        account: &account,
-                        token: &mut token,
-                        strip_session_affinity: true,
-                        debug,
-                        allow_openai_fallback,
-                        disable_challenge_stateless_retry,
-                        has_more_candidates: context.has_more_candidates(idx),
-                        context,
-                        setup,
-                        trace: &mut attempt_trace,
-                    });
 
-                    match retry_decision {
-                        CandidateUpstreamDecision::RespondUpstream(retry_resp) => {
-                            resp = retry_resp;
-                        }
-                        CandidateUpstreamDecision::Failover => {
-                            super::super::super::record_gateway_failover_attempt();
-                            last_attempt_url = attempt_trace.last_attempt_url.take();
-                            last_attempt_error = attempt_trace.last_attempt_error.take();
-                            continue;
-                        }
-                        CandidateUpstreamDecision::Terminal {
-                            status_code,
-                            message,
-                        } => {
-                            let request = request
-                                .take()
-                                .expect("request should be available before terminal response");
-                            finalize_terminal_candidate(
-                                request,
-                                context,
-                                &account.id,
-                                attempt_trace.last_attempt_url.as_deref(),
-                                status_code,
-                                message,
-                                trace_id,
-                                started_at,
-                                attempt_model_for_log,
-                                Some(attempted_account_ids.as_slice()),
-                            )?;
-                            return Ok(CandidateExecutionResult::Handled);
-                        }
+            let (account, token) = candidates
+                .get_mut(idx)
+                .expect("candidate should exist for scheduler loop");
+            let strip_session_affinity =
+                state.strip_session_affinity(account, idx, setup.anthropic_has_prompt_cache_key);
+            let attempt_thread = super::super::super::conversation_binding::resolve_attempt_thread(
+                setup.conversation_routing.as_ref(),
+                account,
+            );
+            let attempt_headers = attempt_thread
+                .as_ref()
+                .map(|thread| {
+                    incoming_headers.with_thread_affinity_override(
+                        Some(thread.thread_anchor.as_str()),
+                        thread.reset_session_affinity,
+                    )
+                })
+                .unwrap_or_else(|| incoming_headers.clone());
+            let attempt_model_override = free_account_model_override(storage, account, token);
+            let attempt_model_for_log = attempt_model_override.as_deref().or(model_for_log);
+            let body_for_attempt = state.body_for_attempt(
+                path,
+                body,
+                strip_session_affinity,
+                setup,
+                attempt_model_override.as_deref(),
+                attempt_thread
+                    .as_ref()
+                    .map(|thread| thread.thread_anchor.as_str()),
+            );
+            context.log_candidate_start(&account.id, idx, strip_session_affinity);
+            if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx) {
+                context.log_candidate_skip(&account.id, idx, skip_reason);
+                skipped_this_round += 1;
+                match skip_reason {
+                    super::super::support::candidates::CandidateSkipReason::Cooldown => {
+                        skipped_cooldown += 1;
+                    }
+                    super::super::support::candidates::CandidateSkipReason::Inflight => {
+                        skipped_inflight += 1;
                     }
                 }
-                let request = request
-                    .take()
-                    .expect("request should be available before terminal response");
-                let guard = inflight_guard
-                    .take()
-                    .expect("inflight guard should be available before terminal response");
-                if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
-                    storage,
-                    setup.conversation_routing.as_ref(),
-                    &account,
-                    attempt_model_for_log,
-                    resp.status().as_u16(),
-                ) {
-                    log::warn!(
-                        "event=gateway_conversation_binding_update_failed trace_id={} account_id={} err={}",
-                        trace_id,
-                        account.id,
-                        err
-                    );
+                continue;
+            }
+            super::super::super::record_scheduler_assignment(&account.id);
+            attempted_account_ids.push(account.id.clone());
+
+            let request_ref = request
+                .as_ref()
+                .ok_or_else(|| "request already consumed".to_string())?;
+            let request_ctx = UpstreamRequestContext::from_request(request_ref);
+            let incoming_session_id = attempt_headers.session_id();
+            let incoming_turn_state = attempt_headers.turn_state();
+            let incoming_conversation_id = attempt_headers.conversation_id();
+            let prompt_cache_key_for_trace =
+                extract_prompt_cache_key_for_trace(body_for_attempt.as_ref());
+            super::super::super::trace_log::log_attempt_profile(
+                trace_id,
+                &account.id,
+                idx,
+                setup.candidate_count,
+                strip_session_affinity,
+                incoming_session_id.is_some() || setup.has_sticky_fallback_session,
+                incoming_turn_state.is_some(),
+                incoming_conversation_id.is_some() || setup.has_sticky_fallback_conversation,
+                prompt_cache_key_for_trace.as_deref(),
+                request_shape,
+                body_for_attempt.len(),
+                attempt_model_for_log,
+            );
+
+            let mut inflight_guard =
+                Some(super::super::super::acquire_account_inflight(&account.id));
+            let mut attempt_trace = CandidateAttemptTrace::default();
+            let decision = run_candidate_attempt(CandidateAttemptParams {
+                storage,
+                method,
+                request_ctx,
+                incoming_headers: &attempt_headers,
+                body: &body_for_attempt,
+                upstream_is_stream,
+                path,
+                request_deadline,
+                account,
+                token,
+                strip_session_affinity,
+                debug,
+                allow_openai_fallback,
+                disable_challenge_stateless_retry,
+                has_more_candidates: context.has_more_candidates(idx),
+                context,
+                setup,
+                trace: &mut attempt_trace,
+            });
+
+            match decision {
+                CandidateUpstreamDecision::Failover => {
+                    super::super::super::record_gateway_failover_attempt();
+                    last_attempt_url = attempt_trace.last_attempt_url.take();
+                    last_attempt_error = attempt_trace.last_attempt_error.take();
+                    continue;
                 }
-                finalize_upstream_response(
-                    request,
-                    resp,
-                    guard,
-                    context,
-                    &account.id,
-                    attempt_trace.last_attempt_url.as_deref(),
-                    attempt_trace.last_attempt_error.as_deref(),
-                    response_adapter,
-                    tool_name_restore_map,
-                    client_is_stream,
-                    path,
-                    trace_id,
-                    started_at,
-                    attempt_model_for_log,
-                    Some(attempted_account_ids.as_slice()),
-                )?;
-                return Ok(CandidateExecutionResult::Handled);
+                CandidateUpstreamDecision::Terminal {
+                    status_code,
+                    message,
+                } => {
+                    let request = request
+                        .take()
+                        .expect("request should be available before terminal response");
+                    finalize_terminal_candidate(
+                        request,
+                        context,
+                        &account.id,
+                        attempt_trace.last_attempt_url.as_deref(),
+                        status_code,
+                        message,
+                        trace_id,
+                        started_at,
+                        attempt_model_for_log,
+                        Some(attempted_account_ids.as_slice()),
+                    )?;
+                    return Ok(CandidateExecutionResult::Handled);
+                }
+                CandidateUpstreamDecision::RespondUpstream(mut resp) => {
+                    if resp.status().as_u16() == 400
+                        && !strip_session_affinity
+                        && (incoming_turn_state.is_some() || setup.has_body_encrypted_content)
+                    {
+                        let retry_body = state.retry_body(
+                            path,
+                            body,
+                            setup,
+                            attempt_model_override.as_deref(),
+                            attempt_thread
+                                .as_ref()
+                                .map(|thread| thread.thread_anchor.as_str()),
+                        );
+                        let retry_decision = run_candidate_attempt(CandidateAttemptParams {
+                            storage,
+                            method,
+                            request_ctx,
+                            incoming_headers: &attempt_headers,
+                            body: &retry_body,
+                            upstream_is_stream,
+                            path,
+                            request_deadline,
+                            account,
+                            token,
+                            strip_session_affinity: true,
+                            debug,
+                            allow_openai_fallback,
+                            disable_challenge_stateless_retry,
+                            has_more_candidates: context.has_more_candidates(idx),
+                            context,
+                            setup,
+                            trace: &mut attempt_trace,
+                        });
+
+                        match retry_decision {
+                            CandidateUpstreamDecision::RespondUpstream(retry_resp) => {
+                                resp = retry_resp;
+                            }
+                            CandidateUpstreamDecision::Failover => {
+                                super::super::super::record_gateway_failover_attempt();
+                                last_attempt_url = attempt_trace.last_attempt_url.take();
+                                last_attempt_error = attempt_trace.last_attempt_error.take();
+                                continue;
+                            }
+                            CandidateUpstreamDecision::Terminal {
+                                status_code,
+                                message,
+                            } => {
+                                let request = request
+                                    .take()
+                                    .expect("request should be available before terminal response");
+                                finalize_terminal_candidate(
+                                    request,
+                                    context,
+                                    &account.id,
+                                    attempt_trace.last_attempt_url.as_deref(),
+                                    status_code,
+                                    message,
+                                    trace_id,
+                                    started_at,
+                                    attempt_model_for_log,
+                                    Some(attempted_account_ids.as_slice()),
+                                )?;
+                                return Ok(CandidateExecutionResult::Handled);
+                            }
+                        }
+                    }
+                    let request = request
+                        .take()
+                        .expect("request should be available before terminal response");
+                    let guard = inflight_guard
+                        .take()
+                        .expect("inflight guard should be available before terminal response");
+                    if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
+                        storage,
+                        setup.conversation_routing.as_ref(),
+                        account,
+                        attempt_model_for_log,
+                        resp.status().as_u16(),
+                    ) {
+                        log::warn!(
+                            "event=gateway_conversation_binding_update_failed trace_id={} account_id={} err={}",
+                            trace_id,
+                            account.id,
+                            err
+                        );
+                    }
+                    finalize_upstream_response(
+                        request,
+                        resp,
+                        guard,
+                        context,
+                        &account.id,
+                        attempt_trace.last_attempt_url.as_deref(),
+                        attempt_trace.last_attempt_error.as_deref(),
+                        response_adapter,
+                        tool_name_restore_map,
+                        client_is_stream,
+                        path,
+                        trace_id,
+                        started_at,
+                        attempt_model_for_log,
+                        Some(attempted_account_ids.as_slice()),
+                    )?;
+                    return Ok(CandidateExecutionResult::Handled);
+                }
             }
         }
+
+        if skipped_this_round > 0 {
+            if super::super::super::wait_for_scheduler_candidate_window(
+                candidates.as_slice(),
+                &setup.account_dynamic_limits,
+                request_deadline,
+            ) {
+                continue;
+            }
+        }
+
+        break;
     }
 
     Ok(CandidateExecutionResult::Exhausted {

@@ -1,6 +1,4 @@
-use codexmanager_core::rpc::types::{
-    AggregateApiListResult, JsonRpcRequest, JsonRpcResponse,
-};
+use codexmanager_core::rpc::types::{AggregateApiListResult, JsonRpcRequest, JsonRpcResponse};
 
 use crate::{
     create_aggregate_api, delete_aggregate_api, list_aggregate_apis, read_aggregate_api_secret,

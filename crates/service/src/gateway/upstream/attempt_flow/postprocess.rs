@@ -362,8 +362,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codexmanager_core::storage::{now_ts, Account, Storage, Token};
     use crate::gateway::IncomingHeaderSnapshot;
+    use codexmanager_core::storage::{now_ts, Account, Storage, Token};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::thread;

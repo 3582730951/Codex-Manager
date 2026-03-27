@@ -1,16 +1,25 @@
 use super::{clear_candidate_cache_for_tests, collect_gateway_candidates, CANDIDATE_CACHE_TTL_ENV};
+use crate::test_support;
 use codexmanager_core::storage::{now_ts, Account, Storage, Token, UsageSnapshotRecord};
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-static CANDIDATE_CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+fn unique_cache_db_path(label: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    std::env::temp_dir().join(format!("codexmanager-{label}-{unique}.db"))
+}
 
 #[test]
 fn candidate_snapshot_cache_reuses_recent_snapshot() {
-    let _guard = CANDIDATE_CACHE_TEST_LOCK.lock().expect("lock");
+    let _guard = test_support::env_lock().lock().expect("lock");
     let previous_ttl = std::env::var(CANDIDATE_CACHE_TTL_ENV).ok();
     let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
+    let db_path = unique_cache_db_path("selection-cache-test-1");
     std::env::set_var(CANDIDATE_CACHE_TTL_ENV, "2000");
-    std::env::set_var("CODEXMANAGER_DB_PATH", "selection-cache-test-1");
+    std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
     super::reload_from_env();
     clear_candidate_cache_for_tests();
 
@@ -75,15 +84,17 @@ fn candidate_snapshot_cache_reuses_recent_snapshot() {
         std::env::remove_var("CODEXMANAGER_DB_PATH");
     }
     super::reload_from_env();
+    let _ = std::fs::remove_file(&db_path);
 }
 
 #[test]
 fn candidates_follow_account_sort_order() {
-    let _guard = CANDIDATE_CACHE_TEST_LOCK.lock().expect("lock");
+    let _guard = test_support::env_lock().lock().expect("lock");
     let previous_ttl = std::env::var(CANDIDATE_CACHE_TTL_ENV).ok();
     let previous_db_path = std::env::var("CODEXMANAGER_DB_PATH").ok();
+    let db_path = unique_cache_db_path("selection-cache-test-2");
     std::env::set_var(CANDIDATE_CACHE_TTL_ENV, "0");
-    std::env::set_var("CODEXMANAGER_DB_PATH", "selection-cache-test-2");
+    std::env::set_var("CODEXMANAGER_DB_PATH", &db_path);
     super::reload_from_env();
     clear_candidate_cache_for_tests();
 
@@ -155,4 +166,5 @@ fn candidates_follow_account_sort_order() {
         std::env::remove_var("CODEXMANAGER_DB_PATH");
     }
     super::reload_from_env();
+    let _ = std::fs::remove_file(&db_path);
 }

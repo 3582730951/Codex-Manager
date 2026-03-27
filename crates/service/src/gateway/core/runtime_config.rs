@@ -35,8 +35,8 @@ pub(crate) const DEFAULT_GATEWAY_DEBUG: bool = false;
 const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 15;
 const DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_UPSTREAM_STREAM_TIMEOUT_MS: u64 = 1_800_000;
-// 中文注释：默认把单账号并发收紧到 1，避免多个长连接 Codex 会话同时压到同一账号上。
-const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 1;
+// 中文注释：默认关闭固定并发上限，改由调度器基于配额/健康/延迟动态分配 permit。
+const DEFAULT_ACCOUNT_MAX_INFLIGHT: usize = 0;
 const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = true;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 300;

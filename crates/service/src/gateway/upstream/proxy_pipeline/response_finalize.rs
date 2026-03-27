@@ -61,6 +61,15 @@ pub(super) fn finalize_terminal_candidate(
     attempted_account_ids: Option<&[String]>,
 ) -> Result<(), String> {
     let _ = context.mark_account_unavailable_for_gateway_error(account_id, &message);
+    super::super::super::record_scheduler_feedback(
+        account_id,
+        super::super::super::scheduler::SchedulerFeedback {
+            status_code,
+            elapsed_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            network_error: status_code >= 500,
+            stream_failed: false,
+        },
+    );
     context.log_final_result_with_model(
         Some(account_id),
         last_attempt_url,
@@ -178,6 +187,16 @@ pub(super) fn finalize_upstream_response(
     if let Some(error) = final_error.as_deref() {
         let _ = context.mark_account_unavailable_for_gateway_error(account_id, error);
     }
+
+    super::super::super::record_scheduler_feedback(
+        account_id,
+        super::super::super::scheduler::SchedulerFeedback {
+            status_code: status_for_log,
+            elapsed_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            network_error: upstream_stream_failed,
+            stream_failed: upstream_stream_failed,
+        },
+    );
 
     let usage = bridge.usage;
     context.log_final_result_with_model(

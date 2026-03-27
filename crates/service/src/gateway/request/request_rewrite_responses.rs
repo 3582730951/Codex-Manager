@@ -1,10 +1,10 @@
 use serde_json::Value;
 
-use super::request_rewrite_shared::{
-    path_matches_template, retain_fields_by_templates, TemplateAllowlist,
-};
 use super::request_rewrite_prompt_cache::{
     fingerprint_prompt_cache_key, resolve_prompt_cache_key_rewrite,
+};
+use super::request_rewrite_shared::{
+    path_matches_template, retain_fields_by_templates, TemplateAllowlist,
 };
 
 pub(super) fn is_compact_path(path: &str) -> bool {

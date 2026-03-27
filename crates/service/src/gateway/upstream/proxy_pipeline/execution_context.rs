@@ -1,5 +1,6 @@
 use super::super::support::candidates;
 use codexmanager_core::storage::Storage;
+use std::collections::HashMap;
 
 pub(in super::super) struct GatewayUpstreamExecutionContext<'a> {
     trace_id: &'a str,
@@ -14,6 +15,7 @@ pub(in super::super) struct GatewayUpstreamExecutionContext<'a> {
     reasoning_for_log: Option<&'a str>,
     candidate_count: usize,
     account_max_inflight: usize,
+    account_dynamic_limits: HashMap<String, usize>,
 }
 
 impl<'a> GatewayUpstreamExecutionContext<'a> {
@@ -31,6 +33,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         reasoning_for_log: Option<&'a str>,
         candidate_count: usize,
         account_max_inflight: usize,
+        account_dynamic_limits: HashMap<String, usize>,
     ) -> Self {
         Self {
             trace_id,
@@ -45,6 +48,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             reasoning_for_log,
             candidate_count,
             account_max_inflight,
+            account_dynamic_limits,
         }
     }
 
@@ -57,11 +61,16 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         account_id: &str,
         idx: usize,
     ) -> Option<candidates::CandidateSkipReason> {
+        let dynamic_limit = self
+            .account_dynamic_limits
+            .get(account_id)
+            .copied()
+            .unwrap_or_else(|| self.account_max_inflight.max(1));
         candidates::candidate_skip_reason_for_proxy(
             account_id,
             idx,
             self.candidate_count,
-            self.account_max_inflight,
+            dynamic_limit,
         )
     }
 

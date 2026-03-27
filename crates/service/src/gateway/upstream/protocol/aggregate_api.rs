@@ -75,23 +75,18 @@ fn aggregate_api_failure_message(
     auth_error: Option<&str>,
     identity_error_code: Option<&str>,
 ) -> String {
-    let mut parts = vec![
-        crate::gateway::summarize_upstream_error_hint_from_body(status_code, body)
-            .unwrap_or_else(|| format!("aggregate api upstream status={status_code}")),
-    ];
-    if let Some(request_id) = request_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    let mut parts =
+        vec![
+            crate::gateway::summarize_upstream_error_hint_from_body(status_code, body)
+                .unwrap_or_else(|| format!("aggregate api upstream status={status_code}")),
+        ];
+    if let Some(request_id) = request_id.map(str::trim).filter(|value| !value.is_empty()) {
         parts.push(format!("request_id={request_id}"));
     }
     if let Some(cf_ray) = cf_ray.map(str::trim).filter(|value| !value.is_empty()) {
         parts.push(format!("cf_ray={cf_ray}"));
     }
-    if let Some(auth_error) = auth_error
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(auth_error) = auth_error.map(str::trim).filter(|value| !value.is_empty()) {
         parts.push(format!("auth_error={auth_error}"));
     }
     if let Some(identity_error_code) = identity_error_code
@@ -182,7 +177,9 @@ pub(crate) fn resolve_aggregate_api_rotation_candidates(
     }
 
     if candidates.is_empty() {
-        Err(format!("aggregate api not found for provider {provider_type}"))
+        Err(format!(
+            "aggregate api not found for provider {provider_type}"
+        ))
     } else {
         Ok(candidates)
     }
@@ -295,18 +292,17 @@ pub(in super::super) fn proxy_aggregate_request(
                 return Ok(());
             }
 
-            let url = match reqwest::Url::parse(candidate_url.as_str())
-                .and_then(|url| url.join(path))
-            {
-                Ok(url) => url,
-                Err(_) => {
-                    last_attempt_url = Some(candidate_url.clone());
-                    last_attempt_supplier_name = candidate_supplier_name.clone();
-                    last_attempt_error = Some("invalid aggregate api url".to_string());
-                    last_failure_status = 502;
-                    break;
-                }
-            };
+            let url =
+                match reqwest::Url::parse(candidate_url.as_str()).and_then(|url| url.join(path)) {
+                    Ok(url) => url,
+                    Err(_) => {
+                        last_attempt_url = Some(candidate_url.clone());
+                        last_attempt_supplier_name = candidate_supplier_name.clone();
+                        last_attempt_error = Some("invalid aggregate api url".to_string());
+                        last_failure_status = 502;
+                        break;
+                    }
+                };
 
             let builder = build_aggregate_api_request(
                 &client,
@@ -423,13 +419,15 @@ pub(in super::super) fn proxy_aggregate_request(
             let bridge_ok = bridge.is_ok(is_stream);
             let mut final_error = bridge.upstream_error_hint.clone();
             if final_error.is_none() && !bridge_ok {
-                final_error = Some(bridge.error_message(is_stream).unwrap_or_else(|| {
-                    "aggregate api upstream response incomplete".to_string()
-                }));
+                final_error =
+                    Some(bridge.error_message(is_stream).unwrap_or_else(|| {
+                        "aggregate api upstream response incomplete".to_string()
+                    }));
             }
-            let status_code = bridge
-                .delivered_status_code
-                .unwrap_or_else(|| if bridge_ok { 200 } else { 502 });
+            let status_code =
+                bridge
+                    .delivered_status_code
+                    .unwrap_or_else(|| if bridge_ok { 200 } else { 502 });
             let status_code = if final_error.is_some() && status_code < 400 {
                 502
             } else {
@@ -493,8 +491,8 @@ pub(in super::super) fn proxy_aggregate_request(
         }
     }
 
-    let message = last_attempt_error
-        .unwrap_or_else(|| "aggregate api upstream response failed".to_string());
+    let message =
+        last_attempt_error.unwrap_or_else(|| "aggregate api upstream response failed".to_string());
     let status_code = last_failure_status;
     let request = request
         .take()
@@ -561,7 +559,8 @@ mod tests {
         bridge_ok: bool,
         final_error: Option<&str>,
     ) -> u16 {
-        let status_code = delivered_status_code.unwrap_or_else(|| if bridge_ok { 200 } else { 502 });
+        let status_code =
+            delivered_status_code.unwrap_or_else(|| if bridge_ok { 200 } else { 502 });
         if final_error.is_some() && status_code < 400 {
             502
         } else {

@@ -249,10 +249,8 @@ mod tests {
             Some("application/json")
         );
         assert_eq!(header_value(&headers, "Accept"), Some("text/event-stream"));
-        let expected_user_agent_prefix = format!(
-            "{}/0.999.0",
-            crate::gateway::current_wire_originator()
-        );
+        let expected_user_agent_prefix =
+            format!("{}/0.999.0", crate::gateway::current_wire_originator());
         assert_eq!(
             header_value(&headers, "User-Agent")
                 .map(|value| value.starts_with(expected_user_agent_prefix.as_str())),
@@ -263,7 +261,10 @@ mod tests {
             header_value(&headers, "x-client-request-id"),
             Some("conversation-anchor")
         );
-        assert_eq!(header_value(&headers, "session_id"), Some("conversation-anchor"));
+        assert_eq!(
+            header_value(&headers, "session_id"),
+            Some("conversation-anchor")
+        );
         assert_eq!(
             header_value(&headers, "x-codex-turn-state"),
             Some("turn-state-a")
@@ -302,7 +303,10 @@ mod tests {
             header_value(&headers, "x-client-request-id"),
             Some("conversation-anchor")
         );
-        assert_eq!(header_value(&headers, "session_id"), Some("conversation-anchor"));
+        assert_eq!(
+            header_value(&headers, "session_id"),
+            Some("conversation-anchor")
+        );
         assert_eq!(header_value(&headers, "x-codex-turn-state"), None);
     }
 
@@ -325,12 +329,18 @@ mod tests {
 
         assert_eq!(header_value(&headers, "Accept"), Some("application/json"));
         assert_eq!(header_value(&headers, "x-client-request-id"), None);
-        assert_eq!(header_value(&headers, "session_id"), Some("conversation-anchor"));
+        assert_eq!(
+            header_value(&headers, "session_id"),
+            Some("conversation-anchor")
+        );
         assert_eq!(header_value(&headers, "x-codex-turn-state"), None);
         assert_eq!(
             header_value(&headers, "ChatGPT-Account-ID"),
             Some("account-xyz")
         );
-        assert_eq!(header_value(&headers, "x-openai-subagent"), Some("subagent-b"));
+        assert_eq!(
+            header_value(&headers, "x-openai-subagent"),
+            Some("subagent-b")
+        );
     }
 }

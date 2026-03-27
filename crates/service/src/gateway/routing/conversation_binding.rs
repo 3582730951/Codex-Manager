@@ -171,7 +171,10 @@ pub(crate) fn apply_candidate_rotation(
     key_id: &str,
     model_for_log: Option<&str>,
 ) -> CandidateRotationPlan {
-    if routing.as_ref().is_some_and(|routing| routing.binding_selected) {
+    if routing
+        .as_ref()
+        .is_some_and(|routing| routing.binding_selected)
+    {
         return CandidateRotationPlan {
             source: CandidateRotationSource::ConversationBinding,
             strategy_label: "conversation_bound",

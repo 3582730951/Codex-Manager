@@ -36,6 +36,14 @@ codexmanager.rpc-token
 codex resume*.txt
 .tmp_stage_ps/
 .tmp_stage_sh/
+/.runtime.env
+/.codexmanager.runtime.env
+/.codexmanager.qxcnm.runtime.env
+/.cache/
+/Dockerfile
+/docker-compose.yml
+/workspace/
+/scripts/codex-entrypoint.sh
 scripts/release/build-tauri-with-retry.ps1
 scripts/release/build-tauri-with-retry.sh
 scripts/release/publish-github-release.sh

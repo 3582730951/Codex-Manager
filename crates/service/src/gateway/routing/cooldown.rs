@@ -1,7 +1,6 @@
+use codexmanager_core::storage::now_ts;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-
-use codexmanager_core::storage::now_ts;
 
 const DEFAULT_ACCOUNT_COOLDOWN_SECS: i64 = 20;
 const DEFAULT_ACCOUNT_COOLDOWN_NETWORK_SECS: i64 = DEFAULT_ACCOUNT_COOLDOWN_SECS;
@@ -148,6 +147,7 @@ pub(super) fn mark_account_cooldown(account_id: &str, reason: CooldownReason) {
             state.entries.insert(account_id.to_string(), cooldown_until);
         }
     }
+    super::scheduler_set_account_cooldown_until(account_id, Some(cooldown_until), false);
 }
 
 pub(super) fn mark_account_cooldown_for_status(account_id: &str, status: u16) {
@@ -164,6 +164,7 @@ pub(super) fn clear_account_cooldown(account_id: &str) {
         &mut state.offense_last_at,
         account_id,
     );
+    super::scheduler_set_account_cooldown_until(account_id, None, true);
 }
 
 fn maybe_cleanup_expired_cooldowns(state: &mut AccountCooldownState, now: i64) {

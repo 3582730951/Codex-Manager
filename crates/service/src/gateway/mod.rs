@@ -29,8 +29,6 @@ mod request_entry;
 mod request_gate;
 #[path = "request/request_helpers.rs"]
 mod request_helpers;
-#[path = "request/session_affinity.rs"]
-mod session_affinity;
 #[path = "observability/request_log.rs"]
 mod request_log;
 #[path = "request/request_rewrite.rs"]
@@ -41,8 +39,12 @@ mod route_hint;
 mod route_quality;
 #[path = "core/runtime_config.rs"]
 mod runtime_config;
+#[path = "routing/scheduler.rs"]
+mod scheduler;
 #[path = "routing/selection.rs"]
 mod selection;
+#[path = "request/session_affinity.rs"]
+mod session_affinity;
 #[path = "auth/token_exchange.rs"]
 mod token_exchange;
 #[path = "observability/trace_log.rs"]
@@ -213,9 +215,9 @@ pub(crate) use request_entry::handle_gateway_request;
 use request_gate::{request_gate_lock, RequestGateAcquireError};
 use request_log::write_request_log;
 use route_hint::apply_route_strategy;
-use route_quality::record_route_quality;
-pub(crate) use runtime_config::front_proxy_max_body_bytes;
+use route_quality::record_route_quality as record_route_quality_inner;
 pub(crate) use runtime_config::fresh_upstream_client;
+pub(crate) use runtime_config::front_proxy_max_body_bytes;
 use runtime_config::{
     account_max_inflight_limit, fresh_upstream_client_for_account, request_gate_wait_timeout,
     trace_body_preview_max_bytes, upstream_client, upstream_client_for_account,
@@ -233,6 +235,7 @@ pub(crate) fn reload_runtime_config_from_env() {
     request_gate::clear_runtime_state();
     cooldown::clear_runtime_state();
     route_quality::clear_runtime_state();
+    scheduler::clear_runtime_state();
     route_hint::reload_from_env();
     upstream::config::reload_from_env();
     trace_log::reload_from_env();
@@ -358,6 +361,72 @@ pub(crate) fn clear_manual_preferred_account() {
 
 pub(crate) fn clear_manual_preferred_account_if(account_id: &str) -> bool {
     route_hint::clear_manual_preferred_account_if(account_id)
+}
+
+pub(crate) fn record_route_quality(account_id: &str, status_code: u16) {
+    let health = record_route_quality_inner(account_id, status_code);
+    scheduler::record_route_health(account_id, health);
+}
+
+pub(crate) fn record_scheduler_assignment(account_id: &str) {
+    scheduler::record_assignment(account_id);
+}
+
+pub(crate) fn record_scheduler_feedback(account_id: &str, feedback: scheduler::SchedulerFeedback) {
+    scheduler::record_feedback(account_id, feedback);
+}
+
+pub(crate) fn rebalance_scheduler_candidates(
+    storage: &codexmanager_core::storage::Storage,
+    candidates: &mut Vec<(
+        codexmanager_core::storage::Account,
+        codexmanager_core::storage::Token,
+    )>,
+    static_limit: usize,
+    preserve_head: bool,
+) -> std::collections::HashMap<String, usize> {
+    scheduler::rebalance_candidates(storage, candidates, static_limit, preserve_head)
+}
+
+pub(crate) fn wait_for_scheduler_candidate_window(
+    candidates: &[(
+        codexmanager_core::storage::Account,
+        codexmanager_core::storage::Token,
+    )],
+    account_dynamic_limits: &std::collections::HashMap<String, usize>,
+    deadline: Option<std::time::Instant>,
+) -> bool {
+    scheduler::wait_for_candidate_window(candidates, account_dynamic_limits, deadline)
+}
+
+pub(crate) fn scheduler_store_usage_snapshot(
+    record: &codexmanager_core::storage::UsageSnapshotRecord,
+) {
+    scheduler::store_usage_snapshot(record);
+}
+
+pub(crate) fn scheduler_set_account_inflight(
+    account_id: &str,
+    inflight: usize,
+    wake_waiters: bool,
+) {
+    scheduler::set_account_inflight(account_id, inflight, wake_waiters);
+}
+
+pub(crate) fn scheduler_set_account_cooldown_until(
+    account_id: &str,
+    cooldown_until: Option<i64>,
+    wake_waiters: bool,
+) {
+    scheduler::set_account_cooldown_until(account_id, cooldown_until, wake_waiters);
+}
+
+pub(crate) fn scheduler_account_inflight_count(account_id: &str) -> usize {
+    scheduler::cached_account_inflight(account_id)
+}
+
+pub(crate) fn scheduler_account_in_cooldown(account_id: &str) -> bool {
+    scheduler::cached_account_in_cooldown(account_id)
 }
 
 #[cfg(test)]

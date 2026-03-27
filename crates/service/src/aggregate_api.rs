@@ -1,6 +1,5 @@
 use codexmanager_core::rpc::types::{
-    AggregateApiCreateResult, AggregateApiSecretResult, AggregateApiSummary,
-    AggregateApiTestResult,
+    AggregateApiCreateResult, AggregateApiSecretResult, AggregateApiSummary, AggregateApiTestResult,
 };
 use codexmanager_core::storage::{now_ts, AggregateApi};
 use reqwest::header::{HeaderName, HeaderValue};
@@ -42,15 +41,15 @@ fn normalize_provider_type(value: Option<String>) -> Result<String, String> {
         Some(raw) => {
             let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
             match normalized.as_str() {
-            "codex" | "openai" | "openai_compat" | "gpt" => {
-                Ok(AGGREGATE_API_PROVIDER_CODEX.to_string())
+                "codex" | "openai" | "openai_compat" | "gpt" => {
+                    Ok(AGGREGATE_API_PROVIDER_CODEX.to_string())
+                }
+                "claude" | "anthropic" | "anthropic_native" | "claude_code" => {
+                    Ok(AGGREGATE_API_PROVIDER_CLAUDE.to_string())
+                }
+                other => Err(format!("unsupported aggregate api provider type: {other}")),
             }
-            "claude" | "anthropic" | "anthropic_native" | "claude_code" => {
-                Ok(AGGREGATE_API_PROVIDER_CLAUDE.to_string())
-            }
-            other => Err(format!("unsupported aggregate api provider type: {other}")),
-            }
-        },
+        }
         None => Ok(AGGREGATE_API_PROVIDER_CODEX.to_string()),
     }
 }
@@ -146,10 +145,7 @@ fn add_codex_probe_headers(
         .header("x-api-key", secret.trim())
         .header("api-key", secret.trim())
         .header("accept", "application/json")
-        .header(
-            "user-agent",
-            gateway::current_codex_user_agent(),
-        )
+        .header("user-agent", gateway::current_codex_user_agent())
         .header("originator", gateway::current_wire_originator())
         .header("accept-encoding", "identity"))
 }
@@ -203,7 +199,9 @@ fn probe_codex_endpoint(
         return Ok(code);
     }
 
-    let models_err = models_result.err().unwrap_or_else(|| "codex models probe failed".to_string());
+    let models_err = models_result
+        .err()
+        .unwrap_or_else(|| "codex models probe failed".to_string());
     let responses_result = probe_codex_responses_endpoint(client, base_url, secret);
     if let Ok(code) = responses_result {
         return Ok(code);
@@ -311,7 +309,10 @@ pub(crate) fn create_aggregate_api(
         let _ = storage.delete_aggregate_api(&id);
         return Err(format!("persist aggregate api secret failed: {err}"));
     }
-    Ok(AggregateApiCreateResult { id, key: normalized_key })
+    Ok(AggregateApiCreateResult {
+        id,
+        key: normalized_key,
+    })
 }
 
 pub(crate) fn update_aggregate_api(
@@ -342,8 +343,8 @@ pub(crate) fn update_aggregate_api(
             .map_err(|err| err.to_string())?;
     }
     if let Some(url) = url {
-        let normalized_url = normalize_upstream_base_url(Some(url))?
-            .ok_or_else(|| "url is required".to_string())?;
+        let normalized_url =
+            normalize_upstream_base_url(Some(url))?.ok_or_else(|| "url is required".to_string())?;
         storage
             .update_aggregate_api(api_id, normalized_url.as_str())
             .map_err(|err| err.to_string())?;
@@ -410,16 +411,9 @@ pub(crate) fn test_aggregate_api_connection(
         Ok(code) => (true, Some(code), None),
         Err(err) => (false, None, Some(err)),
     };
-    let message = last_error.map(|err| {
-        format!("provider={provider_type}; {err}")
-    });
+    let message = last_error.map(|err| format!("provider={provider_type}; {err}"));
 
-    let _ = storage.update_aggregate_api_test_result(
-        api_id,
-        ok,
-        status_code,
-        message.as_deref(),
-    );
+    let _ = storage.update_aggregate_api_test_result(api_id, ok, status_code, message.as_deref());
     Ok(AggregateApiTestResult {
         id: api_id.to_string(),
         ok,

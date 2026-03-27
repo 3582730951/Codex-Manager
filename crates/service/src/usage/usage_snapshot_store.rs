@@ -54,6 +54,7 @@ pub(crate) fn store_usage_snapshot(
     storage
         .insert_usage_snapshot(&record)
         .map_err(|e| e.to_string())?;
+    crate::gateway::scheduler_store_usage_snapshot(&record);
     let retain = usage_snapshots_retain_per_account();
     if retain > 0 {
         let _ = storage.prune_usage_snapshots_for_account(account_id, retain);

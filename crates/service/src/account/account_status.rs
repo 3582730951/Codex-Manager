@@ -48,9 +48,7 @@ fn should_preserve_manual_account_status(storage: &Storage, account_id: &str) ->
         .unwrap_or(false)
 }
 
-pub(crate) fn classify_account_availability_signal(
-    err: &str,
-) -> Option<AccountAvailabilitySignal> {
+pub(crate) fn classify_account_availability_signal(err: &str) -> Option<AccountAvailabilitySignal> {
     if let Some(reason) = crate::usage_http::refresh_token_auth_error_reason_from_message(err) {
         return Some(AccountAvailabilitySignal::RefreshToken(reason));
     }
@@ -98,11 +96,7 @@ pub(crate) fn is_banned_status_reason(reason: &str) -> bool {
     )
 }
 
-fn set_account_unavailable_with_reason(
-    storage: &Storage,
-    account_id: &str,
-    reason: &str,
-) -> bool {
+fn set_account_unavailable_with_reason(storage: &Storage, account_id: &str, reason: &str) -> bool {
     if should_preserve_manual_account_status(storage, account_id) {
         return false;
     }
@@ -206,7 +200,9 @@ mod tests {
 
         assert!(matches!(
             classify_account_availability_signal("account_deactivated"),
-            Some(AccountAvailabilitySignal::Deactivation("account_deactivated"))
+            Some(AccountAvailabilitySignal::Deactivation(
+                "account_deactivated"
+            ))
         ));
     }
 }

@@ -79,7 +79,10 @@ fn aggregate_passthrough_applies_model_reasoning_and_service_tier_overrides() {
         apply_passthrough_request_overrides("/v1/responses", body, &api_key);
     let payload: Value = serde_json::from_slice(&rewritten_body).expect("json body");
 
-    assert_eq!(payload.get("model").and_then(Value::as_str), Some("gpt-5.4"));
+    assert_eq!(
+        payload.get("model").and_then(Value::as_str),
+        Some("gpt-5.4")
+    );
     assert_eq!(
         payload
             .get("reasoning")
