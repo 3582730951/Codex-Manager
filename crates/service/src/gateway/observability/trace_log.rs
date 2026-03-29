@@ -1,3 +1,4 @@
+use super::http_bridge::{DeliveryState, UpstreamCompletionState};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -445,8 +446,9 @@ pub(crate) fn log_bridge_result(
     adapter: &str,
     path: &str,
     is_stream: bool,
-    stream_terminal_seen: bool,
-    stream_terminal_error: Option<&str>,
+    upstream_completion_state: UpstreamCompletionState,
+    upstream_completion_error: Option<&str>,
+    delivery_state: DeliveryState,
     delivery_error: Option<&str>,
     output_text_len: usize,
     output_tokens: Option<i64>,
@@ -459,9 +461,21 @@ pub(crate) fn log_bridge_result(
     upstream_content_type: Option<&str>,
     last_sse_event_type: Option<&str>,
 ) {
-    let bridge_has_error = delivery_error.is_some()
-        || stream_terminal_error.is_some()
-        || (is_stream && !stream_terminal_seen)
+    let completion_state = match upstream_completion_state {
+        UpstreamCompletionState::NonStream => "non_stream",
+        UpstreamCompletionState::TerminalOk => "terminal_ok",
+        UpstreamCompletionState::TerminalErr => "terminal_err",
+        UpstreamCompletionState::EofWithoutTerminal => "eof_without_terminal",
+        UpstreamCompletionState::ReaderError => "reader_error",
+    };
+    let delivery_state_text = match delivery_state {
+        DeliveryState::Delivered => "delivered",
+        DeliveryState::ClientDisconnect => "client_disconnect",
+        DeliveryState::DeliveryError => "delivery_error",
+    };
+    let bridge_has_error = delivery_state != DeliveryState::Delivered
+        || upstream_completion_state != UpstreamCompletionState::TerminalOk && is_stream
+        || has_error_text(upstream_completion_error)
         || has_error_text(upstream_error_hint)
         || has_error_text(upstream_auth_error)
         || has_error_text(upstream_identity_error_code);
@@ -469,14 +483,15 @@ pub(crate) fn log_bridge_result(
         mark_trace_has_error(trace_id);
     }
     let line = format!(
-        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} path={} stream={} terminal_seen={} terminal_error={} delivery_error={} output_text_len={} output_tokens={} delivered_status={} upstream_hint={} upstream_request_id={} upstream_cf_ray={} upstream_auth_error={} upstream_identity_error_code={} upstream_content_type={} last_sse_event={}",
+        "ts={} event=BRIDGE_RESULT trace_id={} adapter={} path={} stream={} completion_state={} completion_error={} delivery_state={} delivery_error={} output_text_len={} output_tokens={} delivered_status={} upstream_hint={} upstream_request_id={} upstream_cf_ray={} upstream_auth_error={} upstream_identity_error_code={} upstream_content_type={} last_sse_event={}",
         current_trace_ts(),
         sanitize_text(trace_id),
         sanitize_text(adapter),
         sanitize_text(path),
         if is_stream { "true" } else { "false" },
-        if stream_terminal_seen { "true" } else { "false" },
-        sanitize_text(stream_terminal_error.unwrap_or("-")),
+        completion_state,
+        sanitize_text(upstream_completion_error.unwrap_or("-")),
+        delivery_state_text,
         sanitize_text(delivery_error.unwrap_or("-")),
         output_text_len,
         output_tokens

@@ -11,12 +11,74 @@ use super::{
     extract_error_message_from_json, looks_like_sse_payload, merge_usage, parse_usage_from_json,
     push_trace_id_header, usage_has_signal, AnthropicSseReader, OpenAIChatCompletionsSseReader,
     OpenAICompletionsSseReader, PassthroughSseCollector, PassthroughSseUsageReader,
-    SseKeepAliveFrame, UpstreamResponseBridgeResult, UpstreamResponseUsage,
+    DeliveryState, SseKeepAliveFrame, UpstreamCompletionState, UpstreamResponseBridgeResult,
+    UpstreamResponseUsage,
 };
 
 const REQUEST_ID_HEADER_CANDIDATES: &[&str] = &["x-request-id", "x-oai-request-id"];
 const CF_RAY_HEADER_NAME: &str = "cf-ray";
 const AUTH_ERROR_HEADER_NAME: &str = "x-openai-authorization-error";
+
+fn is_client_disconnect_error(message: &str) -> bool {
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("broken pipe")
+        || normalized.contains("connection reset")
+        || normalized.contains("connection aborted")
+        || normalized.contains("connection was forcibly closed")
+        || normalized.contains("os error 32")
+        || normalized.contains("os error 54")
+        || normalized.contains("os error 104")
+}
+
+fn delivery_state_from_error(delivery_error: Option<&str>) -> DeliveryState {
+    match delivery_error {
+        Some(message) if is_client_disconnect_error(message) => DeliveryState::ClientDisconnect,
+        Some(_) => DeliveryState::DeliveryError,
+        None => DeliveryState::Delivered,
+    }
+}
+
+fn build_bridge_result(
+    usage: UpstreamResponseUsage,
+    upstream_completion_state: UpstreamCompletionState,
+    upstream_completion_error: Option<String>,
+    delivery_error: Option<String>,
+    upstream_error_hint: Option<String>,
+    delivered_status_code: Option<u16>,
+    completed_response_body: Option<Vec<u8>>,
+) -> UpstreamResponseBridgeResult {
+    let delivery_state = delivery_state_from_error(delivery_error.as_deref());
+    UpstreamResponseBridgeResult {
+        usage,
+        upstream_completion_state,
+        upstream_completion_error,
+        delivery_state,
+        delivery_error,
+        upstream_error_hint,
+        delivered_status_code,
+        upstream_request_id: None,
+        upstream_cf_ray: None,
+        upstream_auth_error: None,
+        upstream_identity_error_code: None,
+        upstream_content_type: None,
+        last_sse_event_type: None,
+        completed_response_body,
+    }
+}
+
+fn collector_completion_state(collector: &PassthroughSseCollector) -> UpstreamCompletionState {
+    collector.completion_state.unwrap_or({
+        if collector.saw_terminal {
+            if collector.terminal_error.is_some() {
+                UpstreamCompletionState::TerminalErr
+            } else {
+                UpstreamCompletionState::TerminalOk
+            }
+        } else {
+            UpstreamCompletionState::EofWithoutTerminal
+        }
+    })
+}
 
 fn is_compact_request_path(path: &str) -> bool {
     path == "/v1/responses/compact" || path.starts_with("/v1/responses/compact?")
@@ -326,19 +388,18 @@ fn respond_synthesized_compact_error_body(
     );
     let delivery_error = request.respond(response).err().map(|err| err.to_string());
     UpstreamResponseBridgeResult {
-        usage,
-        stream_terminal_seen: true,
-        stream_terminal_error: None,
-        delivery_error,
-        upstream_error_hint: Some(message),
-        delivered_status_code: Some(status_code),
         upstream_request_id: request_id.map(str::to_string),
         upstream_cf_ray: cf_ray.map(str::to_string),
-        upstream_auth_error: None,
-        upstream_identity_error_code: None,
         upstream_content_type: Some("application/json".to_string()),
-        last_sse_event_type: None,
-        completed_response_body: None,
+        ..build_bridge_result(
+            usage,
+            UpstreamCompletionState::NonStream,
+            None,
+            delivery_error,
+            Some(message),
+            Some(status_code),
+            None,
+        )
     }
 }
 
@@ -574,21 +635,15 @@ pub(crate) fn respond_with_upstream(
                         Response::new(status, headers, std::io::Cursor::new(body), len, None);
                     let delivery_error = request.respond(response).err().map(|err| err.to_string());
                     return Ok(with_bridge_debug_meta(
-                        UpstreamResponseBridgeResult {
+                        build_bridge_result(
                             usage,
-                            stream_terminal_seen: true,
-                            stream_terminal_error: None,
+                            UpstreamCompletionState::NonStream,
+                            None,
                             delivery_error,
                             upstream_error_hint,
-                            delivered_status_code: None,
-                            upstream_request_id: None,
-                            upstream_cf_ray: None,
-                            upstream_auth_error: None,
-                            upstream_identity_error_code: None,
-                            upstream_content_type: None,
-                            last_sse_event_type: None,
+                            None,
                             completed_response_body,
-                        },
+                        ),
                         &upstream_request_id,
                         &upstream_cf_ray,
                         &upstream_auth_error,
@@ -664,24 +719,15 @@ pub(crate) fn respond_with_upstream(
                 );
                 let delivery_error = request.respond(response).err().map(|err| err.to_string());
                 return Ok(with_bridge_debug_meta(
-                    UpstreamResponseBridgeResult {
+                    build_bridge_result(
                         usage,
-                        stream_terminal_seen: true,
-                        stream_terminal_error: None,
+                        UpstreamCompletionState::NonStream,
+                        None,
                         delivery_error,
                         upstream_error_hint,
-                        delivered_status_code: None,
-                        upstream_request_id: None,
-                        upstream_cf_ray: None,
-                        upstream_auth_error: None,
-                        upstream_identity_error_code: None,
-                        upstream_content_type: None,
-                        last_sse_event_type: None,
-                        completed_response_body: capture_completed_response_body(
-                            request_path,
-                            upstream_body.as_ref(),
-                        ),
-                    },
+                        None,
+                        capture_completed_response_body(request_path, upstream_body.as_ref()),
+                    ),
                     &upstream_request_id,
                     &upstream_cf_ray,
                     &upstream_auth_error,
@@ -720,24 +766,15 @@ pub(crate) fn respond_with_upstream(
                 );
                 let delivery_error = request.respond(response).err().map(|err| err.to_string());
                 return Ok(with_bridge_debug_meta(
-                    UpstreamResponseBridgeResult {
+                    build_bridge_result(
                         usage,
-                        stream_terminal_seen: true,
-                        stream_terminal_error: None,
+                        UpstreamCompletionState::NonStream,
+                        None,
                         delivery_error,
                         upstream_error_hint,
-                        delivered_status_code: None,
-                        upstream_request_id: None,
-                        upstream_cf_ray: None,
-                        upstream_auth_error: None,
-                        upstream_identity_error_code: None,
-                        upstream_content_type: None,
-                        last_sse_event_type: None,
-                        completed_response_body: capture_completed_response_body(
-                            request_path,
-                            upstream_body.as_ref(),
-                        ),
-                    },
+                        None,
+                        capture_completed_response_body(request_path, upstream_body.as_ref()),
+                    ),
                     &upstream_request_id,
                     &upstream_cf_ray,
                     &upstream_auth_error,
@@ -765,9 +802,9 @@ pub(crate) fn respond_with_upstream(
                     .map(|guard| guard.clone())
                     .unwrap_or_default();
                 let last_sse_event_type = collector.last_event_type.clone();
-                let completed_response_body = if collector.saw_terminal
-                    && collector.terminal_error.is_none()
-                {
+                let upstream_completion_state = collector_completion_state(&collector);
+                let completed_response_body =
+                    if upstream_completion_state == UpstreamCompletionState::TerminalOk {
                     let (body, _) =
                         collect_non_stream_json_from_sse_bytes(&collector.raw_sse_bytes);
                     body.and_then(|bytes| {
@@ -777,12 +814,12 @@ pub(crate) fn respond_with_upstream(
                     None
                 };
                 return Ok(with_bridge_debug_meta(
-                    UpstreamResponseBridgeResult {
-                        usage: collector.usage,
-                        stream_terminal_seen: collector.saw_terminal,
-                        stream_terminal_error: collector.terminal_error,
+                    build_bridge_result(
+                        collector.usage,
+                        upstream_completion_state,
+                        collector.terminal_error,
                         delivery_error,
-                        upstream_error_hint: with_upstream_debug_suffix(
+                        with_upstream_debug_suffix(
                             collector.upstream_error_hint,
                             None,
                             upstream_request_id.as_deref(),
@@ -790,15 +827,9 @@ pub(crate) fn respond_with_upstream(
                             upstream_auth_error.as_deref(),
                             upstream_identity_error_code.as_deref(),
                         ),
-                        delivered_status_code: None,
-                        upstream_request_id: None,
-                        upstream_cf_ray: None,
-                        upstream_auth_error: None,
-                        upstream_identity_error_code: None,
-                        upstream_content_type: None,
-                        last_sse_event_type: None,
+                        None,
                         completed_response_body,
-                    },
+                    ),
                     &upstream_request_id,
                     &upstream_cf_ray,
                     &upstream_auth_error,
@@ -811,21 +842,15 @@ pub(crate) fn respond_with_upstream(
             let response = Response::new(status, headers, upstream, len, None);
             let delivery_error = request.respond(response).err().map(|err| err.to_string());
             Ok(with_bridge_debug_meta(
-                UpstreamResponseBridgeResult {
-                    usage: UpstreamResponseUsage::default(),
-                    stream_terminal_seen: true,
-                    stream_terminal_error: None,
+                build_bridge_result(
+                    UpstreamResponseUsage::default(),
+                    UpstreamCompletionState::NonStream,
+                    None,
                     delivery_error,
-                    upstream_error_hint: None,
-                    delivered_status_code: None,
-                    upstream_request_id: None,
-                    upstream_cf_ray: None,
-                    upstream_auth_error: None,
-                    upstream_identity_error_code: None,
-                    upstream_content_type: None,
-                    last_sse_event_type: None,
-                    completed_response_body: None,
-                },
+                    None,
+                    None,
+                    None,
+                ),
                 &upstream_request_id,
                 &upstream_cf_ray,
                 &upstream_auth_error,
@@ -927,22 +952,17 @@ pub(crate) fn respond_with_upstream(
                         collector.usage.output_tokens
                     );
                 }
+                let upstream_completion_state = collector_completion_state(&collector);
                 return Ok(with_bridge_debug_meta(
-                    UpstreamResponseBridgeResult {
-                        usage: collector.usage,
-                        stream_terminal_seen: collector.saw_terminal,
-                        stream_terminal_error: collector.terminal_error,
+                    build_bridge_result(
+                        collector.usage,
+                        upstream_completion_state,
+                        collector.terminal_error,
                         delivery_error,
-                        upstream_error_hint: None,
-                        delivered_status_code: None,
-                        upstream_request_id: None,
-                        upstream_cf_ray: None,
-                        upstream_auth_error: None,
-                        upstream_identity_error_code: None,
-                        upstream_content_type: None,
-                        last_sse_event_type: None,
-                        completed_response_body: None,
-                    },
+                        None,
+                        None,
+                        None,
+                    ),
                     &upstream_request_id,
                     &upstream_cf_ray,
                     &upstream_auth_error,
@@ -1027,21 +1047,15 @@ pub(crate) fn respond_with_upstream(
                 upstream_identity_error_code.as_deref(),
             );
             Ok(with_bridge_debug_meta(
-                UpstreamResponseBridgeResult {
+                build_bridge_result(
                     usage,
-                    stream_terminal_seen: true,
-                    stream_terminal_error: None,
+                    UpstreamCompletionState::NonStream,
+                    None,
                     delivery_error,
                     upstream_error_hint,
-                    delivered_status_code: None,
-                    upstream_request_id: None,
-                    upstream_cf_ray: None,
-                    upstream_auth_error: None,
-                    upstream_identity_error_code: None,
-                    upstream_content_type: None,
-                    last_sse_event_type: None,
-                    completed_response_body: None,
-                },
+                    None,
+                    None,
+                ),
                 &upstream_request_id,
                 &upstream_cf_ray,
                 &upstream_auth_error,
@@ -1095,21 +1109,15 @@ pub(crate) fn respond_with_upstream(
                     .map(|guard| guard.clone())
                     .unwrap_or_default();
                 return Ok(with_bridge_debug_meta(
-                    UpstreamResponseBridgeResult {
+                    build_bridge_result(
                         usage,
-                        stream_terminal_seen: true,
-                        stream_terminal_error: None,
+                        UpstreamCompletionState::TerminalOk,
+                        None,
                         delivery_error,
-                        upstream_error_hint: None,
-                        delivered_status_code: None,
-                        upstream_request_id: None,
-                        upstream_cf_ray: None,
-                        upstream_auth_error: None,
-                        upstream_identity_error_code: None,
-                        upstream_content_type: None,
-                        last_sse_event_type: None,
-                        completed_response_body: None,
-                    },
+                        None,
+                        None,
+                        None,
+                    ),
                     &upstream_request_id,
                     &upstream_cf_ray,
                     &upstream_auth_error,
@@ -1156,21 +1164,15 @@ pub(crate) fn respond_with_upstream(
                 upstream_identity_error_code.as_deref(),
             );
             Ok(with_bridge_debug_meta(
-                UpstreamResponseBridgeResult {
+                build_bridge_result(
                     usage,
-                    stream_terminal_seen: true,
-                    stream_terminal_error: None,
+                    UpstreamCompletionState::NonStream,
+                    None,
                     delivery_error,
                     upstream_error_hint,
-                    delivered_status_code: None,
-                    upstream_request_id: None,
-                    upstream_cf_ray: None,
-                    upstream_auth_error: None,
-                    upstream_identity_error_code: None,
-                    upstream_content_type: None,
-                    last_sse_event_type: None,
-                    completed_response_body: None,
-                },
+                    None,
+                    None,
+                ),
                 &upstream_request_id,
                 &upstream_cf_ray,
                 &upstream_auth_error,

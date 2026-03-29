@@ -8,6 +8,7 @@ pub(super) use output_text::{
     merge_usage, parse_usage_from_json, reload_from_env as reload_output_text_from_env,
     usage_has_signal, UpstreamResponseBridgeResult, UpstreamResponseUsage,
 };
+pub(crate) use output_text::{DeliveryState, UpstreamCompletionState};
 #[cfg(test)]
 pub(super) use output_text::{output_text_limit_bytes, OUTPUT_TEXT_TRUNCATED_MARKER};
 pub(super) use sse_aggregate::{collect_non_stream_json_from_sse_bytes, looks_like_sse_payload};

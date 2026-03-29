@@ -59,6 +59,36 @@ fn is_compact_request_path(path: &str) -> bool {
     path == "/v1/responses/compact" || path.starts_with("/v1/responses/compact?")
 }
 
+fn matches_gateway_account_proxy_request_target(
+    target_url: &str,
+    request_path: &str,
+    is_stream: bool,
+) -> bool {
+    if !is_stream {
+        return false;
+    }
+    if is_compact_request_path(request_path)
+        || !(request_path == "/v1/responses" || request_path.starts_with("/v1/responses?"))
+    {
+        return false;
+    }
+    if !super::super::config::is_chatgpt_backend_base(target_url) {
+        return false;
+    }
+    true
+}
+
+fn is_gateway_account_proxy_request(target_url: &str, request_path: &str, is_stream: bool) -> bool {
+    if !matches_gateway_account_proxy_request_target(target_url, request_path, is_stream) {
+        return false;
+    }
+    super::super::super::gateway_account_proxy_url().is_some()
+}
+
+fn is_gateway_account_proxy_connect_error(err: &reqwest::Error) -> bool {
+    err.is_connect()
+}
+
 fn has_header(headers: &[(String, String)], name: &str) -> bool {
     headers
         .iter()
@@ -238,15 +268,38 @@ pub(in super::super) fn send_upstream_request(
         builder
     };
 
-    let result = match build_request(client).send() {
-        Ok(resp) => Ok(resp),
-        Err(first_err) => {
-            // 中文注释：进程启动后才开启系统代理时，旧单例 client 可能仍走旧网络路径；
-            // 这里用 fresh client 立刻重试一次，避免必须手动重连服务。
-            let fresh = super::super::super::fresh_upstream_client_for_account(account.id.as_str());
-            match build_request(&fresh).send() {
+    let result = if is_gateway_account_proxy_request(target_url, request_ctx.request_path, is_stream)
+    {
+        if let Some(proxy_client) = super::super::super::gateway_account_proxy_client() {
+            match build_request(&proxy_client).send() {
                 Ok(resp) => Ok(resp),
-                Err(_) => Err(first_err),
+                Err(proxy_err) if is_gateway_account_proxy_connect_error(&proxy_err) => {
+                    log::warn!(
+                        "event=gateway_account_proxy_fallback_direct path={} account_id={} err={}",
+                        request_ctx.request_path,
+                        account.id,
+                        proxy_err
+                    );
+                    let direct = super::super::super::fresh_direct_upstream_client();
+                    build_request(&direct).send()
+                }
+                Err(proxy_err) => Err(proxy_err),
+            }
+        } else {
+            build_request(client).send()
+        }
+    } else {
+        match build_request(client).send() {
+            Ok(resp) => Ok(resp),
+            Err(first_err) => {
+                // 中文注释：进程启动后才开启系统代理时，旧单例 client 可能仍走旧网络路径；
+                // 这里用 fresh client 立刻重试一次，避免必须手动重连服务。
+                let fresh =
+                    super::super::super::fresh_upstream_client_for_account(account.id.as_str());
+                match build_request(&fresh).send() {
+                    Ok(resp) => Ok(resp),
+                    Err(_) => Err(first_err),
+                }
             }
         }
     };
@@ -257,7 +310,10 @@ pub(in super::super) fn send_upstream_request(
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_request_body, resolve_request_compression_with_flag, RequestCompression};
+    use super::{
+        encode_request_body, matches_gateway_account_proxy_request_target,
+        resolve_request_compression_with_flag, RequestCompression,
+    };
     use bytes::Bytes;
 
     #[test]
@@ -332,5 +388,34 @@ mod tests {
             value.get("model").and_then(serde_json::Value::as_str),
             Some("gpt-5.4")
         );
+    }
+
+    #[test]
+    fn gateway_account_proxy_only_applies_to_streaming_chatgpt_responses() {
+        assert!(matches_gateway_account_proxy_request_target(
+            "https://chatgpt.com/backend-api/codex/responses",
+            "/v1/responses",
+            true
+        ));
+        assert!(!matches_gateway_account_proxy_request_target(
+            "https://chatgpt.com/backend-api/codex/responses",
+            "/v1/responses",
+            false
+        ));
+        assert!(!matches_gateway_account_proxy_request_target(
+            "https://chatgpt.com/backend-api/codex/responses",
+            "/v1/responses/compact",
+            true
+        ));
+        assert!(!matches_gateway_account_proxy_request_target(
+            "https://chatgpt.com/backend-api/codex/responses",
+            "/v1/models",
+            true
+        ));
+        assert!(!matches_gateway_account_proxy_request_target(
+            "https://api.openai.com/v1/responses",
+            "/v1/responses",
+            true
+        ));
     }
 }

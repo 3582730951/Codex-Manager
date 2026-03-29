@@ -224,91 +224,99 @@ assert_binding_counts() {
   fi
 }
 
-assert_session_bound_to() {
-  local session_id="$1"
-  local expected_account="$2"
+assert_affinity_bound_to() {
+  local affinity_prefix="$1"
+  local affinity_id="$2"
+  local expected_account="$3"
   local actual
-  actual="$(docker run --rm -i -e SESSION_ID="${session_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
 import os
 import sqlite3
 
-session_id = os.environ["SESSION_ID"]
+affinity_prefix = os.environ["AFFINITY_PREFIX"]
+affinity_id = os.environ["AFFINITY_ID"]
 conn = sqlite3.connect("/data/codexmanager.db", timeout=5)
 cur = conn.cursor()
 row = cur.execute(
     "SELECT account_id FROM client_bindings WHERE affinity_key = ? LIMIT 1",
-    (f"sid:{session_id}",),
+    (f"{affinity_prefix}:{affinity_id}",),
 ).fetchone()
 print("" if row is None else row[0])
 conn.close()
 PY
 )"
-  [[ "${actual}" == "${expected_account}" ]] || die "session ${session_id} expected ${expected_account}, got ${actual}"
+  [[ "${actual}" == "${expected_account}" ]] || die "affinity ${affinity_prefix}:${affinity_id} expected ${expected_account}, got ${actual}"
 }
 
-assert_session_unbound() {
-  local session_id="$1"
+assert_affinity_unbound() {
+  local affinity_prefix="$1"
+  local affinity_id="$2"
   local actual
-  actual="$(docker run --rm -i -e SESSION_ID="${session_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
 import os
 import sqlite3
 
-session_id = os.environ["SESSION_ID"]
+affinity_prefix = os.environ["AFFINITY_PREFIX"]
+affinity_id = os.environ["AFFINITY_ID"]
 conn = sqlite3.connect("/data/codexmanager.db", timeout=5)
 cur = conn.cursor()
 row = cur.execute(
     "SELECT account_id FROM client_bindings WHERE affinity_key = ? LIMIT 1",
-    (f"sid:{session_id}",),
+    (f"{affinity_prefix}:{affinity_id}",),
 ).fetchone()
 print("" if row is None else row[0])
 conn.close()
 PY
 )"
-  [[ -z "${actual}" ]] || die "session ${session_id} expected no binding, got ${actual}"
+  [[ -z "${actual}" ]] || die "affinity ${affinity_prefix}:${affinity_id} expected no binding, got ${actual}"
 }
 
 assert_context_events_at_least() {
-  local session_id="$1"
-  local min_count="$2"
+  local affinity_prefix="$1"
+  local affinity_id="$2"
+  local min_count="$3"
   local actual
-  actual="$(docker run --rm -i -e SESSION_ID="${session_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
 import os
 import sqlite3
 
-session_id = os.environ["SESSION_ID"]
+affinity_prefix = os.environ["AFFINITY_PREFIX"]
+affinity_id = os.environ["AFFINITY_ID"]
 conn = sqlite3.connect("/data/codexmanager.db", timeout=5)
 cur = conn.cursor()
 row = cur.execute(
     "SELECT COUNT(1) FROM conversation_context_events WHERE affinity_key = ?",
-    (f"sid:{session_id}",),
+    (f"{affinity_prefix}:{affinity_id}",),
 ).fetchone()
 print(row[0] if row else 0)
 conn.close()
 PY
 )"
-  [[ "${actual}" -ge "${min_count}" ]] || die "session ${session_id} expected at least ${min_count} context events, got ${actual}"
+  [[ "${actual}" -ge "${min_count}" ]] || die "affinity ${affinity_prefix}:${affinity_id} expected at least ${min_count} context events, got ${actual}"
 }
 
 assert_context_events_exact() {
-  local session_id="$1"
-  local expected_count="$2"
+  local affinity_prefix="$1"
+  local affinity_id="$2"
+  local expected_count="$3"
   local actual
-  actual="$(docker run --rm -i -e SESSION_ID="${session_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
 import os
 import sqlite3
 
-session_id = os.environ["SESSION_ID"]
+affinity_prefix = os.environ["AFFINITY_PREFIX"]
+affinity_id = os.environ["AFFINITY_ID"]
 conn = sqlite3.connect("/data/codexmanager.db", timeout=5)
 cur = conn.cursor()
 row = cur.execute(
     "SELECT COUNT(1) FROM conversation_context_events WHERE affinity_key = ?",
-    (f"sid:{session_id}",),
+    (f"{affinity_prefix}:{affinity_id}",),
 ).fetchone()
 print(row[0] if row else 0)
 conn.close()
 PY
 )"
-  [[ "${actual}" == "${expected_count}" ]] || die "session ${session_id} expected exactly ${expected_count} context events, got ${actual}"
+  [[ "${actual}" == "${expected_count}" ]] || die "affinity ${affinity_prefix}:${affinity_id} expected exactly ${expected_count} context events, got ${actual}"
 }
 
 restart_service() {
@@ -318,17 +326,31 @@ restart_service() {
 }
 
 send_turn_raw() {
-  local session_id="$1"
+  local affinity_id="$1"
   local text="$2"
-  docker exec -i "${PROBE_CONTAINER}" python - "${PLATFORM_KEY}" "${session_id}" "${text}" <<'PY'
+  local affinity_mode="${3:-cli}"
+  docker exec -i "${PROBE_CONTAINER}" python - "${PLATFORM_KEY}" "${affinity_id}" "${text}" "${affinity_mode}" <<'PY'
 import json
 import sys
 import urllib.error
 import urllib.request
 
 platform_key = sys.argv[1]
-session_id = sys.argv[2]
+affinity_id = sys.argv[2]
 text = sys.argv[3]
+affinity_mode = sys.argv[4]
+headers = {
+    "Authorization": f"Bearer {platform_key}",
+    "Content-Type": "application/json",
+}
+if affinity_mode == "cli":
+    headers["x-codex-cli-affinity-id"] = affinity_id
+elif affinity_mode == "session":
+    headers["session_id"] = affinity_id
+elif affinity_mode == "conversation":
+    headers["conversation_id"] = affinity_id
+else:
+    raise SystemExit(f"unsupported affinity mode: {affinity_mode}")
 request = urllib.request.Request(
     "http://service-test:48760/v1/responses",
     data=json.dumps(
@@ -343,11 +365,7 @@ request = urllib.request.Request(
             ],
         }
     ).encode("utf-8"),
-    headers={
-        "Authorization": f"Bearer {platform_key}",
-        "Content-Type": "application/json",
-        "session_id": session_id,
-    },
+    headers=headers,
     method="POST",
 )
 try:
@@ -363,12 +381,13 @@ PY
 }
 
 send_turn() {
-  local session_id="$1"
+  local affinity_id="$1"
   local text="$2"
+  local affinity_mode="${3:-cli}"
   local response
-  response="$(send_turn_raw "${session_id}" "${text}")"
+  response="$(send_turn_raw "${affinity_id}" "${text}" "${affinity_mode}")"
   local status="${response##*$'\n'}"
-  [[ "${status}" == "200" ]] || die "request failed for ${session_id} with status ${status}"
+  [[ "${status}" == "200" ]] || die "request failed for ${affinity_mode}:${affinity_id} with status ${status}"
 }
 
 run_turn_batch() {
@@ -432,8 +451,8 @@ apply_usage_map '{"aff-acc-1":97,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,
 sleep 6
 run_turn_batch "case-a-cli" 5 "round-2"
 assert_binding_counts 'aff-acc-2=5'
-assert_session_bound_to "case-a-cli-1" "aff-acc-2"
-assert_context_events_at_least "case-a-cli-1" 4
+assert_affinity_bound_to "cli" "case-a-cli-1" "aff-acc-2"
+assert_context_events_at_least "cli" "case-a-cli-1" 4
 
 log "scenario B: 19 CLI / 3 accounts then middle account exhausted"
 clear_affinity_state
@@ -464,7 +483,7 @@ apply_usage_map '{"aff-acc-1":10,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,
 restart_service
 send_turn "case-d-cli-1" "quota-failover"
 assert_binding_counts 'aff-acc-2=1'
-assert_session_bound_to "case-d-cli-1" "aff-acc-2"
+assert_affinity_bound_to "cli" "case-d-cli-1" "aff-acc-2"
 
 log "scenario E: challenge response on top candidate falls back to next account"
 clear_affinity_state
@@ -474,7 +493,7 @@ apply_usage_map '{"aff-acc-1":10,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,
 restart_service
 send_turn "case-e-cli-1" "challenge-failover"
 assert_binding_counts 'aff-acc-2=1'
-assert_session_bound_to "case-e-cli-1" "aff-acc-2"
+assert_affinity_bound_to "cli" "case-e-cli-1" "aff-acc-2"
 
 log "scenario F: upstream 5xx on top candidate falls back to next account"
 clear_affinity_state
@@ -484,7 +503,7 @@ apply_usage_map '{"aff-acc-1":10,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,
 restart_service
 send_turn "case-f-cli-1" "server-failover"
 assert_binding_counts 'aff-acc-2=1'
-assert_session_bound_to "case-f-cli-1" "aff-acc-2"
+assert_affinity_bound_to "cli" "case-f-cli-1" "aff-acc-2"
 
 log "scenario G: incomplete stream must not commit binding or context"
 clear_affinity_state
@@ -493,8 +512,24 @@ set_mock_token "aff-acc-1" "mock-account-1-incomplete"
 apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
 restart_service
 send_turn_raw "case-g-cli-1" "incomplete-stream" >/dev/null
-assert_session_unbound "case-g-cli-1"
-assert_context_events_exact "case-g-cli-1" 0
+assert_affinity_unbound "cli" "case-g-cli-1"
+assert_context_events_exact "cli" "case-g-cli-1" 0
+
+log "scenario H: no CLI header falls back to session affinity key"
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+send_turn "case-h-session-1" "session-fallback" "session"
+assert_affinity_bound_to "sid" "case-h-session-1" "aff-acc-1"
+
+log "scenario I: no CLI/session header falls back to conversation affinity key"
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+send_turn "case-i-conv-1" "conversation-fallback" "conversation"
+assert_affinity_bound_to "cid" "case-i-conv-1" "aff-acc-1"
 
 docker compose -p "${TEST_PROJECT}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 log "affinity mock stack verification complete"

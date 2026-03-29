@@ -6,6 +6,7 @@ use tiny_http::Request;
 
 use crate::aggregate_api::{AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX};
 use crate::gateway::request_log::RequestLogUsage;
+use crate::gateway::http_bridge::UpstreamCompletionState;
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
 
@@ -15,6 +16,7 @@ fn should_skip_forward_header(name: &str) -> bool {
         "authorization"
             | "x-api-key"
             | "api-key"
+            | "x-codex-cli-affinity-id"
             | "content-length"
             | "connection"
             | "proxy-authorization"
@@ -402,8 +404,9 @@ pub(in super::super) fn proxy_aggregate_request(
                 format!("{response_adapter:?}").as_str(),
                 path,
                 is_stream,
-                bridge.stream_terminal_seen,
-                bridge.stream_terminal_error.as_deref(),
+                bridge.upstream_completion_state,
+                bridge.upstream_completion_error.as_deref(),
+                bridge.delivery_state,
                 bridge.delivery_error.as_deref(),
                 bridge_output_text_len,
                 bridge.usage.output_tokens,
@@ -424,14 +427,24 @@ pub(in super::super) fn proxy_aggregate_request(
                         "aggregate api upstream response incomplete".to_string()
                     }));
             }
-            let status_code =
-                bridge
-                    .delivered_status_code
-                    .unwrap_or_else(|| if bridge_ok { 200 } else { 502 });
-            let status_code = if final_error.is_some() && status_code < 400 {
+            let status_code = if bridge.is_client_disconnect() {
+                499
+            } else if let Some(delivered_status_code) = bridge.delivered_status_code {
+                delivered_status_code
+            } else if bridge_ok {
+                200
+            } else if is_stream
+                && matches!(
+                    bridge.upstream_completion_state,
+                    UpstreamCompletionState::EofWithoutTerminal
+                        | UpstreamCompletionState::ReaderError
+                )
+            {
+                502
+            } else if final_error.is_some() {
                 502
             } else {
-                status_code
+                502
             };
             let usage = bridge.usage;
 
@@ -537,34 +550,12 @@ pub(in super::super) fn proxy_aggregate_request(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn final_error_promotes_success_status_to_bad_gateway() {
-        let status_code = bridge_status_code(Some(200), true, Some("unsupported model"));
-        assert_eq!(status_code, 502);
+    fn skip_forward_header_drops_local_cli_affinity_header() {
+        assert!(super::should_skip_forward_header("x-codex-cli-affinity-id"));
     }
 
     #[test]
-    fn successful_bridge_keeps_success_status() {
-        let status_code = bridge_status_code(Some(200), true, None);
-        assert_eq!(status_code, 200);
-    }
-
-    #[test]
-    fn incomplete_bridge_without_status_defaults_to_bad_gateway() {
-        let status_code = bridge_status_code(None, false, None);
-        assert_eq!(status_code, 502);
-    }
-
-    fn bridge_status_code(
-        delivered_status_code: Option<u16>,
-        bridge_ok: bool,
-        final_error: Option<&str>,
-    ) -> u16 {
-        let status_code =
-            delivered_status_code.unwrap_or_else(|| if bridge_ok { 200 } else { 502 });
-        if final_error.is_some() && status_code < 400 {
-            502
-        } else {
-            status_code
-        }
+    fn skip_forward_header_keeps_regular_content_headers() {
+        assert!(!super::should_skip_forward_header("content-type"));
     }
 }

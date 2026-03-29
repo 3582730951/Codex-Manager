@@ -45,6 +45,8 @@ fn reload_from_env_updates_timeout_and_proxy() {
     let _client_id_guard = EnvGuard::set(ENV_TOKEN_EXCHANGE_CLIENT_ID, "client-id-123");
     let _issuer_guard = EnvGuard::set(ENV_TOKEN_EXCHANGE_ISSUER, "https://issuer.example");
     let _proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "socks5://127.0.0.1:7890");
+    let _gateway_proxy_guard =
+        EnvGuard::set(ENV_GATEWAY_ACCOUNT_PROXY_URL, "http://127.0.0.1:8080");
 
     reload_from_env();
 
@@ -61,6 +63,10 @@ fn reload_from_env_updates_timeout_and_proxy() {
     assert_eq!(
         upstream_proxy_url().as_deref(),
         Some("socks5h://127.0.0.1:7890")
+    );
+    assert_eq!(
+        gateway_account_proxy_url().as_deref(),
+        Some("http://127.0.0.1:8080")
     );
 }
 

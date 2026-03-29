@@ -129,6 +129,7 @@ pub(crate) fn should_drop_incoming_header(name: &str) -> bool {
         || lower.starts_with("x-stainless-")
         // 中文注释：resume 会携带旧会话的账号头；若不剔除会把请求强行绑定到过期/耗尽账号，导致无法切换候选账号。
         || name.eq_ignore_ascii_case("ChatGPT-Account-Id")
+        || name.eq_ignore_ascii_case("x-codex-cli-affinity-id")
 }
 
 #[cfg(test)]

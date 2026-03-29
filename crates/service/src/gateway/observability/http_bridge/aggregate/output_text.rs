@@ -19,11 +19,30 @@ pub(crate) struct UpstreamResponseUsage {
     pub output_text: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum UpstreamCompletionState {
+    #[default]
+    NonStream,
+    TerminalOk,
+    TerminalErr,
+    EofWithoutTerminal,
+    ReaderError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DeliveryState {
+    #[default]
+    Delivered,
+    ClientDisconnect,
+    DeliveryError,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UpstreamResponseBridgeResult {
     pub usage: UpstreamResponseUsage,
-    pub stream_terminal_seen: bool,
-    pub stream_terminal_error: Option<String>,
+    pub upstream_completion_state: UpstreamCompletionState,
+    pub upstream_completion_error: Option<String>,
+    pub delivery_state: DeliveryState,
     pub delivery_error: Option<String>,
     pub upstream_error_hint: Option<String>,
     pub delivered_status_code: Option<u16>,
@@ -38,29 +57,62 @@ pub(crate) struct UpstreamResponseBridgeResult {
 
 impl UpstreamResponseBridgeResult {
     pub(crate) fn is_ok(&self, is_stream: bool) -> bool {
-        if self.delivery_error.is_some() {
+        if self.delivery_state != DeliveryState::Delivered {
             return false;
         }
         if is_stream {
-            if !self.stream_terminal_seen {
-                return false;
-            }
-            if self.stream_terminal_error.is_some() {
+            if self.upstream_completion_state != UpstreamCompletionState::TerminalOk {
                 return false;
             }
         }
         true
     }
 
+    pub(crate) fn is_client_disconnect(&self) -> bool {
+        self.delivery_state == DeliveryState::ClientDisconnect
+    }
+
+    pub(crate) fn is_reader_error(&self) -> bool {
+        self.upstream_completion_state == UpstreamCompletionState::ReaderError
+    }
+
     pub(crate) fn error_message(&self, is_stream: bool) -> Option<String> {
-        if let Some(err) = self.stream_terminal_error.as_ref() {
-            return Some(err.clone());
+        if is_stream {
+            match self.upstream_completion_state {
+                UpstreamCompletionState::TerminalErr => {
+                    if let Some(err) = self.upstream_completion_error.as_ref() {
+                        return Some(err.clone());
+                    }
+                }
+                UpstreamCompletionState::EofWithoutTerminal => {
+                    return Some(
+                        self.upstream_completion_error
+                            .clone()
+                            .unwrap_or_else(|| "上游流中途中断（未正常结束）".to_string()),
+                    );
+                }
+                UpstreamCompletionState::ReaderError => {
+                    return Some(
+                        self.upstream_completion_error
+                            .clone()
+                            .unwrap_or_else(|| "上游流读取失败".to_string()),
+                    );
+                }
+                _ => {}
+            }
         }
-        if is_stream && !self.stream_terminal_seen {
-            return Some("上游流中途中断（未正常结束）".to_string());
-        }
-        if let Some(err) = self.delivery_error.as_ref() {
-            return Some(format!("response write failed: {err}"));
+        match self.delivery_state {
+            DeliveryState::ClientDisconnect => {
+                if let Some(err) = self.delivery_error.as_ref() {
+                    return Some(format!("response write failed: {err}"));
+                }
+            }
+            DeliveryState::DeliveryError => {
+                if let Some(err) = self.delivery_error.as_ref() {
+                    return Some(format!("response write failed: {err}"));
+                }
+            }
+            DeliveryState::Delivered => {}
         }
         None
     }
@@ -684,7 +736,7 @@ fn extract_model_token(fragment: &str) -> Option<String> {
 mod tests {
     use super::{
         extract_error_hint_from_body, limit_upstream_error_hint, summarize_upstream_error_hint,
-        UpstreamResponseBridgeResult, UPSTREAM_ERROR_HINT_LIMIT_BYTES,
+        UpstreamCompletionState, UpstreamResponseBridgeResult, UPSTREAM_ERROR_HINT_LIMIT_BYTES,
     };
 
     #[test]
@@ -764,7 +816,7 @@ mod tests {
     #[test]
     fn bridge_error_message_reports_stream_incomplete_in_chinese() {
         let bridge = UpstreamResponseBridgeResult {
-            stream_terminal_seen: false,
+            upstream_completion_state: UpstreamCompletionState::EofWithoutTerminal,
             ..UpstreamResponseBridgeResult::default()
         };
         assert_eq!(

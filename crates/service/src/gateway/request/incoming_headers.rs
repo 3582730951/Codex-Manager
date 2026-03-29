@@ -7,6 +7,7 @@ pub(crate) struct IncomingHeaderSnapshot {
     authorization_bearer_strict: Option<String>,
     authorization_bearer_case_insensitive: Option<String>,
     x_api_key: Option<String>,
+    cli_affinity_id: Option<String>,
     session_id: Option<String>,
     client_request_id: Option<String>,
     subagent: Option<String>,
@@ -46,6 +47,15 @@ impl IncomingHeaderSnapshot {
                 let value = header.value.as_str().trim();
                 if !value.is_empty() {
                     snapshot.session_id = Some(value.to_string());
+                }
+                continue;
+            }
+            if snapshot.cli_affinity_id.is_none()
+                && header.field.equiv("x-codex-cli-affinity-id")
+            {
+                let value = header.value.as_str().trim();
+                if !value.is_empty() {
+                    snapshot.cli_affinity_id = Some(value.to_string());
                 }
                 continue;
             }
@@ -116,6 +126,10 @@ impl IncomingHeaderSnapshot {
 
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    pub(crate) fn cli_affinity_id(&self) -> Option<&str> {
+        self.cli_affinity_id.as_deref()
     }
 
     pub(crate) fn client_request_id(&self) -> Option<&str> {

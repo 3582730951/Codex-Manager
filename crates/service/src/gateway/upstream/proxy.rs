@@ -218,19 +218,19 @@ pub(in super::super) fn proxy_validated_request(
         } => (request, candidates),
         CandidatePrecheckResult::Responded => return Ok(()),
     };
-    let affinity_lock = super::super::affinity::derive_affinity_key(
+    let affinity_locks = super::super::affinity::derive_affinity_lock_keys(
         &incoming_headers,
         local_conversation_id.as_deref(),
     )
-    .map(|derived| {
-        super::super::affinity::acquire_affinity_lock(
-            platform_key_hash.as_str(),
-            derived.key.as_str(),
-        )
-    });
-    let _affinity_guard = affinity_lock.as_ref().map(|lock| {
-        crate::lock_utils::lock_recover(lock.as_ref(), "gateway_affinity_request_lock")
-    });
+    .into_iter()
+    .map(|affinity_key| {
+        super::super::affinity::acquire_affinity_lock(platform_key_hash.as_str(), affinity_key.as_str())
+    })
+    .collect::<Vec<_>>();
+    let _affinity_guards = affinity_locks
+        .iter()
+        .map(|lock| crate::lock_utils::lock_recover(lock.as_ref(), "gateway_affinity_request_lock"))
+        .collect::<Vec<_>>();
     let setup = match prepare_request_setup(
         &storage,
         original_path.as_str(),

@@ -5,6 +5,7 @@ use std::time::Instant;
 use tiny_http::Request;
 
 use crate::apikey_profile::PROTOCOL_AZURE_OPENAI;
+use crate::gateway::http_bridge::UpstreamCompletionState;
 
 fn parse_static_headers_json(raw: Option<&str>) -> Result<Vec<(HeaderName, HeaderValue)>, String> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -379,15 +380,34 @@ pub(in super::super) fn proxy_azure_request(
     )?;
     let bridge_ok = bridge.is_ok(is_stream);
     let bridge_error = bridge.error_message(is_stream);
-    let usage = bridge.usage;
-    let mut final_status_code = status_code;
+    let mut final_status_code = if bridge.is_client_disconnect() {
+        499
+    } else if let Some(delivered_status_code) = bridge.delivered_status_code {
+        delivered_status_code
+    } else if status_code >= 400 {
+        status_code
+    } else if is_stream
+        && matches!(
+            bridge.upstream_completion_state,
+            UpstreamCompletionState::EofWithoutTerminal | UpstreamCompletionState::ReaderError
+        )
+    {
+        502
+    } else if bridge_ok {
+        status_code
+    } else {
+        502
+    };
     let mut final_error_text: Option<String> = error_text.map(|v| v.to_string());
-    if status_code < 400 && !bridge_ok {
-        final_status_code = 502;
-        final_error_text = bridge_error.or(final_error_text);
+    if final_error_text.is_none() && !bridge_ok {
+        final_error_text = bridge_error;
     } else if status_code >= 400 && final_error_text.is_none() {
         final_error_text = bridge_error;
     }
+    if final_error_text.is_some() && final_status_code < 400 && !bridge.is_client_disconnect() {
+        final_status_code = 502;
+    }
+    let usage = bridge.usage;
 
     super::super::super::record_gateway_request_outcome(
         path,

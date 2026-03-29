@@ -13,7 +13,8 @@ use super::{
     inspect_sse_frame, is_response_completed_event_name, map_chunk_has_chat_text,
     map_chunk_has_completion_text, merge_usage, normalize_chat_chunk_delta_role,
     parse_sse_frame_json, should_skip_chat_live_text_event, should_skip_completion_live_text_event,
-    update_openai_stream_meta, OpenAIStreamMeta, SseTerminal, UpstreamResponseUsage,
+    update_openai_stream_meta, OpenAIStreamMeta, SseTerminal, UpstreamCompletionState,
+    UpstreamResponseUsage,
 };
 
 #[path = "stream_readers/anthropic.rs"]
@@ -30,8 +31,8 @@ mod passthrough;
 pub(crate) use anthropic::AnthropicSseReader;
 use common::{
     classify_upstream_stream_read_error, collector_output_text_trimmed,
-    mark_collector_terminal_success, sse_keepalive_interval, stream_incomplete_message,
-    stream_reader_disconnected_message,
+    mark_collector_terminal_error, mark_collector_terminal_success, sse_keepalive_interval,
+    stream_incomplete_message, stream_reader_disconnected_message,
 };
 pub(crate) use common::{
     PassthroughSseCollector, SseKeepAliveFrame, UpstreamSseFramePump, UpstreamSseFramePumpItem,

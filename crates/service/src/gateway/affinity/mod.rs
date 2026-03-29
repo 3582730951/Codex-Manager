@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::OnceLock;
 
@@ -138,29 +139,37 @@ pub(crate) fn derive_affinity_key(
     local_conversation_id: Option<&str>,
 ) -> Option<DerivedAffinityKey> {
     derive_affinity_key_from_parts(
-        incoming_headers.session_id(),
+        incoming_headers.cli_affinity_id(),
         local_conversation_id.or(incoming_headers.conversation_id()),
+        incoming_headers.session_id(),
         incoming_headers.subagent(),
         incoming_headers.client_request_id(),
     )
 }
 
 pub(crate) fn derive_affinity_key_from_parts(
-    session_id: Option<&str>,
+    cli_affinity_id: Option<&str>,
     conversation_id: Option<&str>,
+    session_id: Option<&str>,
     subagent: Option<&str>,
     client_request_id: Option<&str>,
 ) -> Option<DerivedAffinityKey> {
-    if let Some(value) = normalize_key_part(session_id) {
+    if let Some(value) = normalize_key_part(cli_affinity_id) {
         return Some(DerivedAffinityKey {
-            key: format!("sid:{value}"),
-            source: "session_id",
+            key: format!("cli:{value}"),
+            source: "x-codex-cli-affinity-id",
         });
     }
     if let Some(value) = normalize_key_part(conversation_id) {
         return Some(DerivedAffinityKey {
             key: format!("cid:{value}"),
             source: "conversation_id",
+        });
+    }
+    if let Some(value) = normalize_key_part(session_id) {
+        return Some(DerivedAffinityKey {
+            key: format!("sid:{value}"),
+            source: "session_id",
         });
     }
     if let Some(value) = normalize_key_part(subagent) {
@@ -173,6 +182,67 @@ pub(crate) fn derive_affinity_key_from_parts(
         key: format!("rid:{value}"),
         source: "x-client-request-id",
     })
+}
+
+pub(crate) fn derive_compat_affinity_keys(
+    incoming_headers: &IncomingHeaderSnapshot,
+    local_conversation_id: Option<&str>,
+) -> Vec<DerivedAffinityKey> {
+    let conversation_id = local_conversation_id.or(incoming_headers.conversation_id());
+    let candidates = [
+        (
+            normalize_key_part(incoming_headers.session_id()),
+            "sid",
+            "session_id",
+        ),
+        (normalize_key_part(conversation_id), "cid", "conversation_id"),
+        (
+            normalize_key_part(incoming_headers.subagent()),
+            "sub",
+            "x-openai-subagent",
+        ),
+        (
+            normalize_key_part(incoming_headers.client_request_id()),
+            "rid",
+            "x-client-request-id",
+        ),
+    ];
+    let primary = derive_affinity_key(incoming_headers, local_conversation_id).map(|item| item.key);
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for (value, prefix, source) in candidates {
+        let Some(value) = value else {
+            continue;
+        };
+        let key = format!("{prefix}:{value}");
+        if primary.as_deref() == Some(key.as_str()) || !seen.insert(key.clone()) {
+            continue;
+        }
+        out.push(DerivedAffinityKey { key, source });
+    }
+    out
+}
+
+pub(crate) fn legacy_conversation_lock_key(conversation_id: Option<&str>) -> Option<String> {
+    normalize_key_part(conversation_id).map(|value| format!("legacy-cid:{value}"))
+}
+
+pub(crate) fn derive_affinity_lock_keys(
+    incoming_headers: &IncomingHeaderSnapshot,
+    local_conversation_id: Option<&str>,
+) -> Vec<String> {
+    let conversation_id = local_conversation_id.or(incoming_headers.conversation_id());
+    let mut keys = BTreeSet::new();
+    if let Some(derived) = derive_affinity_key(incoming_headers, local_conversation_id) {
+        keys.insert(derived.key);
+    }
+    for candidate in derive_compat_affinity_keys(incoming_headers, local_conversation_id) {
+        keys.insert(candidate.key);
+    }
+    if let Some(legacy_key) = legacy_conversation_lock_key(conversation_id) {
+        keys.insert(legacy_key);
+    }
+    keys.into_iter().collect()
 }
 
 pub(crate) fn synthetic_scope_id(platform_key_hash: &str, affinity_key: &str) -> String {
@@ -263,20 +333,47 @@ fn env_bool_or(name: &str, default: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_affinity_key_from_parts, synthetic_scope_id, AffinityRoutingMode};
+    use super::{
+        derive_affinity_key_from_parts, legacy_conversation_lock_key, synthetic_scope_id,
+        AffinityRoutingMode,
+    };
 
     #[test]
-    fn derive_affinity_key_prefers_session_id() {
+    fn derive_affinity_key_prefers_cli_then_conversation_then_session() {
         let derived = derive_affinity_key_from_parts(
-            Some("sid-1"),
+            Some("cli-1"),
             Some("conv-1"),
+            Some("sid-1"),
             Some("sub-1"),
             Some("req-1"),
         )
         .expect("derive affinity key");
 
-        assert_eq!(derived.key, "sid:sid-1");
-        assert_eq!(derived.source, "session_id");
+        assert_eq!(derived.key, "cli:cli-1");
+        assert_eq!(derived.source, "x-codex-cli-affinity-id");
+    }
+
+    #[test]
+    fn derive_affinity_key_falls_back_to_conversation_id_before_session_id() {
+        let derived = derive_affinity_key_from_parts(
+            None,
+            Some("conv-1"),
+            Some("sid-1"),
+            Some("sub-1"),
+            Some("req-1"),
+        )
+        .expect("derive affinity key");
+
+        assert_eq!(derived.key, "cid:conv-1");
+        assert_eq!(derived.source, "conversation_id");
+    }
+
+    #[test]
+    fn legacy_conversation_lock_key_is_stable() {
+        assert_eq!(
+            legacy_conversation_lock_key(Some("conv-1")).as_deref(),
+            Some("legacy-cid:conv-1")
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ use aggregate::{
     parse_sse_frame_json, parse_usage_from_json, reload_output_text_from_env, usage_has_signal,
     SseTerminal, UpstreamResponseBridgeResult, UpstreamResponseUsage,
 };
+pub(crate) use aggregate::{DeliveryState, UpstreamCompletionState};
 #[cfg(test)]
 use aggregate::{
     output_text_limit_bytes, parse_usage_from_sse_frame, OUTPUT_TEXT_TRUNCATED_MARKER,

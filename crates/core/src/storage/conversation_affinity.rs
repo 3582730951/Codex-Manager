@@ -1,8 +1,9 @@
 use rusqlite::{params, OptionalExtension, Result};
 
 use super::{
-    AffinityScopePromotion, ClientBinding, ContextSnapshot, ConversationContextEvent,
-    ConversationContextState, ConversationThread, Storage,
+    AffinityKeyMigration, AffinityScopePromotion, AffinityTurnCommitOutcome, ClientBinding,
+    ContextSnapshot, ConversationContextEvent, ConversationContextState, ConversationThread,
+    Storage,
 };
 
 fn map_client_binding(row: &rusqlite::Row<'_>) -> Result<ClientBinding> {
@@ -84,6 +85,75 @@ fn map_context_snapshot(row: &rusqlite::Row<'_>) -> Result<ContextSnapshot> {
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
     })
+}
+
+fn affinity_key_exists(
+    tx: &rusqlite::Transaction<'_>,
+    table: &str,
+    platform_key_hash: &str,
+    affinity_key: &str,
+) -> Result<bool> {
+    let sql = format!(
+        "SELECT COUNT(1) FROM {table} WHERE platform_key_hash = ?1 AND affinity_key = ?2"
+    );
+    let count: i64 = tx.query_row(sql.as_str(), params![platform_key_hash, affinity_key], |row| {
+        row.get(0)
+    })?;
+    Ok(count > 0)
+}
+
+fn affinity_key_migration_conflicts(
+    tx: &rusqlite::Transaction<'_>,
+    migration: &AffinityKeyMigration,
+) -> Result<bool> {
+    let tables = [
+        "client_bindings",
+        "conversation_threads",
+        "conversation_context_state",
+        "conversation_context_events",
+        "context_snapshots",
+    ];
+    for table in tables {
+        if affinity_key_exists(
+            tx,
+            table,
+            migration.platform_key_hash.as_str(),
+            migration.to_affinity_key.as_str(),
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn rewrite_affinity_key(
+    tx: &rusqlite::Transaction<'_>,
+    migration: &AffinityKeyMigration,
+) -> Result<()> {
+    let tables = [
+        "client_bindings",
+        "conversation_threads",
+        "conversation_context_state",
+        "conversation_context_events",
+        "context_snapshots",
+    ];
+    for table in tables {
+        let sql = format!(
+            "UPDATE {table}
+             SET affinity_key = ?3
+             WHERE platform_key_hash = ?1
+               AND affinity_key = ?2"
+        );
+        tx.execute(
+            sql.as_str(),
+            params![
+                migration.platform_key_hash.as_str(),
+                migration.from_affinity_key.as_str(),
+                migration.to_affinity_key.as_str(),
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 impl Storage {
@@ -644,11 +714,22 @@ impl Storage {
         thread: &ConversationThread,
         expected_thread_version: Option<i64>,
         scope_promotion: Option<&AffinityScopePromotion>,
+        key_migration: Option<&AffinityKeyMigration>,
         context_state: &ConversationContextState,
         turn_index: i64,
         events: &[ConversationContextEvent],
-    ) -> Result<bool> {
+    ) -> Result<AffinityTurnCommitOutcome> {
         let tx = self.conn.unchecked_transaction()?;
+
+        if let Some(migration) = key_migration {
+            if migration.from_affinity_key != migration.to_affinity_key {
+                if affinity_key_migration_conflicts(&tx, migration)? {
+                    tx.rollback()?;
+                    return Ok(AffinityTurnCommitOutcome::MigrationConflict);
+                }
+                rewrite_affinity_key(&tx, migration)?;
+            }
+        }
 
         if let Some(promotion) = scope_promotion {
             if promotion.from_scope_id != promotion.to_scope_id {
@@ -710,7 +791,7 @@ impl Storage {
                     || target_event_exists > 0
                 {
                     tx.rollback()?;
-                    return Ok(false);
+                    return Ok(AffinityTurnCommitOutcome::Conflict);
                 }
 
                 tx.execute(
@@ -843,7 +924,7 @@ impl Storage {
         };
         if !binding_saved {
             tx.rollback()?;
-            return Ok(false);
+            return Ok(AffinityTurnCommitOutcome::Conflict);
         }
 
         let thread_saved = match expected_thread_version {
@@ -909,7 +990,7 @@ impl Storage {
         };
         if !thread_saved {
             tx.rollback()?;
-            return Ok(false);
+            return Ok(AffinityTurnCommitOutcome::Conflict);
         }
 
         tx.execute(
@@ -1014,7 +1095,7 @@ impl Storage {
         }
 
         tx.commit()?;
-        Ok(true)
+        Ok(AffinityTurnCommitOutcome::Committed)
     }
 
     pub fn promote_affinity_primary_scope(

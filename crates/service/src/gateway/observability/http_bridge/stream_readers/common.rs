@@ -1,4 +1,4 @@
-use super::{Arc, Mutex, UpstreamResponseUsage};
+use super::{Arc, Mutex, UpstreamCompletionState, UpstreamResponseUsage};
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -14,6 +14,7 @@ static SSE_KEEPALIVE_INTERVAL_MS: AtomicU64 = AtomicU64::new(DEFAULT_SSE_KEEPALI
 pub(crate) struct PassthroughSseCollector {
     pub(crate) usage: UpstreamResponseUsage,
     pub(crate) saw_terminal: bool,
+    pub(crate) completion_state: Option<UpstreamCompletionState>,
     pub(crate) terminal_error: Option<String>,
     pub(crate) upstream_error_hint: Option<String>,
     pub(crate) last_event_type: Option<String>,
@@ -150,7 +151,23 @@ pub(super) fn mark_collector_terminal_success(
 ) {
     if let Ok(mut collector) = usage_collector.lock() {
         collector.saw_terminal = true;
+        collector.completion_state = Some(UpstreamCompletionState::TerminalOk);
         collector.terminal_error = None;
+    }
+}
+
+pub(super) fn mark_collector_terminal_error(
+    usage_collector: &Arc<Mutex<PassthroughSseCollector>>,
+    state: UpstreamCompletionState,
+    message: String,
+) {
+    if let Ok(mut collector) = usage_collector.lock() {
+        collector.saw_terminal = matches!(
+            state,
+            UpstreamCompletionState::TerminalOk | UpstreamCompletionState::TerminalErr
+        );
+        collector.completion_state = Some(state);
+        collector.terminal_error = Some(message);
     }
 }
 

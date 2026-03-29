@@ -185,6 +185,20 @@ pub struct AffinityScopePromotion {
     pub to_scope_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct AffinityKeyMigration {
+    pub platform_key_hash: String,
+    pub from_affinity_key: String,
+    pub to_affinity_key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AffinityTurnCommitOutcome {
+    Committed,
+    Conflict,
+    MigrationConflict,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RequestLog {
     pub trace_id: Option<String>,

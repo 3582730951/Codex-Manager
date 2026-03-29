@@ -2,6 +2,7 @@ use tiny_http::Request;
 
 use super::super::super::request_log::RequestLogUsage;
 use crate::gateway::affinity::AffinityRoutingResolution;
+use crate::gateway::http_bridge::UpstreamCompletionState;
 use super::execution_context::GatewayUpstreamExecutionContext;
 
 pub(in super::super) fn respond_terminal(
@@ -25,6 +26,45 @@ fn is_client_disconnect_error(message: &str) -> bool {
         || normalized.contains("os error 32")
         || normalized.contains("os error 54")
         || normalized.contains("os error 104")
+}
+
+fn mark_account_unavailable_from_bridge_signals(
+    context: &GatewayUpstreamExecutionContext<'_>,
+    account_id: &str,
+    final_error: Option<&str>,
+    upstream_auth_error: Option<&str>,
+    upstream_identity_error_code: Option<&str>,
+) {
+    for signal in [
+        final_error,
+        upstream_auth_error,
+        upstream_identity_error_code,
+    ] {
+        let Some(signal) = signal.map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if crate::account_status::mark_account_unavailable_for_auth_error(
+            context.storage(),
+            account_id,
+            signal,
+        ) {
+            return;
+        }
+        if crate::account_status::mark_account_unavailable_for_usage_http_error(
+            context.storage(),
+            account_id,
+            signal,
+        ) {
+            return;
+        }
+        if crate::account_status::mark_account_unavailable_for_deactivation_error(
+            context.storage(),
+            account_id,
+            signal,
+        ) {
+            return;
+        }
+    }
 }
 
 pub(super) fn respond_total_timeout(
@@ -129,8 +169,9 @@ pub(super) fn finalize_upstream_response(
         format!("{response_adapter:?}").as_str(),
         path,
         client_is_stream,
-        bridge.stream_terminal_seen,
-        bridge.stream_terminal_error.as_deref(),
+        bridge.upstream_completion_state,
+        bridge.upstream_completion_error.as_deref(),
+        bridge.delivery_state,
         bridge.delivery_error.as_deref(),
         bridge_output_text_len,
         bridge.usage.output_tokens,
@@ -159,19 +200,21 @@ pub(super) fn finalize_upstream_response(
         );
     }
 
-    let upstream_stream_failed = client_is_stream
-        && (!bridge.stream_terminal_seen || bridge.stream_terminal_error.is_some());
-    let client_delivery_failed = bridge
-        .delivery_error
-        .as_deref()
-        .is_some_and(is_client_disconnect_error);
+    let upstream_reader_failed = client_is_stream && bridge.is_reader_error();
+    let upstream_eof_without_terminal = client_is_stream
+        && bridge.upstream_completion_state == UpstreamCompletionState::EofWithoutTerminal;
+    let client_delivery_failed = bridge.is_client_disconnect()
+        || bridge
+            .delivery_error
+            .as_deref()
+            .is_some_and(is_client_disconnect_error);
     let status_for_log = if client_delivery_failed {
         499
     } else if let Some(delivered_status_code) = bridge.delivered_status_code {
         delivered_status_code
     } else if status_code >= 400 {
         status_code
-    } else if upstream_stream_failed {
+    } else if upstream_reader_failed || upstream_eof_without_terminal {
         502
     } else if bridge_ok {
         status_code
@@ -179,7 +222,7 @@ pub(super) fn finalize_upstream_response(
         502
     };
 
-    if upstream_stream_failed {
+    if upstream_reader_failed {
         super::super::super::mark_account_cooldown(
             account_id,
             super::super::super::CooldownReason::Network,
@@ -187,22 +230,26 @@ pub(super) fn finalize_upstream_response(
         super::super::super::record_route_quality(account_id, 502);
     }
 
-    if let Some(error) = final_error.as_deref() {
-        let _ = context.mark_account_unavailable_for_gateway_error(account_id, error);
-    }
+    mark_account_unavailable_from_bridge_signals(
+        context,
+        account_id,
+        final_error.as_deref(),
+        bridge.upstream_auth_error.as_deref(),
+        bridge.upstream_identity_error_code.as_deref(),
+    );
 
     super::super::super::record_scheduler_feedback(
         account_id,
         super::super::super::scheduler::SchedulerFeedback {
             status_code: status_for_log,
             elapsed_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-            network_error: upstream_stream_failed,
-            stream_failed: upstream_stream_failed,
+            network_error: upstream_reader_failed,
+            stream_failed: upstream_reader_failed,
         },
     );
 
     let usage = bridge.usage;
-    if affinity_resolution.is_some() {
+    if affinity_resolution.is_some() && !client_delivery_failed && !upstream_eof_without_terminal {
         super::super::super::affinity::record_affinity_attempt_feedback(
             account_id,
             status_for_log,
@@ -238,6 +285,7 @@ pub(super) fn finalize_upstream_response(
                     Some(completed_response_body),
                     response_adapter_label.as_str(),
                     context.protocol_type(),
+                    Some(trace_id),
                 ) {
                     log::warn!(
                         "event=gateway_affinity_finalize_failed trace_id={} account_id={} err={}",

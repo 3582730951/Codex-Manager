@@ -3,12 +3,13 @@ use super::{
     classify_upstream_stream_read_error, collector_output_text_trimmed,
     convert_openai_chat_stream_chunk_with_tool_name_restore_map,
     extract_openai_completed_output_text, extract_sse_frame_payload, inspect_sse_frame,
-    is_response_completed_event_name, map_chunk_has_chat_text, mark_collector_terminal_success,
-    merge_usage, normalize_chat_chunk_delta_role, parse_sse_frame_json,
-    should_skip_chat_live_text_event, sse_keepalive_interval, stream_incomplete_message,
-    stream_reader_disconnected_message, update_openai_stream_meta, Arc, Cursor, Mutex,
-    OpenAIStreamMeta, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
-    ToolNameRestoreMap, UpstreamSseFramePump, UpstreamSseFramePumpItem, Value,
+    is_response_completed_event_name, map_chunk_has_chat_text, mark_collector_terminal_error,
+    mark_collector_terminal_success, merge_usage, normalize_chat_chunk_delta_role,
+    parse_sse_frame_json, should_skip_chat_live_text_event, sse_keepalive_interval,
+    stream_incomplete_message, stream_reader_disconnected_message, update_openai_stream_meta, Arc,
+    Cursor, Mutex, OpenAIStreamMeta, PassthroughSseCollector, Read, SseKeepAliveFrame,
+    SseTerminal, ToolNameRestoreMap, UpstreamCompletionState, UpstreamSseFramePump,
+    UpstreamSseFramePumpItem, Value,
 };
 
 pub(crate) struct OpenAIChatCompletionsSseReader {
@@ -54,8 +55,14 @@ impl OpenAIChatCompletionsSseReader {
             }
             if let Some(terminal) = inspection.terminal {
                 collector.saw_terminal = true;
+                collector.completion_state = Some(match terminal {
+                    SseTerminal::Ok => UpstreamCompletionState::TerminalOk,
+                    SseTerminal::Err(_) => UpstreamCompletionState::TerminalErr,
+                });
                 if let SseTerminal::Err(message) = terminal {
                     collector.terminal_error = Some(message);
+                } else {
+                    collector.terminal_error = None;
                 }
             }
         }
@@ -159,27 +166,26 @@ impl OpenAIChatCompletionsSseReader {
                     continue;
                 }
                 Ok(UpstreamSseFramePumpItem::Eof) => {
-                    if let Some(fallback) = self.try_build_chat_fallback_stream(true) {
-                        return Ok(fallback);
-                    }
-                    if let Ok(mut collector) = self.usage_collector.lock() {
-                        if !collector.saw_terminal {
-                            // 中文注释：对齐最新 Codex SSE 语义：
-                            // 只有 response.completed / response.done / [DONE] 才算正常结束。
-                            collector
-                                .terminal_error
-                                .get_or_insert_with(stream_incomplete_message);
+                    if let Ok(collector) = self.usage_collector.lock() {
+                        if collector.saw_terminal {
+                            self.finished = true;
+                            return Ok(Vec::new());
                         }
                     }
+                    mark_collector_terminal_error(
+                        &self.usage_collector,
+                        UpstreamCompletionState::EofWithoutTerminal,
+                        stream_incomplete_message(),
+                    );
                     self.finished = true;
                     return Ok(Vec::new());
                 }
                 Ok(UpstreamSseFramePumpItem::Error(err)) => {
-                    if let Ok(mut collector) = self.usage_collector.lock() {
-                        collector
-                            .terminal_error
-                            .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
-                    }
+                    mark_collector_terminal_error(
+                        &self.usage_collector,
+                        UpstreamCompletionState::ReaderError,
+                        classify_upstream_stream_read_error(&err),
+                    );
                     self.finished = true;
                     return Ok(Vec::new());
                 }
@@ -187,11 +193,11 @@ impl OpenAIChatCompletionsSseReader {
                     return Ok(SseKeepAliveFrame::OpenAIChatCompletions.bytes().to_vec());
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    if let Ok(mut collector) = self.usage_collector.lock() {
-                        collector
-                            .terminal_error
-                            .get_or_insert_with(stream_reader_disconnected_message);
-                    }
+                    mark_collector_terminal_error(
+                        &self.usage_collector,
+                        UpstreamCompletionState::ReaderError,
+                        stream_reader_disconnected_message(),
+                    );
                     self.finished = true;
                     return Ok(Vec::new());
                 }

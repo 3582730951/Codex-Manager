@@ -24,6 +24,8 @@ static STRICT_REQUEST_PARAM_ALLOWLIST: AtomicBool =
     AtomicBool::new(DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST);
 static ENABLE_REQUEST_COMPRESSION: AtomicBool = AtomicBool::new(DEFAULT_ENABLE_REQUEST_COMPRESSION);
 static UPSTREAM_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+static GATEWAY_ACCOUNT_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+static GATEWAY_ACCOUNT_PROXY_CLIENT: OnceLock<RwLock<Option<Client>>> = OnceLock::new();
 static FREE_ACCOUNT_MAX_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static ORIGINATOR: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_USER_AGENT_VERSION: OnceLock<RwLock<String>> = OnceLock::new();
@@ -59,6 +61,7 @@ const ENV_TOKEN_EXCHANGE_CLIENT_ID: &str = "CODEXMANAGER_CLIENT_ID";
 const ENV_TOKEN_EXCHANGE_ISSUER: &str = "CODEXMANAGER_ISSUER";
 const ENV_PROXY_LIST: &str = "CODEXMANAGER_PROXY_LIST";
 const ENV_UPSTREAM_PROXY_URL: &str = "CODEXMANAGER_UPSTREAM_PROXY_URL";
+const ENV_GATEWAY_ACCOUNT_PROXY_URL: &str = "CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL";
 const ENV_FREE_ACCOUNT_MAX_MODEL: &str = "CODEXMANAGER_FREE_ACCOUNT_MAX_MODEL";
 const ENV_ORIGINATOR: &str = "CODEXMANAGER_ORIGINATOR";
 const ENV_RESIDENCY_REQUIREMENT: &str = "CODEXMANAGER_RESIDENCY_REQUIREMENT";
@@ -108,6 +111,20 @@ pub(crate) fn fresh_upstream_client_for_account(account_id: &str) -> Client {
         return build_upstream_client_with_proxy(Some(proxy_url));
     }
     build_upstream_client()
+}
+
+pub(crate) fn gateway_account_proxy_client() -> Option<Client> {
+    ensure_runtime_config_loaded();
+    crate::lock_utils::read_recover(
+        gateway_account_proxy_client_lock(),
+        "gateway_account_proxy_client",
+    )
+    .clone()
+}
+
+pub(crate) fn fresh_direct_upstream_client() -> Client {
+    ensure_runtime_config_loaded();
+    build_upstream_client_with_proxy(None)
 }
 
 fn upstream_connect_timeout_cached() -> Duration {
@@ -207,6 +224,11 @@ pub(crate) fn front_proxy_max_body_bytes() -> usize {
 pub(super) fn upstream_proxy_url() -> Option<String> {
     ensure_runtime_config_loaded();
     current_upstream_proxy_url()
+}
+
+pub(crate) fn gateway_account_proxy_url() -> Option<String> {
+    ensure_runtime_config_loaded();
+    current_gateway_account_proxy_url()
 }
 
 pub(crate) fn current_free_account_max_model() -> String {
@@ -433,6 +455,26 @@ pub(super) fn reload_from_env() {
     *cached_proxy_url = converted_proxy;
     drop(cached_proxy_url);
 
+    let gateway_account_proxy_url = env_non_empty(ENV_GATEWAY_ACCOUNT_PROXY_URL);
+    let converted_gateway_account_proxy =
+        match normalize_upstream_proxy_url(gateway_account_proxy_url.as_deref()) {
+            Ok(normalized) => normalized,
+            Err(err) => {
+                log::warn!(
+                    "event=gateway_invalid_account_proxy_url source=env var={} err={}",
+                    ENV_GATEWAY_ACCOUNT_PROXY_URL,
+                    err
+                );
+                None
+            }
+        };
+    let mut cached_gateway_account_proxy = crate::lock_utils::write_recover(
+        gateway_account_proxy_url_cell(),
+        "gateway_account_proxy_url",
+    );
+    *cached_gateway_account_proxy = converted_gateway_account_proxy;
+    drop(cached_gateway_account_proxy);
+
     let free_account_max_model = env_non_empty(ENV_FREE_ACCOUNT_MAX_MODEL)
         .and_then(|value| normalize_model_slug(value.as_str()).ok())
         .unwrap_or_else(|| DEFAULT_FREE_ACCOUNT_MAX_MODEL.to_string());
@@ -489,6 +531,15 @@ fn refresh_upstream_clients_from_runtime_config() {
     let mut pool_lock =
         crate::lock_utils::write_recover(upstream_client_pool_lock(), "upstream_client_pool");
     *pool_lock = pool;
+
+    let gateway_proxy_client = current_gateway_account_proxy_url()
+        .as_deref()
+        .map(|proxy_url| build_upstream_client_with_proxy(Some(proxy_url)));
+    let mut gateway_proxy_lock = crate::lock_utils::write_recover(
+        gateway_account_proxy_client_lock(),
+        "gateway_account_proxy_client",
+    );
+    *gateway_proxy_lock = gateway_proxy_client;
 }
 
 fn build_upstream_client_pool() -> UpstreamClientPool {
@@ -529,6 +580,14 @@ fn upstream_proxy_url_cell() -> &'static RwLock<Option<String>> {
     UPSTREAM_PROXY_URL.get_or_init(|| RwLock::new(None))
 }
 
+fn gateway_account_proxy_url_cell() -> &'static RwLock<Option<String>> {
+    GATEWAY_ACCOUNT_PROXY_URL.get_or_init(|| RwLock::new(None))
+}
+
+fn gateway_account_proxy_client_lock() -> &'static RwLock<Option<Client>> {
+    GATEWAY_ACCOUNT_PROXY_CLIENT.get_or_init(|| RwLock::new(None))
+}
+
 fn free_account_max_model_cell() -> &'static RwLock<String> {
     FREE_ACCOUNT_MAX_MODEL.get_or_init(|| RwLock::new(DEFAULT_FREE_ACCOUNT_MAX_MODEL.to_string()))
 }
@@ -557,6 +616,14 @@ pub(crate) fn gateway_runtime_test_guard() -> std::sync::MutexGuard<'static, ()>
 
 fn current_upstream_proxy_url() -> Option<String> {
     crate::lock_utils::read_recover(upstream_proxy_url_cell(), "upstream_proxy_url").clone()
+}
+
+fn current_gateway_account_proxy_url() -> Option<String> {
+    crate::lock_utils::read_recover(
+        gateway_account_proxy_url_cell(),
+        "gateway_account_proxy_url",
+    )
+    .clone()
 }
 
 fn token_exchange_client_id_cell() -> &'static RwLock<String> {

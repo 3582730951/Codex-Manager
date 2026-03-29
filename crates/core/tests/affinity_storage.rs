@@ -1,6 +1,6 @@
 use codexmanager_core::storage::{
-    now_ts, AffinityScopePromotion, ClientBinding, ContextSnapshot, ConversationContextEvent,
-    ConversationContextState, ConversationThread, Storage,
+    now_ts, AffinityScopePromotion, AffinityTurnCommitOutcome, ClientBinding, ContextSnapshot,
+    ConversationContextEvent, ConversationContextState, ConversationThread, Storage,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -367,6 +367,7 @@ fn commit_affinity_turn_success_rolls_back_on_cas_miss() {
                 from_scope_id: "affinity::synthetic".to_string(),
                 to_scope_id: "scope-real".to_string(),
             }),
+            None,
             &ConversationContextState {
                 platform_key_hash: "platform-1".to_string(),
                 affinity_key: "sid:test-1".to_string(),
@@ -401,7 +402,11 @@ fn commit_affinity_turn_success_rolls_back_on_cas_miss() {
             }],
         )
         .expect("commit result");
-    assert!(!committed, "cas miss should abort commit");
+    assert_eq!(
+        committed,
+        AffinityTurnCommitOutcome::Conflict,
+        "cas miss should abort commit"
+    );
 
     let binding = storage
         .get_client_binding("platform-1", "sid:test-1")

@@ -1,8 +1,8 @@
 use super::{
     classify_upstream_stream_read_error, inspect_sse_frame, merge_usage, sse_keepalive_interval,
     stream_incomplete_message, stream_reader_disconnected_message, Arc, Cursor, Mutex,
-    PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal, UpstreamSseFramePump,
-    UpstreamSseFramePumpItem,
+    PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal, UpstreamCompletionState,
+    UpstreamSseFramePump, UpstreamSseFramePumpItem,
 };
 use crate::gateway::http_bridge::extract_error_hint_from_body;
 
@@ -69,8 +69,14 @@ impl PassthroughSseUsageReader {
             }
             if let Some(terminal) = inspection.terminal {
                 collector.saw_terminal = true;
+                collector.completion_state = Some(match terminal {
+                    SseTerminal::Ok => UpstreamCompletionState::TerminalOk,
+                    SseTerminal::Err(_) => UpstreamCompletionState::TerminalErr,
+                });
                 if let SseTerminal::Err(message) = terminal {
                     collector.terminal_error = Some(message);
+                } else {
+                    collector.terminal_error = None;
                 }
             }
         }
@@ -85,6 +91,8 @@ impl PassthroughSseUsageReader {
             Ok(UpstreamSseFramePumpItem::Eof) => {
                 if let Ok(mut collector) = self.usage_collector.lock() {
                     if !collector.saw_terminal {
+                        collector.completion_state =
+                            Some(UpstreamCompletionState::EofWithoutTerminal);
                         collector
                             .terminal_error
                             .get_or_insert_with(stream_incomplete_message);
@@ -95,6 +103,7 @@ impl PassthroughSseUsageReader {
             }
             Ok(UpstreamSseFramePumpItem::Error(err)) => {
                 if let Ok(mut collector) = self.usage_collector.lock() {
+                    collector.completion_state = Some(UpstreamCompletionState::ReaderError);
                     collector
                         .terminal_error
                         .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
@@ -107,6 +116,7 @@ impl PassthroughSseUsageReader {
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 if let Ok(mut collector) = self.usage_collector.lock() {
+                    collector.completion_state = Some(UpstreamCompletionState::ReaderError);
                     collector
                         .terminal_error
                         .get_or_insert_with(stream_reader_disconnected_message);
