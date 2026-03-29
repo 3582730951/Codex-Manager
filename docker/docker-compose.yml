@@ -9,6 +9,10 @@ services:
       CODEXMANAGER_SERVICE_ADDR: 0.0.0.0:48760
       CODEXMANAGER_DB_PATH: /data/codexmanager.db
       CODEXMANAGER_RPC_TOKEN_FILE: /data/codexmanager.rpc-token
+      CODEXMANAGER_AFFINITY_ROUTING_MODE: enforce
+      CODEXMANAGER_CONTEXT_REPLAY_ENABLED: "1"
+      CODEXMANAGER_AFFINITY_SOFT_QUOTA_PERCENT: "5"
+      CODEXMANAGER_REPLAY_MAX_TURNS: "12"
     volumes:
       - codexmanager-data:/data
     ports:
