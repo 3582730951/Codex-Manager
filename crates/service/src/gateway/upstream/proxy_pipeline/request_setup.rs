@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use codexmanager_core::storage::{Account, ConversationBinding, Token};
 
 use super::super::super::IncomingHeaderSnapshot;
+use crate::gateway::upstream::config::normalize_upstream_base_url;
 use crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE;
+use crate::gateway::affinity::AffinityRoutingResolution;
 use crate::gateway::conversation_binding::ConversationRoutingContext;
 
 pub(in super::super) struct UpstreamRequestSetup {
@@ -19,12 +21,16 @@ pub(in super::super) struct UpstreamRequestSetup {
     pub(in super::super) has_sticky_fallback_conversation: bool,
     pub(in super::super) has_body_encrypted_content: bool,
     pub(in super::super) conversation_routing: Option<ConversationRoutingContext>,
+    pub(in super::super) affinity_resolution: Option<AffinityRoutingResolution>,
 }
 
 pub(in super::super) fn prepare_request_setup(
     storage: &codexmanager_core::storage::Storage,
+    original_path: &str,
     path: &str,
+    response_adapter: crate::gateway::ResponseAdapter,
     protocol_type: &str,
+    explicit_upstream_base_url: Option<&str>,
     has_prompt_cache_key: bool,
     incoming_headers: &IncomingHeaderSnapshot,
     body: &bytes::Bytes,
@@ -35,16 +41,81 @@ pub(in super::super) fn prepare_request_setup(
     conversation_binding: Option<&ConversationBinding>,
     model_for_log: Option<&str>,
     trace_id: &str,
-) -> UpstreamRequestSetup {
-    let upstream_base = super::super::super::resolve_upstream_base_url();
+) -> Result<UpstreamRequestSetup, String> {
+    let upstream_base = explicit_upstream_base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_upstream_base_url)
+        .unwrap_or_else(super::super::super::resolve_upstream_base_url);
     let upstream_fallback_base =
         super::super::super::resolve_upstream_fallback_base_url(upstream_base.as_str());
     let (url, url_alt) =
         super::super::super::request_rewrite::compute_upstream_url(upstream_base.as_str(), path);
-    let candidate_count = candidates.len();
     let account_max_inflight = super::super::super::account_max_inflight_limit();
     let anthropic_has_prompt_cache_key =
         protocol_type == PROTOCOL_ANTHROPIC_NATIVE && has_prompt_cache_key;
+    let affinity_resolution = super::super::super::affinity::resolve_enforced_routing(
+        storage,
+        incoming_headers,
+        original_path,
+        path,
+        body,
+        candidates,
+        key_id,
+        platform_key_hash,
+        local_conversation_id,
+        model_for_log,
+        response_adapter,
+    )?;
+    if let Some(resolution) = affinity_resolution {
+        let strategy_label = if resolution.requires_replay {
+            "affinity_replay"
+        } else {
+            "affinity_enforce"
+        };
+        candidates.retain(|(account, _)| {
+            resolution
+                .candidate_account_ids
+                .iter()
+                .any(|candidate_id| candidate_id == &account.id)
+        });
+        let candidate_count = candidates.len();
+        let candidate_order = candidates
+            .iter()
+            .map(|(account, _)| format!("{}#sort={}", account.id, account.sort))
+            .collect::<Vec<_>>();
+        super::super::super::trace_log::log_candidate_pool(
+            trace_id,
+            key_id,
+            strategy_label,
+            resolution.affinity_source,
+            true,
+            candidate_order.as_slice(),
+        );
+        return Ok(UpstreamRequestSetup {
+            upstream_base,
+            upstream_fallback_base,
+            url,
+            url_alt,
+            candidate_count,
+            account_max_inflight,
+            account_dynamic_limits: HashMap::new(),
+            anthropic_has_prompt_cache_key,
+            has_sticky_fallback_session: false,
+            has_sticky_fallback_conversation:
+                super::super::header_profile::derive_sticky_conversation_id_from_headers(
+                    incoming_headers,
+                )
+                .is_some(),
+            has_body_encrypted_content:
+                super::super::support::payload_rewrite::body_has_encrypted_content_hint(
+                    body.as_ref(),
+                ),
+            conversation_routing: None,
+            affinity_resolution: Some(resolution),
+        });
+    }
+
     let conversation_routing =
         super::super::super::conversation_binding::prepare_conversation_routing(
             platform_key_hash,
@@ -67,6 +138,7 @@ pub(in super::super) fn prepare_request_setup(
         account_max_inflight,
         preserve_head,
     );
+    let candidate_count = candidates.len();
     let candidate_order = candidates
         .iter()
         .map(|(account, _)| format!("{}#sort={}", account.id, account.sort))
@@ -80,7 +152,7 @@ pub(in super::super) fn prepare_request_setup(
         candidate_order.as_slice(),
     );
 
-    UpstreamRequestSetup {
+    Ok(UpstreamRequestSetup {
         upstream_base,
         upstream_fallback_base,
         url,
@@ -98,5 +170,6 @@ pub(in super::super) fn prepare_request_setup(
         has_body_encrypted_content:
             super::super::support::payload_rewrite::body_has_encrypted_content_hint(body.as_ref()),
         conversation_routing,
-    }
+        affinity_resolution: None,
+    })
 }

@@ -1253,6 +1253,104 @@ fn app_settings_set_env_overrides_patch_preserves_other_values_and_reset_to_defa
 }
 
 #[test]
+fn app_settings_set_and_sync_roundtrip_affinity_settings() {
+    with_temp_db(|db_path| {
+        let snapshot = codexmanager_service::app_settings_set(Some(&json!({
+            "affinityRoutingMode": "enforce",
+            "contextReplayEnabled": false,
+            "affinitySoftQuotaPercent": 9,
+            "replayMaxTurns": 18
+        })))
+        .expect("save affinity settings");
+
+        assert_eq!(
+            snapshot
+                .get("affinityRoutingMode")
+                .and_then(|value| value.as_str()),
+            Some("enforce")
+        );
+        assert_eq!(
+            snapshot
+                .get("contextReplayEnabled")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            snapshot
+                .get("affinitySoftQuotaPercent")
+                .and_then(|value| value.as_u64()),
+            Some(9)
+        );
+        assert_eq!(
+            snapshot
+                .get("replayMaxTurns")
+                .and_then(|value| value.as_u64()),
+            Some(18)
+        );
+
+        let storage = Storage::open(db_path).expect("open storage");
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_AFFINITY_ROUTING_MODE_KEY
+                )
+                .expect("read affinity routing mode"),
+            Some("enforce".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_CONTEXT_REPLAY_ENABLED_KEY
+                )
+                .expect("read context replay enabled"),
+            Some("0".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(
+                    codexmanager_service::APP_SETTING_GATEWAY_AFFINITY_SOFT_QUOTA_PERCENT_KEY
+                )
+                .expect("read affinity soft quota percent"),
+            Some("9".to_string())
+        );
+        assert_eq!(
+            storage
+                .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_REPLAY_MAX_TURNS_KEY)
+                .expect("read replay max turns"),
+            Some("18".to_string())
+        );
+        drop(storage);
+
+        codexmanager_service::sync_runtime_settings_from_storage();
+
+        assert_eq!(
+            std::env::var("CODEXMANAGER_AFFINITY_ROUTING_MODE")
+                .ok()
+                .as_deref(),
+            Some("enforce")
+        );
+        assert_eq!(
+            std::env::var("CODEXMANAGER_CONTEXT_REPLAY_ENABLED")
+                .ok()
+                .as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            std::env::var("CODEXMANAGER_AFFINITY_SOFT_QUOTA_PERCENT")
+                .ok()
+                .as_deref(),
+            Some("9")
+        );
+        assert_eq!(
+            std::env::var("CODEXMANAGER_REPLAY_MAX_TURNS")
+                .ok()
+                .as_deref(),
+            Some("18")
+        );
+    });
+}
+
+#[test]
 fn app_settings_set_rejects_reserved_and_bootstrap_env_override_keys() {
     with_temp_db(|_| {
         let reserved = codexmanager_service::app_settings_set(Some(&json!({

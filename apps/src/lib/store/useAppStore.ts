@@ -35,6 +35,11 @@ export const useAppStore = create<AppState>((set) => ({
     serviceListenModeOptions: ["loopback", "all_interfaces"],
     routeStrategy: "ordered",
     routeStrategyOptions: ["ordered", "balanced"],
+    affinityRoutingMode: "off",
+    affinityRoutingModeOptions: ["off", "observe", "enforce"],
+    contextReplayEnabled: true,
+    affinitySoftQuotaPercent: 5,
+    replayMaxTurns: 12,
     freeAccountMaxModel: "auto",
     freeAccountMaxModelOptions: [
       "auto",

@@ -13,6 +13,7 @@ use super::request_setup::UpstreamRequestSetup;
 pub(in super::super) struct CandidateAttemptTrace {
     pub(in super::super) last_attempt_url: Option<String>,
     pub(in super::super) last_attempt_error: Option<String>,
+    pub(in super::super) last_status_code: Option<u16>,
 }
 
 pub(in super::super) struct CandidateAttemptParams<'a> {
@@ -83,6 +84,7 @@ pub(in super::super) fn run_candidate_attempt(
         |upstream_url: Option<&str>, status_code, error: Option<&str>| {
             trace.last_attempt_url = upstream_url.map(str::to_string);
             trace.last_attempt_error = error.map(str::to_string);
+            trace.last_status_code = Some(status_code);
             super::super::super::record_route_quality(&account.id, status_code);
             context.log_attempt_result(&account.id, upstream_url, status_code, error);
         },

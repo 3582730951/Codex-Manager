@@ -4,8 +4,12 @@ use serde::Deserialize;
 
 use super::{
     normalize_optional_text, save_persisted_app_setting, save_persisted_bool_setting,
+    APP_SETTING_GATEWAY_AFFINITY_ROUTING_MODE_KEY,
+    APP_SETTING_GATEWAY_AFFINITY_SOFT_QUOTA_PERCENT_KEY,
     APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY, APP_SETTING_GATEWAY_FREE_ACCOUNT_MAX_MODEL_KEY,
+    APP_SETTING_GATEWAY_CONTEXT_REPLAY_ENABLED_KEY,
     APP_SETTING_GATEWAY_ORIGINATOR_KEY, APP_SETTING_GATEWAY_REQUEST_COMPRESSION_ENABLED_KEY,
+    APP_SETTING_GATEWAY_REPLAY_MAX_TURNS_KEY,
     APP_SETTING_GATEWAY_RESIDENCY_REQUIREMENT_KEY, APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY,
     APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY, APP_SETTING_GATEWAY_UPSTREAM_PROXY_URL_KEY,
     APP_SETTING_GATEWAY_UPSTREAM_STREAM_TIMEOUT_MS_KEY, APP_SETTING_GATEWAY_USER_AGENT_VERSION_KEY,
@@ -25,6 +29,15 @@ pub struct BackgroundTasksInput {
     pub http_worker_min: Option<usize>,
     pub http_stream_worker_factor: Option<usize>,
     pub http_stream_worker_min: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AffinitySettingsInput {
+    pub affinity_routing_mode: Option<String>,
+    pub context_replay_enabled: Option<bool>,
+    pub affinity_soft_quota_percent: Option<u64>,
+    pub replay_max_turns: Option<u64>,
 }
 
 impl BackgroundTasksInput {
@@ -49,6 +62,84 @@ pub fn set_gateway_route_strategy(strategy: &str) -> Result<String, String> {
     let applied = gateway::set_route_strategy(strategy)?.to_string();
     save_persisted_app_setting(APP_SETTING_GATEWAY_ROUTE_STRATEGY_KEY, Some(&applied))?;
     Ok(applied)
+}
+
+pub fn set_gateway_affinity_routing_mode(mode: &str) -> Result<String, String> {
+    let applied = gateway::set_affinity_routing_mode(mode)?.to_string();
+    save_persisted_app_setting(APP_SETTING_GATEWAY_AFFINITY_ROUTING_MODE_KEY, Some(&applied))?;
+    Ok(applied)
+}
+
+pub fn current_gateway_affinity_routing_mode() -> String {
+    gateway::current_affinity_routing_mode().to_string()
+}
+
+pub fn set_gateway_context_replay_enabled(enabled: bool) -> Result<bool, String> {
+    let applied = gateway::set_context_replay_enabled(enabled);
+    save_persisted_bool_setting(APP_SETTING_GATEWAY_CONTEXT_REPLAY_ENABLED_KEY, applied)?;
+    Ok(applied)
+}
+
+pub fn current_gateway_context_replay_enabled() -> bool {
+    gateway::context_replay_enabled()
+}
+
+pub fn set_gateway_affinity_soft_quota_percent(percent: u64) -> Result<u64, String> {
+    let applied = gateway::set_affinity_soft_quota_percent(percent)?;
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_AFFINITY_SOFT_QUOTA_PERCENT_KEY,
+        Some(&applied.to_string()),
+    )?;
+    Ok(applied)
+}
+
+pub fn current_gateway_affinity_soft_quota_percent() -> u64 {
+    gateway::current_affinity_soft_quota_percent()
+}
+
+pub fn set_gateway_replay_max_turns(turns: u64) -> Result<u64, String> {
+    let applied = gateway::set_replay_max_turns(turns)?;
+    save_persisted_app_setting(
+        APP_SETTING_GATEWAY_REPLAY_MAX_TURNS_KEY,
+        Some(&applied.to_string()),
+    )?;
+    Ok(applied)
+}
+
+pub fn current_gateway_replay_max_turns() -> u64 {
+    gateway::current_replay_max_turns()
+}
+
+pub fn set_gateway_affinity_settings(
+    input: AffinitySettingsInput,
+) -> Result<serde_json::Value, String> {
+    let mode = if let Some(mode) = input.affinity_routing_mode.as_deref() {
+        set_gateway_affinity_routing_mode(mode)?
+    } else {
+        current_gateway_affinity_routing_mode()
+    };
+    let context_replay_enabled = if let Some(enabled) = input.context_replay_enabled {
+        set_gateway_context_replay_enabled(enabled)?
+    } else {
+        current_gateway_context_replay_enabled()
+    };
+    let affinity_soft_quota_percent = if let Some(percent) = input.affinity_soft_quota_percent {
+        set_gateway_affinity_soft_quota_percent(percent)?
+    } else {
+        current_gateway_affinity_soft_quota_percent()
+    };
+    let replay_max_turns = if let Some(turns) = input.replay_max_turns {
+        set_gateway_replay_max_turns(turns)?
+    } else {
+        current_gateway_replay_max_turns()
+    };
+
+    Ok(serde_json::json!({
+        "affinityRoutingMode": mode,
+        "contextReplayEnabled": context_replay_enabled,
+        "affinitySoftQuotaPercent": affinity_soft_quota_percent,
+        "replayMaxTurns": replay_max_turns,
+    }))
 }
 
 pub fn set_gateway_free_account_max_model(model: &str) -> Result<String, String> {

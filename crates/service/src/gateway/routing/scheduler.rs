@@ -67,6 +67,18 @@ pub(crate) struct SchedulerFeedback {
     pub(crate) stream_failed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SchedulerAccountSnapshot {
+    pub(crate) remaining_quota_percent: f64,
+    pub(crate) usage_known: bool,
+    pub(crate) usage_snapshot_fresh: bool,
+    pub(crate) route_health_score: i32,
+    pub(crate) dynamic_limit: usize,
+    pub(crate) inflight: usize,
+    pub(crate) cooldown_until: Option<i64>,
+    pub(crate) latency_ewma_ms: Option<f64>,
+}
+
 static SCHEDULER_RUNTIME: OnceLock<SchedulerRuntime> = OnceLock::new();
 
 fn runtime() -> &'static SchedulerRuntime {
@@ -85,6 +97,12 @@ fn ewma(prev: Option<f64>, next: f64) -> f64 {
 
 fn usage_cache_ttl() -> Duration {
     Duration::from_millis(DEFAULT_USAGE_CACHE_TTL_MS)
+}
+
+fn usage_snapshot_fresh(snapshot: Option<&UsageSnapshotRecord>) -> bool {
+    snapshot
+        .map(|record| now_ts().saturating_sub(record.captured_at) <= 1_800)
+        .unwrap_or(false)
 }
 
 fn is_usage_cache_stale(cache: &UsageSnapshotCache) -> bool {
@@ -378,6 +396,32 @@ pub(crate) fn record_route_health(account_id: &str, route_health: i32) {
     let mut state = crate::lock_utils::lock_recover(&runtime().state, "scheduler_state");
     let entry = state.accounts.entry(account_id.to_string()).or_default();
     entry.route_health_score = route_health.clamp(0, 200);
+}
+
+pub(crate) fn account_runtime_snapshot(
+    storage: &Storage,
+    account_id: &str,
+    token: &Token,
+    static_limit: usize,
+) -> SchedulerAccountSnapshot {
+    ensure_usage_cache(storage);
+    let mut state = crate::lock_utils::lock_recover(&runtime().state, "scheduler_state");
+    let snapshot = state.usage_cache.by_account.get(account_id).cloned();
+    let runtime = state.accounts.entry(account_id.to_string()).or_default();
+    let route_health = runtime.route_health_score;
+    let dynamic_limit =
+        dynamic_limit_for_candidate(token, snapshot.as_ref(), route_health, runtime, static_limit);
+    runtime.dynamic_limit = dynamic_limit;
+    SchedulerAccountSnapshot {
+        remaining_quota_percent: remaining_quota_percent(snapshot.as_ref()),
+        usage_known: snapshot.is_some(),
+        usage_snapshot_fresh: usage_snapshot_fresh(snapshot.as_ref()),
+        route_health_score: route_health,
+        dynamic_limit,
+        inflight: runtime.inflight,
+        cooldown_until: runtime.cooldown_until,
+        latency_ewma_ms: runtime.latency_ewma_ms,
+    }
 }
 
 pub(crate) fn store_usage_snapshot(record: &UsageSnapshotRecord) {

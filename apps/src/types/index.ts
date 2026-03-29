@@ -277,6 +277,11 @@ export interface AppSettings {
   serviceListenModeOptions: string[];
   routeStrategy: string;
   routeStrategyOptions: string[];
+  affinityRoutingMode: string;
+  affinityRoutingModeOptions: string[];
+  contextReplayEnabled: boolean;
+  affinitySoftQuotaPercent: number;
+  replayMaxTurns: number;
   freeAccountMaxModel: string;
   freeAccountMaxModelOptions: string[];
   requestCompressionEnabled: boolean;

@@ -6,6 +6,7 @@ pub(in super::super) struct GatewayUpstreamExecutionContext<'a> {
     trace_id: &'a str,
     storage: &'a Storage,
     key_id: &'a str,
+    platform_key_hash: &'a str,
     original_path: &'a str,
     path: &'a str,
     request_method: &'a str,
@@ -24,6 +25,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
         trace_id: &'a str,
         storage: &'a Storage,
         key_id: &'a str,
+        platform_key_hash: &'a str,
         original_path: &'a str,
         path: &'a str,
         request_method: &'a str,
@@ -39,6 +41,7 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
             trace_id,
             storage,
             key_id,
+            platform_key_hash,
             original_path,
             path,
             request_method,
@@ -54,6 +57,18 @@ impl<'a> GatewayUpstreamExecutionContext<'a> {
 
     pub(in super::super) fn has_more_candidates(&self, idx: usize) -> bool {
         idx + 1 < self.candidate_count
+    }
+
+    pub(in super::super) fn storage(&self) -> &'a Storage {
+        self.storage
+    }
+
+    pub(in super::super) fn platform_key_hash(&self) -> &'a str {
+        self.platform_key_hash
+    }
+
+    pub(in super::super) fn protocol_type(&self) -> &'a str {
+        self.protocol_type
     }
 
     pub(in super::super) fn should_skip_candidate(

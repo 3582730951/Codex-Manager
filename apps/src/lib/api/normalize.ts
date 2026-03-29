@@ -584,6 +584,13 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     routeStrategyOptions: asArray(source.routeStrategyOptions).map((item) =>
       asString(item)
     ),
+    affinityRoutingMode: asString(source.affinityRoutingMode) || "off",
+    affinityRoutingModeOptions: asArray(source.affinityRoutingModeOptions).map((item) =>
+      asString(item)
+    ),
+    contextReplayEnabled: asBoolean(source.contextReplayEnabled, true),
+    affinitySoftQuotaPercent: asInteger(source.affinitySoftQuotaPercent, 5, 0),
+    replayMaxTurns: asInteger(source.replayMaxTurns, 12, 1),
     freeAccountMaxModel: asString(source.freeAccountMaxModel) || "auto",
     freeAccountMaxModelOptions: asArray(source.freeAccountMaxModelOptions).map((item) =>
       asString(item)

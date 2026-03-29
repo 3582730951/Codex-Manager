@@ -14,6 +14,18 @@ pub(in super::super) struct CandidateExecutionState {
 }
 
 impl CandidateExecutionState {
+    fn base_body_for_attempt<'a>(
+        &self,
+        body: &'a Bytes,
+        setup: &'a UpstreamRequestSetup,
+    ) -> &'a Bytes {
+        setup
+            .affinity_resolution
+            .as_ref()
+            .and_then(|resolution| resolution.request_body_override.as_ref())
+            .unwrap_or(body)
+    }
+
     fn rewrite_cache_key(
         model_override: Option<&str>,
         prompt_cache_key: Option<&str>,
@@ -73,8 +85,9 @@ impl CandidateExecutionState {
         model_override: Option<&str>,
         prompt_cache_key: Option<&str>,
     ) -> Bytes {
+        let base_body = self.base_body_for_attempt(body, setup);
         let Some(cache_key) = Self::rewrite_cache_key(model_override, prompt_cache_key) else {
-            return body.clone();
+            return base_body.clone();
         };
 
         self.rewritten_bodies
@@ -83,7 +96,7 @@ impl CandidateExecutionState {
                 Bytes::from(
                     super::super::super::apply_request_overrides_with_forced_prompt_cache_key(
                         path,
-                        body.to_vec(),
+                        base_body.to_vec(),
                         model_override,
                         None,
                         Some(setup.upstream_base.as_str()),
@@ -190,6 +203,7 @@ mod tests {
             has_sticky_fallback_conversation: false,
             has_body_encrypted_content: false,
             conversation_routing: None,
+            affinity_resolution: None,
         };
 
         let actual = state.body_for_attempt(

@@ -338,7 +338,17 @@ fn respond_synthesized_compact_error_body(
         upstream_identity_error_code: None,
         upstream_content_type: Some("application/json".to_string()),
         last_sse_event_type: None,
+        completed_response_body: None,
     }
+}
+
+fn capture_completed_response_body(request_path: &str, body: &[u8]) -> Option<Vec<u8>> {
+    if !request_path.starts_with("/v1/responses") {
+        return None;
+    }
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .map(|_| body.to_vec())
 }
 
 fn with_bridge_debug_meta(
@@ -557,6 +567,8 @@ pub(crate) fn respond_with_upstream(
                             trace_id,
                         ));
                     }
+                    let completed_response_body =
+                        capture_completed_response_body(request_path, body.as_ref());
                     let len = Some(body.len());
                     let response =
                         Response::new(status, headers, std::io::Cursor::new(body), len, None);
@@ -575,6 +587,7 @@ pub(crate) fn respond_with_upstream(
                             upstream_identity_error_code: None,
                             upstream_content_type: None,
                             last_sse_event_type: None,
+                            completed_response_body,
                         },
                         &upstream_request_id,
                         &upstream_cf_ray,
@@ -664,6 +677,10 @@ pub(crate) fn respond_with_upstream(
                         upstream_identity_error_code: None,
                         upstream_content_type: None,
                         last_sse_event_type: None,
+                        completed_response_body: capture_completed_response_body(
+                            request_path,
+                            upstream_body.as_ref(),
+                        ),
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
@@ -716,6 +733,10 @@ pub(crate) fn respond_with_upstream(
                         upstream_identity_error_code: None,
                         upstream_content_type: None,
                         last_sse_event_type: None,
+                        completed_response_body: capture_completed_response_body(
+                            request_path,
+                            upstream_body.as_ref(),
+                        ),
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
@@ -744,6 +765,17 @@ pub(crate) fn respond_with_upstream(
                     .map(|guard| guard.clone())
                     .unwrap_or_default();
                 let last_sse_event_type = collector.last_event_type.clone();
+                let completed_response_body = if collector.saw_terminal
+                    && collector.terminal_error.is_none()
+                {
+                    let (body, _) =
+                        collect_non_stream_json_from_sse_bytes(&collector.raw_sse_bytes);
+                    body.and_then(|bytes| {
+                        capture_completed_response_body(request_path, bytes.as_slice())
+                    })
+                } else {
+                    None
+                };
                 return Ok(with_bridge_debug_meta(
                     UpstreamResponseBridgeResult {
                         usage: collector.usage,
@@ -765,6 +797,7 @@ pub(crate) fn respond_with_upstream(
                         upstream_identity_error_code: None,
                         upstream_content_type: None,
                         last_sse_event_type: None,
+                        completed_response_body,
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
@@ -791,6 +824,7 @@ pub(crate) fn respond_with_upstream(
                     upstream_identity_error_code: None,
                     upstream_content_type: None,
                     last_sse_event_type: None,
+                    completed_response_body: None,
                 },
                 &upstream_request_id,
                 &upstream_cf_ray,
@@ -907,6 +941,7 @@ pub(crate) fn respond_with_upstream(
                         upstream_identity_error_code: None,
                         upstream_content_type: None,
                         last_sse_event_type: None,
+                        completed_response_body: None,
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
@@ -1005,6 +1040,7 @@ pub(crate) fn respond_with_upstream(
                     upstream_identity_error_code: None,
                     upstream_content_type: None,
                     last_sse_event_type: None,
+                    completed_response_body: None,
                 },
                 &upstream_request_id,
                 &upstream_cf_ray,
@@ -1072,6 +1108,7 @@ pub(crate) fn respond_with_upstream(
                         upstream_identity_error_code: None,
                         upstream_content_type: None,
                         last_sse_event_type: None,
+                        completed_response_body: None,
                     },
                     &upstream_request_id,
                     &upstream_cf_ray,
@@ -1132,6 +1169,7 @@ pub(crate) fn respond_with_upstream(
                     upstream_identity_error_code: None,
                     upstream_content_type: None,
                     last_sse_event_type: None,
+                    completed_response_body: None,
                 },
                 &upstream_request_id,
                 &upstream_cf_ray,

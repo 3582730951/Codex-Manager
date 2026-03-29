@@ -1,6 +1,7 @@
 use tiny_http::Request;
 
 use super::super::super::request_log::RequestLogUsage;
+use crate::gateway::affinity::AffinityRoutingResolution;
 use super::execution_context::GatewayUpstreamExecutionContext;
 
 pub(in super::super) fn respond_terminal(
@@ -90,12 +91,14 @@ pub(super) fn finalize_upstream_response(
     inflight_guard: super::super::super::AccountInFlightGuard,
     context: &GatewayUpstreamExecutionContext<'_>,
     account_id: &str,
+    request_body: &[u8],
     last_attempt_url: Option<&str>,
     last_attempt_error: Option<&str>,
     response_adapter: super::super::super::ResponseAdapter,
     tool_name_restore_map: &super::super::super::ToolNameRestoreMap,
     client_is_stream: bool,
     path: &str,
+    affinity_resolution: Option<&AffinityRoutingResolution>,
     trace_id: &str,
     started_at: std::time::Instant,
     model_for_log: Option<&str>,
@@ -199,6 +202,13 @@ pub(super) fn finalize_upstream_response(
     );
 
     let usage = bridge.usage;
+    if affinity_resolution.is_some() {
+        super::super::super::affinity::record_affinity_attempt_feedback(
+            account_id,
+            status_for_log,
+            final_error.as_deref(),
+        );
+    }
     context.log_final_result_with_model(
         Some(account_id),
         last_attempt_url,
@@ -215,5 +225,35 @@ pub(super) fn finalize_upstream_response(
         started_at.elapsed().as_millis(),
         attempted_account_ids,
     );
+    if let Some(resolution) = affinity_resolution {
+        if bridge_ok && status_for_log < 400 {
+            let response_adapter_label = format!("{response_adapter:?}");
+            if let Some(completed_response_body) = bridge.completed_response_body.as_deref() {
+                if let Err(err) = super::super::super::affinity::finalize_affinity_success(
+                    context.storage(),
+                    resolution,
+                    context.platform_key_hash(),
+                    account_id,
+                    request_body,
+                    Some(completed_response_body),
+                    response_adapter_label.as_str(),
+                    context.protocol_type(),
+                ) {
+                    log::warn!(
+                        "event=gateway_affinity_finalize_failed trace_id={} account_id={} err={}",
+                        trace_id,
+                        account_id,
+                        err
+                    );
+                }
+            } else {
+                log::warn!(
+                    "event=gateway_affinity_finalize_skipped trace_id={} account_id={} reason=missing_completed_response_body",
+                    trace_id,
+                    account_id
+                );
+            }
+        }
+    }
     Ok(())
 }

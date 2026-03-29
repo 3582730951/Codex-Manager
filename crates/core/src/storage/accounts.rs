@@ -215,6 +215,47 @@ impl Storage {
             "DELETE FROM conversation_bindings WHERE account_id = ?1",
             [account_id],
         )?;
+        tx.execute(
+            "DELETE FROM conversation_context_events
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM conversation_threads threads
+                 WHERE threads.platform_key_hash = conversation_context_events.platform_key_hash
+                   AND threads.affinity_key = conversation_context_events.affinity_key
+                   AND threads.conversation_scope_id = conversation_context_events.conversation_scope_id
+                   AND threads.account_id = ?1
+             )",
+            [account_id],
+        )?;
+        tx.execute(
+            "DELETE FROM conversation_context_state
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM conversation_threads threads
+                 WHERE threads.platform_key_hash = conversation_context_state.platform_key_hash
+                   AND threads.affinity_key = conversation_context_state.affinity_key
+                   AND threads.conversation_scope_id = conversation_context_state.conversation_scope_id
+                   AND threads.account_id = ?1
+             )",
+            [account_id],
+        )?;
+        tx.execute(
+            "DELETE FROM context_snapshots
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM conversation_threads threads
+                 WHERE threads.platform_key_hash = context_snapshots.platform_key_hash
+                   AND threads.affinity_key = context_snapshots.affinity_key
+                   AND threads.conversation_scope_id = context_snapshots.conversation_scope_id
+                   AND threads.account_id = ?1
+             )",
+            [account_id],
+        )?;
+        tx.execute("DELETE FROM client_bindings WHERE account_id = ?1", [account_id])?;
+        tx.execute(
+            "DELETE FROM conversation_threads WHERE account_id = ?1",
+            [account_id],
+        )?;
         tx.execute("DELETE FROM accounts WHERE id = ?1", [account_id])?;
         tx.commit()?;
         Ok(())

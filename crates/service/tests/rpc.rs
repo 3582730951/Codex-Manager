@@ -513,6 +513,101 @@ fn rpc_app_settings_can_roundtrip_free_account_max_model() {
 }
 
 #[test]
+fn rpc_gateway_affinity_settings_roundtrip() {
+    let ctx = RpcTestContext::new("rpc-gateway-affinity");
+    let set_server = codexmanager_service::start_one_shot_server().expect("start server");
+
+    let set_req = JsonRpcRequest {
+        id: 320,
+        method: "gateway/affinity/set".to_string(),
+        params: Some(serde_json::json!({
+            "affinityRoutingMode": "observe",
+            "contextReplayEnabled": false,
+            "affinitySoftQuotaPercent": 7,
+            "replayMaxTurns": 16
+        })),
+    };
+    let set_json = serde_json::to_string(&set_req).expect("serialize");
+    let set_resp = post_rpc(&set_server.addr, &set_json);
+    let set_result = set_resp.get("result").expect("result");
+    assert_eq!(
+        set_result
+            .get("affinityRoutingMode")
+            .and_then(|value| value.as_str()),
+        Some("observe")
+    );
+    assert_eq!(
+        set_result
+            .get("contextReplayEnabled")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        set_result
+            .get("affinitySoftQuotaPercent")
+            .and_then(|value| value.as_u64()),
+        Some(7)
+    );
+    assert_eq!(
+        set_result
+            .get("replayMaxTurns")
+            .and_then(|value| value.as_u64()),
+        Some(16)
+    );
+
+    let get_server = codexmanager_service::start_one_shot_server().expect("start server");
+    let get_req = JsonRpcRequest {
+        id: 321,
+        method: "gateway/affinity/get".to_string(),
+        params: None,
+    };
+    let get_json = serde_json::to_string(&get_req).expect("serialize");
+    let get_resp = post_rpc(&get_server.addr, &get_json);
+    let get_result = get_resp.get("result").expect("result");
+    assert_eq!(
+        get_result
+            .get("affinityRoutingMode")
+            .and_then(|value| value.as_str()),
+        Some("observe")
+    );
+    assert_eq!(
+        get_result
+            .get("contextReplayEnabled")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        get_result
+            .get("affinitySoftQuotaPercent")
+            .and_then(|value| value.as_u64()),
+        Some(7)
+    );
+    assert_eq!(
+        get_result
+            .get("replayMaxTurns")
+            .and_then(|value| value.as_u64()),
+        Some(16)
+    );
+    assert_eq!(
+        get_result
+            .get("options")
+            .and_then(|value| value.as_array())
+            .map(|items| items.len()),
+        Some(3)
+    );
+
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    assert_eq!(
+        storage
+            .get_app_setting(
+                codexmanager_service::APP_SETTING_GATEWAY_AFFINITY_ROUTING_MODE_KEY
+            )
+            .expect("read affinity routing mode"),
+        Some("observe".to_string())
+    );
+}
+
+#[test]
 fn rpc_account_list_active_filter_uses_backend_filtered_pagination() {
     let ctx = RpcTestContext::new("rpc-account-list-active-filter");
     let storage = Storage::open(ctx.db_path()).expect("open db");

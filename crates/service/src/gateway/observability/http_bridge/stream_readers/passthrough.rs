@@ -6,6 +6,8 @@ use super::{
 };
 use crate::gateway::http_bridge::extract_error_hint_from_body;
 
+const RAW_SSE_CAPTURE_LIMIT_BYTES: usize = 512 * 1024;
+
 pub(crate) struct PassthroughSseUsageReader {
     upstream: UpstreamSseFramePump,
     out_cursor: Cursor<Vec<u8>>,
@@ -32,12 +34,19 @@ impl PassthroughSseUsageReader {
     fn update_usage_from_frame(&self, lines: &[String]) {
         let inspection = inspect_sse_frame(lines);
         if let Ok(mut collector) = self.usage_collector.lock() {
+            let raw_frame = lines.concat();
+            if collector.raw_sse_bytes.len() < RAW_SSE_CAPTURE_LIMIT_BYTES {
+                let remaining =
+                    RAW_SSE_CAPTURE_LIMIT_BYTES.saturating_sub(collector.raw_sse_bytes.len());
+                let bytes = raw_frame.as_bytes();
+                let take = remaining.min(bytes.len());
+                collector.raw_sse_bytes.extend_from_slice(&bytes[..take]);
+            }
             if let Some(event_type) = inspection.last_event_type {
                 collector.last_event_type = Some(event_type);
             }
             if inspection.usage.is_none() && inspection.terminal.is_none() {
                 if collector.upstream_error_hint.is_none() {
-                    let raw_frame = lines.concat();
                     let trimmed = raw_frame.trim();
                     let looks_like_sse_frame = lines.iter().any(|line| {
                         let line = line.trim_start();

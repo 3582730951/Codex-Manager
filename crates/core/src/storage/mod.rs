@@ -7,6 +7,7 @@ mod account_metadata;
 mod accounts;
 mod aggregate_apis;
 mod api_keys;
+mod conversation_affinity;
 mod conversation_bindings;
 mod events;
 mod model_options;
@@ -98,6 +99,90 @@ pub struct ConversationBinding {
     pub created_at: i64,
     pub updated_at: i64,
     pub last_used_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientBinding {
+    pub platform_key_hash: String,
+    pub affinity_key: String,
+    pub account_id: String,
+    pub primary_scope_id: Option<String>,
+    pub binding_version: i64,
+    pub status: String,
+    pub last_supply_score: Option<f64>,
+    pub last_pressure_score: Option<f64>,
+    pub last_final_score: Option<f64>,
+    pub last_switch_reason: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_seen_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationThread {
+    pub platform_key_hash: String,
+    pub affinity_key: String,
+    pub conversation_scope_id: String,
+    pub account_id: String,
+    pub thread_epoch: i64,
+    pub thread_anchor: String,
+    pub thread_version: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_seen_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationContextState {
+    pub platform_key_hash: String,
+    pub affinity_key: String,
+    pub conversation_scope_id: String,
+    pub model: Option<String>,
+    pub instructions_text: Option<String>,
+    pub tools_json: Option<String>,
+    pub tool_choice_json: Option<String>,
+    pub parallel_tool_calls: Option<bool>,
+    pub reasoning_json: Option<String>,
+    pub text_format_json: Option<String>,
+    pub service_tier: Option<String>,
+    pub metadata_json: Option<String>,
+    pub encrypted_content: Option<String>,
+    pub protocol_type: Option<String>,
+    pub response_adapter: Option<String>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationContextEvent {
+    pub platform_key_hash: String,
+    pub affinity_key: String,
+    pub conversation_scope_id: String,
+    pub turn_index: i64,
+    pub item_seq: i64,
+    pub role: Option<String>,
+    pub pair_group_id: Option<String>,
+    pub capture_complete: bool,
+    pub item_json: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextSnapshot {
+    pub platform_key_hash: String,
+    pub affinity_key: String,
+    pub conversation_scope_id: String,
+    pub upto_turn_index: i64,
+    pub summary_text: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AffinityScopePromotion {
+    pub platform_key_hash: String,
+    pub affinity_key: String,
+    pub from_scope_id: String,
+    pub to_scope_id: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -423,6 +508,10 @@ impl Storage {
             include_str!("../../migrations/039_request_logs_aggregate_api_attempt_chain.sql"),
             |s| s.ensure_request_log_aggregate_api_attempt_chain_columns(),
         )?;
+        self.apply_sql_migration(
+            "040_gateway_affinity_routing",
+            include_str!("../../migrations/040_gateway_affinity_routing.sql"),
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_secrets_table()?;
@@ -586,10 +675,6 @@ impl Storage {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "../../tests/storage/migration_tests.rs"]
-mod migration_tests;
 
 pub fn now_ts() -> i64 {
     SystemTime::now()

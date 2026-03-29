@@ -33,6 +33,7 @@ pub(crate) struct UpstreamResponseBridgeResult {
     pub upstream_identity_error_code: Option<String>,
     pub upstream_content_type: Option<String>,
     pub last_sse_event_type: Option<String>,
+    pub completed_response_body: Option<Vec<u8>>,
 }
 
 impl UpstreamResponseBridgeResult {

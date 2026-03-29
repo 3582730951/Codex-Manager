@@ -1,5 +1,7 @@
 use crate::storage_helpers::open_storage;
 
+#[path = "affinity/mod.rs"]
+mod affinity;
 mod anchor_fingerprint;
 #[path = "routing/conversation_binding.rs"]
 mod conversation_binding;
@@ -231,6 +233,7 @@ use upstream::proxy::proxy_validated_request;
 
 pub(crate) fn reload_runtime_config_from_env() {
     runtime_config::reload_from_env();
+    affinity::reload_from_env();
     selection::reload_from_env();
     request_gate::clear_runtime_state();
     cooldown::clear_runtime_state();
@@ -251,6 +254,38 @@ pub(crate) fn set_route_strategy(strategy: &str) -> Result<&'static str, String>
     let applied = route_hint::set_route_strategy(strategy)?;
     std::env::set_var("CODEXMANAGER_ROUTE_STRATEGY", applied);
     Ok(applied)
+}
+
+pub(crate) fn current_affinity_routing_mode() -> &'static str {
+    affinity::current_mode().as_str()
+}
+
+pub(crate) fn set_affinity_routing_mode(mode: &str) -> Result<&'static str, String> {
+    Ok(affinity::set_mode(mode)?.as_str())
+}
+
+pub(crate) fn context_replay_enabled() -> bool {
+    affinity::context_replay_enabled()
+}
+
+pub(crate) fn set_context_replay_enabled(enabled: bool) -> bool {
+    affinity::set_context_replay_enabled(enabled)
+}
+
+pub(crate) fn current_affinity_soft_quota_percent() -> u64 {
+    affinity::current_affinity_soft_quota_percent()
+}
+
+pub(crate) fn set_affinity_soft_quota_percent(value: u64) -> Result<u64, String> {
+    affinity::set_affinity_soft_quota_percent(value)
+}
+
+pub(crate) fn current_replay_max_turns() -> u64 {
+    affinity::current_replay_max_turns()
+}
+
+pub(crate) fn set_replay_max_turns(value: u64) -> Result<u64, String> {
+    affinity::set_replay_max_turns(value)
 }
 
 pub(crate) fn current_free_account_max_model() -> String {

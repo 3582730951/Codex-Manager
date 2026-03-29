@@ -218,10 +218,26 @@ pub(in super::super) fn proxy_validated_request(
         } => (request, candidates),
         CandidatePrecheckResult::Responded => return Ok(()),
     };
-    let setup = prepare_request_setup(
+    let affinity_lock = super::super::affinity::derive_affinity_key(
+        &incoming_headers,
+        local_conversation_id.as_deref(),
+    )
+    .map(|derived| {
+        super::super::affinity::acquire_affinity_lock(
+            platform_key_hash.as_str(),
+            derived.key.as_str(),
+        )
+    });
+    let _affinity_guard = affinity_lock.as_ref().map(|lock| {
+        crate::lock_utils::lock_recover(lock.as_ref(), "gateway_affinity_request_lock")
+    });
+    let setup = match prepare_request_setup(
         &storage,
+        original_path.as_str(),
         path.as_str(),
+        response_adapter,
         protocol_type.as_str(),
+        upstream_base_url.as_deref(),
         has_prompt_cache_key,
         &incoming_headers,
         &body,
@@ -232,13 +248,30 @@ pub(in super::super) fn proxy_validated_request(
         conversation_binding.as_ref(),
         model_for_log.as_deref(),
         trace_id.as_str(),
-    );
+    ) {
+        Ok(setup) => setup,
+        Err(err) => {
+            respond_terminal(request, 503, err, Some(trace_id.as_str()))?;
+            return Ok(());
+        }
+    };
+    let conversation_lock = setup.affinity_resolution.as_ref().map(|resolution| {
+        super::super::affinity::acquire_conversation_lock(
+            platform_key_hash.as_str(),
+            resolution.affinity_key.as_str(),
+            resolution.conversation_scope_id.as_str(),
+        )
+    });
+    let _conversation_guard = conversation_lock.as_ref().map(|lock| {
+        crate::lock_utils::lock_recover(lock.as_ref(), "gateway_affinity_conversation_lock")
+    });
     let base = setup.upstream_base.as_str();
 
     let context = GatewayUpstreamExecutionContext::new(
         &trace_id,
         &storage,
         &key_id,
+        &platform_key_hash,
         &original_path,
         &path,
         &request_method,

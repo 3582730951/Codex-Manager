@@ -19,6 +19,21 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 })
             }))
         }
+        "gateway/affinity/get" => super::as_json(serde_json::json!({
+            "affinityRoutingMode": crate::current_gateway_affinity_routing_mode(),
+            "contextReplayEnabled": crate::current_gateway_context_replay_enabled(),
+            "affinitySoftQuotaPercent": crate::current_gateway_affinity_soft_quota_percent(),
+            "replayMaxTurns": crate::current_gateway_replay_max_turns(),
+            "options": ["off", "observe", "enforce"],
+        })),
+        "gateway/affinity/set" => {
+            let params = req.params.as_ref().cloned().unwrap_or_else(|| serde_json::json!({}));
+            super::value_or_error(
+                serde_json::from_value::<crate::AffinitySettingsInput>(params)
+                    .map_err(|err| format!("invalid affinity settings payload: {err}"))
+                    .and_then(crate::set_gateway_affinity_settings),
+            )
+        }
         "gateway/manualAccount/get" => super::as_json(serde_json::json!({
             "accountId": crate::gateway::manual_preferred_account()
         })),

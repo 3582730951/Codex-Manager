@@ -17,6 +17,7 @@ pub(crate) struct PassthroughSseCollector {
     pub(crate) terminal_error: Option<String>,
     pub(crate) upstream_error_hint: Option<String>,
     pub(crate) last_event_type: Option<String>,
+    pub(crate) raw_sse_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

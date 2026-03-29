@@ -122,19 +122,35 @@ pub(in super::super) fn execute_candidate_sequence(
                 .expect("candidate should exist for scheduler loop");
             let strip_session_affinity =
                 state.strip_session_affinity(account, idx, setup.anthropic_has_prompt_cache_key);
-            let attempt_thread = super::super::super::conversation_binding::resolve_attempt_thread(
-                setup.conversation_routing.as_ref(),
-                account,
-            );
-            let attempt_headers = attempt_thread
+            let legacy_attempt_thread =
+                super::super::super::conversation_binding::resolve_attempt_thread(
+                    setup.conversation_routing.as_ref(),
+                    account,
+                );
+            let (attempt_thread_anchor, reset_session_affinity) = setup
+                .affinity_resolution
                 .as_ref()
-                .map(|thread| {
-                    incoming_headers.with_thread_affinity_override(
-                        Some(thread.thread_anchor.as_str()),
-                        thread.reset_session_affinity,
+                .map(|resolution| {
+                    (
+                        Some(resolution.thread_anchor.as_str()),
+                        resolution.reset_session_affinity,
                     )
                 })
-                .unwrap_or_else(|| incoming_headers.clone());
+                .or_else(|| {
+                    legacy_attempt_thread.as_ref().map(|thread| {
+                        (
+                            Some(thread.thread_anchor.as_str()),
+                            thread.reset_session_affinity,
+                        )
+                    })
+                })
+                .unwrap_or((None, false));
+            let attempt_headers = if attempt_thread_anchor.is_some() {
+                incoming_headers
+                    .with_thread_affinity_override(attempt_thread_anchor, reset_session_affinity)
+            } else {
+                incoming_headers.clone()
+            };
             let attempt_model_override = free_account_model_override(storage, account, token);
             let attempt_model_for_log = attempt_model_override.as_deref().or(model_for_log);
             let body_for_attempt = state.body_for_attempt(
@@ -143,9 +159,7 @@ pub(in super::super) fn execute_candidate_sequence(
                 strip_session_affinity,
                 setup,
                 attempt_model_override.as_deref(),
-                attempt_thread
-                    .as_ref()
-                    .map(|thread| thread.thread_anchor.as_str()),
+                attempt_thread_anchor,
             );
             context.log_candidate_start(&account.id, idx, strip_session_affinity);
             if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx) {
@@ -214,6 +228,13 @@ pub(in super::super) fn execute_candidate_sequence(
 
             match decision {
                 CandidateUpstreamDecision::Failover => {
+                    if setup.affinity_resolution.is_some() {
+                        super::super::super::affinity::record_affinity_attempt_feedback(
+                            &account.id,
+                            attempt_trace.last_status_code.unwrap_or(502),
+                            attempt_trace.last_attempt_error.as_deref(),
+                        );
+                    }
                     super::super::super::record_gateway_failover_attempt();
                     last_attempt_url = attempt_trace.last_attempt_url.take();
                     last_attempt_error = attempt_trace.last_attempt_error.take();
@@ -223,6 +244,13 @@ pub(in super::super) fn execute_candidate_sequence(
                     status_code,
                     message,
                 } => {
+                    if setup.affinity_resolution.is_some() {
+                        super::super::super::affinity::record_affinity_attempt_feedback(
+                            &account.id,
+                            status_code,
+                            Some(message.as_str()),
+                        );
+                    }
                     let request = request
                         .take()
                         .expect("request should be available before terminal response");
@@ -241,6 +269,7 @@ pub(in super::super) fn execute_candidate_sequence(
                     return Ok(CandidateExecutionResult::Handled);
                 }
                 CandidateUpstreamDecision::RespondUpstream(mut resp) => {
+                    let mut request_body_for_success = body_for_attempt.clone();
                     if resp.status().as_u16() == 400
                         && !strip_session_affinity
                         && (incoming_turn_state.is_some() || setup.has_body_encrypted_content)
@@ -250,9 +279,7 @@ pub(in super::super) fn execute_candidate_sequence(
                             body,
                             setup,
                             attempt_model_override.as_deref(),
-                            attempt_thread
-                                .as_ref()
-                                .map(|thread| thread.thread_anchor.as_str()),
+                            attempt_thread_anchor,
                         );
                         let retry_decision = run_candidate_attempt(CandidateAttemptParams {
                             storage,
@@ -278,8 +305,16 @@ pub(in super::super) fn execute_candidate_sequence(
                         match retry_decision {
                             CandidateUpstreamDecision::RespondUpstream(retry_resp) => {
                                 resp = retry_resp;
+                                request_body_for_success = retry_body.clone();
                             }
                             CandidateUpstreamDecision::Failover => {
+                                if setup.affinity_resolution.is_some() {
+                                    super::super::super::affinity::record_affinity_attempt_feedback(
+                                        &account.id,
+                                        attempt_trace.last_status_code.unwrap_or(502),
+                                        attempt_trace.last_attempt_error.as_deref(),
+                                    );
+                                }
                                 super::super::super::record_gateway_failover_attempt();
                                 last_attempt_url = attempt_trace.last_attempt_url.take();
                                 last_attempt_error = attempt_trace.last_attempt_error.take();
@@ -289,6 +324,13 @@ pub(in super::super) fn execute_candidate_sequence(
                                 status_code,
                                 message,
                             } => {
+                                if setup.affinity_resolution.is_some() {
+                                    super::super::super::affinity::record_affinity_attempt_feedback(
+                                        &account.id,
+                                        status_code,
+                                        Some(message.as_str()),
+                                    );
+                                }
                                 let request = request
                                     .take()
                                     .expect("request should be available before terminal response");
@@ -314,19 +356,21 @@ pub(in super::super) fn execute_candidate_sequence(
                     let guard = inflight_guard
                         .take()
                         .expect("inflight guard should be available before terminal response");
-                    if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
-                        storage,
-                        setup.conversation_routing.as_ref(),
-                        account,
-                        attempt_model_for_log,
-                        resp.status().as_u16(),
-                    ) {
-                        log::warn!(
-                            "event=gateway_conversation_binding_update_failed trace_id={} account_id={} err={}",
-                            trace_id,
-                            account.id,
-                            err
-                        );
+                    if setup.affinity_resolution.is_none() {
+                        if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
+                            storage,
+                            setup.conversation_routing.as_ref(),
+                            account,
+                            attempt_model_for_log,
+                            resp.status().as_u16(),
+                        ) {
+                            log::warn!(
+                                "event=gateway_conversation_binding_update_failed trace_id={} account_id={} err={}",
+                                trace_id,
+                                account.id,
+                                err
+                            );
+                        }
                     }
                     finalize_upstream_response(
                         request,
@@ -334,12 +378,14 @@ pub(in super::super) fn execute_candidate_sequence(
                         guard,
                         context,
                         &account.id,
+                        request_body_for_success.as_ref(),
                         attempt_trace.last_attempt_url.as_deref(),
                         attempt_trace.last_attempt_error.as_deref(),
                         response_adapter,
                         tool_name_restore_map,
                         client_is_stream,
                         path,
+                        setup.affinity_resolution.as_ref(),
                         trace_id,
                         started_at,
                         attempt_model_for_log,
