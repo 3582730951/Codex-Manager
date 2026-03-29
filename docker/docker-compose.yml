@@ -3,6 +3,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.service
+      target: service-runtime
     restart: unless-stopped
     environment:
       CODEXMANAGER_SERVICE_ADDR: 0.0.0.0:48760
