@@ -157,7 +157,11 @@ fn build_internal_entity_headers(
             )?
         }
         crate::gateway::affinity::ClientEntityMode::DockerPeerRuntime => {
-            crate::gateway::affinity::trusted_peer_runtime_entity(socket_peer_ip)
+            if contains_forwarding_identity_headers(headers) {
+                None
+            } else {
+                crate::gateway::affinity::trusted_peer_runtime_entity(socket_peer_ip)
+            }
         }
         crate::gateway::affinity::ClientEntityMode::Off => None,
     };
@@ -179,6 +183,12 @@ fn build_internal_entity_headers(
             crate::gateway::affinity::sign_internal_hop(entity.as_str(), peer_ip.as_str()),
         ),
     ])
+}
+
+fn contains_forwarding_identity_headers(headers: &HeaderMap) -> bool {
+    headers.contains_key("forwarded")
+        || headers.contains_key("x-forwarded-for")
+        || headers.contains_key("x-real-ip")
 }
 
 fn build_front_proxy_app(state: ProxyState) -> Router {

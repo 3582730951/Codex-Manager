@@ -15,6 +15,7 @@ tiny_http = "0.12"
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
 futures-util = "0.3"
+if-addrs = "0.13"
 url = "2"
 webbrowser = "0.8"
 urlencoding = "2"

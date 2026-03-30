@@ -1,7 +1,9 @@
 use axum::http::HeaderMap;
 use rand::RngCore;
 use std::collections::{BTreeSet, HashMap};
+use std::fs;
 use std::net::IpAddr;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -82,10 +84,11 @@ struct ClientEntityRuntimeConfig {
     edge_trusted_cidrs: Vec<IpCidr>,
     edge_hmac_secret: Option<String>,
     peer_runtime_trusted_cidrs: Vec<IpCidr>,
+    peer_runtime_excluded_ips: Vec<IpAddr>,
     peer_runtime_ttl_secs: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct IpCidr {
     addr: IpAddr,
     prefix_len: u8,
@@ -97,17 +100,39 @@ static PEER_RUNTIME_STATE: OnceLock<Mutex<PeerRuntimeState>> = OnceLock::new();
 static INTERNAL_HOP_SECRET: OnceLock<String> = OnceLock::new();
 
 pub(crate) fn reload_from_env() {
+    let requested_mode = match parse_client_entity_mode(
+        std::env::var(ENV_CLIENT_ENTITY_MODE).ok().as_deref(),
+    ) {
+        Ok(mode) => mode,
+        Err(()) => {
+            log::warn!(
+                "event=client_entity_mode_invalid env={} fallback=off",
+                ENV_CLIENT_ENTITY_MODE
+            );
+            Some(ClientEntityMode::Off)
+        }
+    };
+    let edge_trusted_cidrs = parse_cidr_list(std::env::var(ENV_EDGE_ENTITY_TRUSTED_CIDRS).ok());
+    let edge_hmac_secret = std::env::var(ENV_EDGE_ENTITY_HMAC_SECRET)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let explicit_peer_runtime_trusted_cidrs =
+        parse_cidr_list(std::env::var(ENV_PEER_RUNTIME_TRUSTED_CIDRS).ok());
+    let (peer_runtime_trusted_cidrs, peer_runtime_excluded_ips) =
+        resolve_peer_runtime_networks(requested_mode, explicit_peer_runtime_trusted_cidrs);
+    let mode = resolve_client_entity_mode(
+        requested_mode,
+        edge_trusted_cidrs.as_slice(),
+        edge_hmac_secret.as_deref(),
+        peer_runtime_trusted_cidrs.as_slice(),
+    );
     let config = ClientEntityRuntimeConfig {
-        mode: parse_client_entity_mode(std::env::var(ENV_CLIENT_ENTITY_MODE).ok().as_deref())
-            .unwrap_or(ClientEntityMode::Off),
-        edge_trusted_cidrs: parse_cidr_list(std::env::var(ENV_EDGE_ENTITY_TRUSTED_CIDRS).ok()),
-        edge_hmac_secret: std::env::var(ENV_EDGE_ENTITY_HMAC_SECRET)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
-        peer_runtime_trusted_cidrs: parse_cidr_list(
-            std::env::var(ENV_PEER_RUNTIME_TRUSTED_CIDRS).ok(),
-        ),
+        mode,
+        edge_trusted_cidrs,
+        edge_hmac_secret,
+        peer_runtime_trusted_cidrs,
+        peer_runtime_excluded_ips,
         peer_runtime_ttl_secs: std::env::var(ENV_PEER_RUNTIME_TTL_SECS)
             .ok()
             .and_then(|value| value.trim().parse::<i64>().ok())
@@ -129,11 +154,18 @@ pub(crate) fn runtime_peer_ttl_secs() -> i64 {
 }
 
 pub(crate) fn should_strip_external_cli_affinity_id() -> bool {
-    current_mode() != ClientEntityMode::Off
+    current_mode() == ClientEntityMode::EdgeEnforced
 }
 
 pub(crate) fn trusted_peer_runtime_entity(socket_peer_ip: IpAddr) -> Option<String> {
     let config = crate::lock_utils::read_recover(config_lock(), "client_entity_config").clone();
+    if config
+        .peer_runtime_excluded_ips
+        .iter()
+        .any(|candidate| *candidate == socket_peer_ip)
+    {
+        return None;
+    }
     if !config
         .peer_runtime_trusted_cidrs
         .iter()
@@ -182,6 +214,9 @@ pub(crate) fn prepare_request_preflight(
             }
         }
         ClientEntityMode::DockerPeerRuntime => {
+            for key in derive_affinity_lock_keys(incoming_headers, local_conversation_id) {
+                lock_keys.insert(key);
+            }
             if let Some(runtime_key) = trusted_peer_runtime_key.as_ref() {
                 lock_keys.insert(runtime_key.clone());
             }
@@ -377,15 +412,151 @@ fn exact_one_optional_header(headers: &HeaderMap, name: &'static str) -> Result<
         .ok_or_else(|| format!("invalid internal header value: {name}"))
 }
 
-fn parse_client_entity_mode(raw: Option<&str>) -> Option<ClientEntityMode> {
+fn parse_client_entity_mode(raw: Option<&str>) -> Result<Option<ClientEntityMode>, ()> {
     match raw.map(str::trim).unwrap_or_default().to_ascii_lowercase().as_str() {
-        "" | "off" | "disabled" => Some(ClientEntityMode::Off),
-        "edge-enforced" | "edge" | "enforced" => Some(ClientEntityMode::EdgeEnforced),
+        "" => Ok(Some(ClientEntityMode::Off)),
+        "auto" => Ok(None),
+        "off" | "disabled" => Ok(Some(ClientEntityMode::Off)),
+        "edge-enforced" | "edge" | "enforced" => Ok(Some(ClientEntityMode::EdgeEnforced)),
         "docker-peer-runtime" | "peer-runtime" | "docker-peerip" => {
-            Some(ClientEntityMode::DockerPeerRuntime)
+            Ok(Some(ClientEntityMode::DockerPeerRuntime))
         }
-        _ => None,
+        _ => Err(()),
     }
+}
+
+fn resolve_client_entity_mode(
+    requested_mode: Option<ClientEntityMode>,
+    edge_trusted_cidrs: &[IpCidr],
+    edge_hmac_secret: Option<&str>,
+    peer_runtime_trusted_cidrs: &[IpCidr],
+) -> ClientEntityMode {
+    match requested_mode {
+        Some(ClientEntityMode::Off) => ClientEntityMode::Off,
+        Some(ClientEntityMode::EdgeEnforced) => ClientEntityMode::EdgeEnforced,
+        Some(ClientEntityMode::DockerPeerRuntime) => {
+            if peer_runtime_trusted_cidrs.is_empty() {
+                ClientEntityMode::Off
+            } else {
+                ClientEntityMode::DockerPeerRuntime
+            }
+        }
+        None => {
+            let edge_ready = !edge_trusted_cidrs.is_empty()
+                && edge_hmac_secret.is_some_and(|value| !value.trim().is_empty());
+            if edge_ready {
+                ClientEntityMode::EdgeEnforced
+            } else if !peer_runtime_trusted_cidrs.is_empty() {
+                ClientEntityMode::DockerPeerRuntime
+            } else {
+                ClientEntityMode::Off
+            }
+        }
+    }
+}
+
+fn resolve_peer_runtime_networks(
+    requested_mode: Option<ClientEntityMode>,
+    explicit_peer_runtime_trusted_cidrs: Vec<IpCidr>,
+) -> (Vec<IpCidr>, Vec<IpAddr>) {
+    if !explicit_peer_runtime_trusted_cidrs.is_empty() {
+        return (
+            explicit_peer_runtime_trusted_cidrs,
+            auto_detect_peer_runtime_excluded_ips(),
+        );
+    }
+    match requested_mode {
+        Some(ClientEntityMode::Off) | Some(ClientEntityMode::EdgeEnforced) => (Vec::new(), Vec::new()),
+        Some(ClientEntityMode::DockerPeerRuntime) | None => auto_detect_peer_runtime_networks(),
+    }
+}
+
+fn auto_detect_peer_runtime_networks() -> (Vec<IpCidr>, Vec<IpAddr>) {
+    if !is_containerized_runtime() {
+        return (Vec::new(), Vec::new());
+    }
+    let cidrs = auto_detect_private_interface_cidrs();
+    if cidrs.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let excluded_ips = auto_detect_peer_runtime_excluded_ips();
+    (cidrs, excluded_ips)
+}
+
+fn is_containerized_runtime() -> bool {
+    if Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists() {
+        return true;
+    }
+    fs::read_to_string("/proc/1/cgroup")
+        .ok()
+        .is_some_and(|value| {
+            let normalized = value.to_ascii_lowercase();
+            normalized.contains("docker")
+                || normalized.contains("containerd")
+                || normalized.contains("kubepods")
+                || normalized.contains("podman")
+        })
+}
+
+fn auto_detect_private_interface_cidrs() -> Vec<IpCidr> {
+    let mut cidrs = BTreeSet::new();
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
+        return Vec::new();
+    };
+    for interface in interfaces {
+        if interface.is_loopback() {
+            continue;
+        }
+        let if_addrs::IfAddr::V4(v4) = interface.addr else {
+            continue;
+        };
+        if !v4.ip.is_private() {
+            continue;
+        }
+        let prefix_len = ipv4_prefix_len(v4.netmask);
+        if prefix_len == 0 {
+            continue;
+        }
+        cidrs.insert(IpCidr {
+            addr: IpAddr::V4(v4.ip),
+            prefix_len,
+        });
+    }
+    cidrs.into_iter().collect()
+}
+
+fn ipv4_prefix_len(netmask: std::net::Ipv4Addr) -> u8 {
+    u32::from(netmask).count_ones() as u8
+}
+
+fn auto_detect_default_gateway_ips() -> Vec<IpAddr> {
+    let Ok(contents) = fs::read_to_string("/proc/net/route") else {
+        return Vec::new();
+    };
+    parse_proc_net_route_gateways(contents.as_str())
+}
+
+fn auto_detect_peer_runtime_excluded_ips() -> Vec<IpAddr> {
+    if !is_containerized_runtime() {
+        return Vec::new();
+    }
+    auto_detect_default_gateway_ips()
+}
+
+fn parse_proc_net_route_gateways(contents: &str) -> Vec<IpAddr> {
+    let mut gateways = BTreeSet::new();
+    for line in contents.lines().skip(1) {
+        let columns = line.split_whitespace().collect::<Vec<_>>();
+        if columns.len() < 3 || columns[1] != "00000000" {
+            continue;
+        }
+        let Ok(raw_gateway) = u32::from_str_radix(columns[2], 16) else {
+            continue;
+        };
+        let octets = raw_gateway.to_le_bytes();
+        gateways.insert(IpAddr::V4(std::net::Ipv4Addr::from(octets)));
+    }
+    gateways.into_iter().collect()
 }
 
 fn config_lock() -> &'static RwLock<ClientEntityRuntimeConfig> {
@@ -579,13 +750,55 @@ mod tests {
     fn parse_client_entity_mode_accepts_expected_values() {
         assert_eq!(
             parse_client_entity_mode(Some("edge-enforced")),
-            Some(ClientEntityMode::EdgeEnforced)
+            Ok(Some(ClientEntityMode::EdgeEnforced))
         );
         assert_eq!(
             parse_client_entity_mode(Some("docker-peer-runtime")),
-            Some(ClientEntityMode::DockerPeerRuntime)
+            Ok(Some(ClientEntityMode::DockerPeerRuntime))
         );
-        assert_eq!(parse_client_entity_mode(Some("off")), Some(ClientEntityMode::Off));
+        assert_eq!(parse_client_entity_mode(None), Ok(Some(ClientEntityMode::Off)));
+        assert_eq!(parse_client_entity_mode(Some("auto")), Ok(None));
+        assert_eq!(parse_client_entity_mode(Some("off")), Ok(Some(ClientEntityMode::Off)));
+        assert!(parse_client_entity_mode(Some("bad-mode")).is_err());
+    }
+
+    #[test]
+    fn resolve_client_entity_mode_prefers_edge_for_auto() {
+        let actual = super::resolve_client_entity_mode(
+            None,
+            &[super::IpCidr {
+                addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)),
+                prefix_len: 24,
+            }],
+            Some("secret"),
+            &[super::IpCidr {
+                addr: IpAddr::V4(Ipv4Addr::new(172, 18, 0, 0)),
+                prefix_len: 16,
+            }],
+        );
+        assert_eq!(actual, ClientEntityMode::EdgeEnforced);
+    }
+
+    #[test]
+    fn resolve_client_entity_mode_uses_peer_runtime_for_auto_without_edge() {
+        let actual = super::resolve_client_entity_mode(
+            None,
+            &[],
+            None,
+            &[super::IpCidr {
+                addr: IpAddr::V4(Ipv4Addr::new(172, 18, 0, 0)),
+                prefix_len: 16,
+            }],
+        );
+        assert_eq!(actual, ClientEntityMode::DockerPeerRuntime);
+    }
+
+    #[test]
+    fn parse_proc_net_route_gateways_reads_default_gateway() {
+        let actual = super::parse_proc_net_route_gateways(
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\neth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n",
+        );
+        assert_eq!(actual, vec![IpAddr::V4(Ipv4Addr::new(172, 18, 0, 1))]);
     }
 
     #[test]

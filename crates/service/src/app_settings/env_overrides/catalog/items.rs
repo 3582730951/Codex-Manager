@@ -85,7 +85,7 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         "客户端实体模式",
         ENV_OVERRIDE_SCOPE_SERVICE,
         ENV_OVERRIDE_APPLY_MODE_RUNTIME,
-        "off",
+        "auto",
     ),
     EnvOverrideCatalogItem::new(
         "CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES",

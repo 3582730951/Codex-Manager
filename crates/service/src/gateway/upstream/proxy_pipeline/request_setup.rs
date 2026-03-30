@@ -125,8 +125,7 @@ pub(in super::super) fn prepare_request_setup(
                 )?
             }
         }
-        ClientEntityMode::DockerPeerRuntime => None,
-        ClientEntityMode::Off => {
+        ClientEntityMode::Off | ClientEntityMode::DockerPeerRuntime => {
             super::super::super::affinity::resolve_enforced_routing(
                 storage,
                 incoming_headers,

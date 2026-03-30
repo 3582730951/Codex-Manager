@@ -130,6 +130,11 @@ set_client_entity_mode() {
   recreate_service_stack
 }
 
+set_trusted_peers() {
+  local peers="$1"
+  set_env_file_value "AFFINITY_TEST_TRUSTED_PEERS" "${peers}"
+}
+
 wait_http_ok() {
   local url="$1"
   for _ in $(seq 1 90); do
@@ -589,7 +594,7 @@ AFFINITY_WEB_PORT=${WEB_PORT}
 AFFINITY_TEST_PLATFORM_KEY=${PLATFORM_KEY}
 AFFINITY_TEST_CLIENT_ENTITY_MODE=off
 AFFINITY_TEST_NETWORK_SUBNET=${NETWORK_SUBNET}
-AFFINITY_TEST_TRUSTED_PEERS=${TRUSTED_PEERS}
+AFFINITY_TEST_TRUSTED_PEERS=
 AFFINITY_TEST_SERVICE_IP=${SERVICE_IP}
 AFFINITY_TEST_WEB_IP=${WEB_IP}
 AFFINITY_TEST_PROBE_A_IP=${PROBE_A_IP}
@@ -709,47 +714,87 @@ restart_service
 send_turn "case-i-conv-1" "conversation-fallback" "conversation"
 assert_affinity_bound_to "cid" "case-i-conv-1" "aff-acc-1"
 
-log "switching service-test to docker-peer-runtime mode"
-set_client_entity_mode "docker-peer-runtime"
+log "switching service-test to auto client-entity mode"
+set_trusted_peers ""
+set_client_entity_mode "auto"
 
-log "scenario J: docker peer runtime keeps per-probe live pin without DB bindings"
+log "scenario J: auto mode still honors explicit cli/session/conversation affinity"
 clear_affinity_state
 restore_mock_tokens
 apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
 restart_service
-response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://service-test:48760" "case-j-none-a-1" "peer-runtime-probe-a-first" "none")"
+send_turn "case-j-cli-1" "auto-cli-explicit"
+assert_affinity_bound_to "cli" "case-j-cli-1" "aff-acc-1"
+
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+send_turn "case-j-session-1" "auto-session-explicit" "session"
+assert_affinity_bound_to "sid" "case-j-session-1" "aff-acc-1"
+
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+send_turn "case-j-conv-1" "auto-conversation-explicit" "conversation"
+assert_affinity_bound_to "cid" "case-j-conv-1" "aff-acc-1"
+
+log "scenario K: docker peer runtime keeps per-probe live pin without DB bindings"
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://service-test:48760" "case-k-none-a-1" "peer-runtime-probe-a-first" "none")"
 assert_response_status "${response}" "200"
 assert_response_account "${response}" "mock-account-1"
 assert_no_affinity_persistence
 
 apply_usage_map '{"aff-acc-1":100,"aff-acc-2":10,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
 sleep 6
-response="$(send_turn_raw_via "${PROBE_B_CONTAINER}" "http://service-test:48760" "case-j-none-b-1" "peer-runtime-probe-b-first" "none")"
+response="$(send_turn_raw_via "${PROBE_B_CONTAINER}" "http://service-test:48760" "case-k-none-b-1" "peer-runtime-probe-b-first" "none")"
 assert_response_status "${response}" "200"
 assert_response_account "${response}" "mock-account-2"
 assert_no_affinity_persistence
 
 apply_usage_map '{"aff-acc-1":10,"aff-acc-2":10,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
 sleep 6
-response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://service-test:48760" "case-j-none-a-2" "peer-runtime-probe-a-second" "none")"
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://service-test:48760" "case-k-none-a-2" "peer-runtime-probe-a-second" "none")"
 assert_response_status "${response}" "200"
 assert_response_account "${response}" "mock-account-1"
-response="$(send_turn_raw_via "${PROBE_B_CONTAINER}" "http://service-test:48760" "case-j-none-b-2" "peer-runtime-probe-b-second" "none")"
+response="$(send_turn_raw_via "${PROBE_B_CONTAINER}" "http://service-test:48760" "case-k-none-b-2" "peer-runtime-probe-b-second" "none")"
 assert_response_status "${response}" "200"
 assert_response_account "${response}" "mock-account-2"
 assert_no_affinity_persistence
 
-log "scenario K: host-gateway path must not create trusted peer runtime pin"
+log "scenario L: host-gateway path must not create trusted peer runtime pin"
 clear_affinity_state
 restore_mock_tokens
 apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
 restart_service
-response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://host.docker.internal:${SERVICE_PORT}" "case-k-none-a-1" "host-gateway-negative" "none")"
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://host.docker.internal:${SERVICE_PORT}" "case-l-none-a-1" "host-gateway-negative" "none")"
 assert_response_status "${response}" "200"
 assert_response_account "${response}" "mock-account-1"
 apply_usage_map '{"aff-acc-1":80,"aff-acc-2":10,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
 sleep 6
-response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://host.docker.internal:${SERVICE_PORT}" "case-k-none-a-2" "host-gateway-negative-second" "none")"
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://host.docker.internal:${SERVICE_PORT}" "case-l-none-a-2" "host-gateway-negative-second" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_no_affinity_persistence
+
+log "scenario M: explicit docker-peer-runtime subnet still excludes host-gateway"
+set_trusted_peers "${NETWORK_SUBNET}"
+set_client_entity_mode "docker-peer-runtime"
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://host.docker.internal:${SERVICE_PORT}" "case-m-none-a-1" "host-gateway-explicit-negative" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-1"
+apply_usage_map '{"aff-acc-1":80,"aff-acc-2":10,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+sleep 6
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://host.docker.internal:${SERVICE_PORT}" "case-m-none-a-2" "host-gateway-explicit-negative-second" "none")"
 assert_response_status "${response}" "200"
 assert_response_account "${response}" "mock-account-2"
 assert_no_affinity_persistence
