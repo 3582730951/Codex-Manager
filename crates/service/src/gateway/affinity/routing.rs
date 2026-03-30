@@ -1,8 +1,8 @@
 use bytes::Bytes;
 use codexmanager_core::storage::{
     now_ts, Account, AffinityKeyMigration, AffinityScopePromotion, AffinityTurnCommitOutcome,
-    ClientBinding, ConversationContextEvent, ConversationContextState, ConversationThread, Storage,
-    Token,
+    ClientBinding, ConversationContextEvent, ConversationContextState, ConversationThread,
+    Storage, Token,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -23,7 +23,9 @@ const REPLAY_PAYLOAD_MAX_BYTES: usize = 512 * 1024;
 #[derive(Debug, Clone)]
 pub(crate) struct AffinityRoutingResolution {
     pub(crate) affinity_key: String,
+    #[allow(dead_code)]
     pub(crate) canonical_affinity_key: String,
+    #[allow(dead_code)]
     pub(crate) compat_affinity_key: Option<String>,
     pub(crate) affinity_source: &'static str,
     pub(crate) conversation_scope_id: String,
@@ -188,6 +190,9 @@ pub(crate) fn resolve_enforced_routing(
     local_conversation_id: Option<&str>,
     model_for_log: Option<&str>,
     response_adapter: ResponseAdapter,
+    forced_affinity_key: Option<super::DerivedAffinityKey>,
+    allow_compat_lookup: bool,
+    allow_legacy_conversation_bridge: bool,
 ) -> Result<Option<AffinityRoutingResolution>, String> {
     if current_mode() != AffinityRoutingMode::Enforce {
         return Ok(None);
@@ -195,7 +200,9 @@ pub(crate) fn resolve_enforced_routing(
     if !supports_affinity_persistence_request(original_path, path, response_adapter) {
         return Ok(None);
     }
-    let Some(derived) = derive_affinity_key(incoming_headers, local_conversation_id) else {
+    let Some(derived) = forced_affinity_key
+        .or_else(|| derive_affinity_key(incoming_headers, local_conversation_id))
+    else {
         return Ok(None);
     };
     if candidates.is_empty() {
@@ -210,7 +217,7 @@ pub(crate) fn resolve_enforced_routing(
     let mut binding = storage
         .get_client_binding(platform_key_hash, derived.key.as_str())
         .map_err(|err| format!("load client binding failed: {err}"))?;
-    if binding.is_none() {
+    if binding.is_none() && allow_compat_lookup {
         for compat_candidate in super::derive_compat_affinity_keys(incoming_headers, local_conversation_id)
         {
             let compat_binding = storage
@@ -243,7 +250,7 @@ pub(crate) fn resolve_enforced_routing(
             conversation_scope_id.as_str(),
         )
         .map_err(|err| format!("load conversation thread failed: {err}"))?;
-    if binding.is_none() {
+    if binding.is_none() && allow_legacy_conversation_bridge {
         if let Some(requested_conversation_id) = requested_conversation_id.as_deref() {
             if let Some(legacy_binding) = storage
                 .get_conversation_binding(platform_key_hash, requested_conversation_id)
@@ -287,7 +294,7 @@ pub(crate) fn resolve_enforced_routing(
         storage,
         candidates.as_slice(),
         platform_key_hash,
-        derived.key.as_str(),
+        resolved_affinity_key.as_str(),
         binding.as_ref(),
         tie_break_index,
     )?;
@@ -311,7 +318,7 @@ pub(crate) fn resolve_enforced_routing(
         binding.as_ref(),
         thread.as_ref(),
         platform_key_hash,
-        derived.key.as_str(),
+        resolved_affinity_key.as_str(),
         committed_conversation_scope_id.as_str(),
         requested_conversation_id.as_deref(),
         chosen.as_str(),
@@ -322,7 +329,7 @@ pub(crate) fn resolve_enforced_routing(
             path,
             body.as_ref(),
             platform_key_hash,
-            derived.key.as_str(),
+            resolved_affinity_key.as_str(),
             conversation_scope_id.as_str(),
         )?))
     } else {
@@ -331,7 +338,7 @@ pub(crate) fn resolve_enforced_routing(
     let current_turn_index = next_turn_index(
         storage,
         platform_key_hash,
-        derived.key.as_str(),
+        resolved_affinity_key.as_str(),
         conversation_scope_id.as_str(),
     )?;
 
@@ -407,10 +414,6 @@ pub(crate) fn finalize_affinity_success(
         .flatten();
     let expected_binding_version = resolution.binding.as_ref().map(|item| item.binding_version);
     let expected_thread_version = resolution.thread.as_ref().map(|item| item.thread_version);
-    let same_account_binding = resolution
-        .binding
-        .as_ref()
-        .is_some_and(|item| item.account_id == account_id);
     let next_binding_version = match resolution.binding.as_ref() {
         Some(existing) if existing.account_id == account_id => existing.binding_version,
         Some(existing) => existing.binding_version + 1,
@@ -533,8 +536,7 @@ pub(crate) fn finalize_affinity_success(
             .map_err(|err| format!("commit affinity turn success failed: {err}"))
     };
 
-    let can_compat_migrate = same_account_binding
-        && resolution.compat_affinity_key.is_some()
+    let can_compat_migrate = resolution.compat_affinity_key.is_some()
         && resolution.affinity_key != resolution.canonical_affinity_key;
     if can_compat_migrate {
         let key_migration = AffinityKeyMigration {
@@ -2288,6 +2290,175 @@ mod tests {
                 .expect("load old events")
                 .is_empty()
         );
+
+        crate::gateway::affinity::set_mode(previous_mode.as_str()).expect("restore mode");
+    }
+
+    #[test]
+    fn finalize_affinity_success_migrates_compat_key_to_canonical_key_after_failover() {
+        let _guard = affinity_runtime_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_mode = crate::gateway::affinity::current_mode();
+        crate::gateway::affinity::set_mode("enforce").expect("set enforce mode");
+
+        let storage = Storage::open_in_memory().expect("open in memory");
+        storage.init().expect("init schema");
+        let now = now_ts();
+        let existing_binding = ClientBinding {
+            platform_key_hash: "pk".to_string(),
+            affinity_key: "sid:legacy".to_string(),
+            account_id: "acc-1".to_string(),
+            primary_scope_id: Some("scope".to_string()),
+            binding_version: 4,
+            status: "active".to_string(),
+            last_supply_score: Some(0.7),
+            last_pressure_score: Some(0.6),
+            last_final_score: Some(0.75),
+            last_switch_reason: Some("legacy_bind".to_string()),
+            created_at: now - 20,
+            updated_at: now - 20,
+            last_seen_at: now - 20,
+        };
+        let existing_thread = ConversationThread {
+            platform_key_hash: "pk".to_string(),
+            affinity_key: "sid:legacy".to_string(),
+            conversation_scope_id: "scope".to_string(),
+            account_id: "acc-1".to_string(),
+            thread_epoch: 1,
+            thread_anchor: "thread-legacy".to_string(),
+            thread_version: 2,
+            created_at: now - 20,
+            updated_at: now - 20,
+            last_seen_at: now - 20,
+        };
+        storage
+            .save_client_binding(&existing_binding, None)
+            .expect("seed binding");
+        storage
+            .save_conversation_thread(&existing_thread, None)
+            .expect("seed thread");
+        storage
+            .save_conversation_context_state(&ConversationContextState {
+                platform_key_hash: "pk".to_string(),
+                affinity_key: "sid:legacy".to_string(),
+                conversation_scope_id: "scope".to_string(),
+                model: Some("gpt-5.4".to_string()),
+                instructions_text: Some("carry".to_string()),
+                tools_json: None,
+                tool_choice_json: None,
+                parallel_tool_calls: Some(false),
+                reasoning_json: None,
+                text_format_json: None,
+                service_tier: None,
+                metadata_json: None,
+                encrypted_content: None,
+                protocol_type: Some("openai_compat".to_string()),
+                response_adapter: Some("Passthrough".to_string()),
+                updated_at: now - 20,
+            })
+            .expect("seed state");
+        storage
+            .replace_conversation_context_turn(
+                "pk",
+                "sid:legacy",
+                "scope",
+                0,
+                &[ConversationContextEvent {
+                    platform_key_hash: "pk".to_string(),
+                    affinity_key: "sid:legacy".to_string(),
+                    conversation_scope_id: "scope".to_string(),
+                    turn_index: 0,
+                    item_seq: 0,
+                    role: Some("assistant".to_string()),
+                    pair_group_id: None,
+                    capture_complete: true,
+                    item_json: "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"legacy\"}]}".to_string(),
+                    created_at: now - 20,
+                }],
+            )
+            .expect("seed events");
+        let resolution = super::AffinityRoutingResolution {
+            affinity_key: "sid:legacy".to_string(),
+            canonical_affinity_key: "cli:stable-cli".to_string(),
+            compat_affinity_key: Some("sid:legacy".to_string()),
+            affinity_source: "cli_affinity_id",
+            conversation_scope_id: "scope".to_string(),
+            committed_conversation_scope_id: "scope".to_string(),
+            binding: Some(existing_binding),
+            thread: Some(existing_thread),
+            chosen_account_id: "acc-1".to_string(),
+            candidate_account_ids: vec!["acc-1".to_string(), "acc-2".to_string()],
+            request_body_override: None,
+            thread_epoch: 1,
+            thread_anchor: "thread-legacy".to_string(),
+            reset_session_affinity: false,
+            requires_replay: false,
+            current_turn_index: 1,
+            primary_scope_id_for_commit: Some("scope".to_string()),
+            scope_promotion: None,
+            current_turn_input_items: vec![serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "next"}]
+            })],
+            selected_supply_score: Some(0.95),
+            selected_pressure_score: Some(0.2),
+            selected_final_score: Some(0.97),
+            switch_reason: Some("steady_state".to_string()),
+        };
+
+        super::finalize_affinity_success(
+            &storage,
+            &resolution,
+            "pk",
+            "acc-2",
+            br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}"#,
+            Some(
+                br#"{"response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}}"#,
+            ),
+            "Passthrough",
+            "openai_compat",
+            Some("trace-compat-fallback"),
+        )
+        .expect("finalize success");
+
+        assert!(
+            storage
+                .get_client_binding("pk", "sid:legacy")
+                .expect("load old binding")
+                .is_none()
+        );
+        let binding = storage
+            .get_client_binding("pk", "cli:stable-cli")
+            .expect("load migrated binding")
+            .expect("new binding exists");
+        assert_eq!(binding.account_id, "acc-2");
+        assert_eq!(binding.binding_version, 5);
+        assert_eq!(
+            binding.last_switch_reason.as_deref(),
+            Some("affinity_probe_fallback")
+        );
+
+        let thread = storage
+            .get_conversation_thread("pk", "cli:stable-cli", "scope")
+            .expect("load migrated thread")
+            .expect("new thread exists");
+        assert_eq!(thread.account_id, "acc-2");
+        assert_eq!(thread.thread_version, 3);
+
+        let state = storage
+            .get_conversation_context_state("pk", "cli:stable-cli", "scope")
+            .expect("load migrated state")
+            .expect("new state exists");
+        assert_eq!(state.model.as_deref(), Some("gpt-5.4"));
+
+        let events = storage
+            .list_conversation_context_events("pk", "cli:stable-cli", "scope")
+            .expect("load migrated events");
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().any(|event| event.turn_index == 0));
+        assert!(events.iter().any(|event| event.turn_index == 1));
 
         crate::gateway::affinity::set_mode(previous_mode.as_str()).expect("restore mode");
     }

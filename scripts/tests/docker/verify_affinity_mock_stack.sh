@@ -3,10 +3,10 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/scripts/tests/docker/affinity_mock_stack.compose.yml"
-STAMP="$(date +%Y%m%d%H%M%S)"
+STAMP="$(date +%Y%m%d%H%M%S)-$$-${RANDOM}"
 TEST_PROJECT="codexmanager-affinity-${STAMP}"
-SERVICE_PORT="59760"
-WEB_PORT="59761"
+SERVICE_PORT=""
+WEB_PORT=""
 KEEP_TEST_STACK="0"
 SKIP_DESKTOP_BUILD="0"
 PLATFORM_KEY="cm_affinity_test_key"
@@ -14,10 +14,30 @@ DATA_VOLUME=""
 ENV_FILE=""
 NETWORK_NAME=""
 PROBE_CONTAINER=""
+PROBE_A_CONTAINER=""
+PROBE_B_CONTAINER=""
+NETWORK_SUBNET="172.29.0.0/24"
+SERVICE_IP="172.29.0.10"
+WEB_IP="172.29.0.11"
+PROBE_A_IP="172.29.0.21"
+PROBE_B_IP="172.29.0.22"
+MOCK_UPSTREAM_IP="172.29.0.30"
+TRUSTED_PEERS="${PROBE_A_IP}/32,${PROBE_B_IP}/32"
 
 log() { printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 die() { printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
+
+allocate_host_port() {
+  python3 - <<'PY'
+import socket
+
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+PY
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,6 +68,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 need_cmd docker
+need_cmd python3
 
 for name in CODEX_API_KEY OPENAI_API_KEY OPENAI_API_BASE CODEX_API_BASE; do
   if [[ -n "${!name:-}" ]]; then
@@ -55,11 +76,58 @@ for name in CODEX_API_KEY OPENAI_API_KEY OPENAI_API_BASE CODEX_API_BASE; do
   fi
 done
 
+if [[ -z "${SERVICE_PORT}" ]]; then
+  SERVICE_PORT="$(allocate_host_port)"
+fi
+if [[ -z "${WEB_PORT}" ]]; then
+  while true; do
+    WEB_PORT="$(allocate_host_port)"
+    [[ "${WEB_PORT}" != "${SERVICE_PORT}" ]] && break
+  done
+fi
+
 run_desktop_build() {
   docker run --rm \
     -v "${ROOT_DIR}/apps:/src:ro" \
     node:22-bookworm-slim \
     bash -lc "set -euo pipefail && corepack enable >/dev/null 2>&1 && corepack prepare pnpm@10.30.3 --activate >/dev/null 2>&1 && mkdir -p /tmp/apps && cp -a /src/. /tmp/apps/ && rm -rf /tmp/apps/node_modules /tmp/apps/.next /tmp/apps/out && cd /tmp/apps && export NEXT_TELEMETRY_DISABLED=1 CI=true && pnpm install --frozen-lockfile && pnpm run build:desktop"
+}
+
+set_env_file_value() {
+  local key="$1"
+  local value="$2"
+  python3 - "${ENV_FILE}" "${key}" "${value}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+lines = []
+found = False
+for line in path.read_text(encoding="utf-8").splitlines():
+    if line.startswith(f"{key}="):
+        lines.append(f"{key}={value}")
+        found = True
+    else:
+        lines.append(line)
+if not found:
+    lines.append(f"{key}={value}")
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
+recreate_service_stack() {
+  docker compose -p "${TEST_PROJECT}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d --build --force-recreate service-test web-test >/dev/null
+  wait_http_ok "http://service-test:48760/health"
+  wait_http_ok "http://web-test:48761/api/runtime"
+  sleep 6
+}
+
+set_client_entity_mode() {
+  local mode="$1"
+  set_env_file_value "AFFINITY_TEST_CLIENT_ENTITY_MODE" "${mode}"
+  recreate_service_stack
 }
 
 wait_http_ok() {
@@ -171,6 +239,10 @@ for account_id, access_token in updates.items():
         "UPDATE tokens SET access_token = ?, id_token = ?, refresh_token = ? WHERE account_id = ?",
         (access_token, f"id-{access_token}", f"refresh-{access_token}", account_id),
     )
+    cur.execute(
+        "UPDATE accounts SET status = 'active', updated_at = strftime('%s','now') WHERE id = ?",
+        (account_id,),
+    )
 conn.commit()
 conn.close()
 PY
@@ -221,6 +293,36 @@ assert_binding_counts() {
   if [[ "${actual}" != "${expected}" ]]; then
     printf '\nExpected bindings:\n%s\n\nActual bindings:\n%s\n' "${expected}" "${actual}" >&2
     die "binding counts mismatch"
+  fi
+}
+
+assert_no_bindings() { assert_binding_counts ""; }
+
+assert_no_affinity_persistence() {
+  local actual
+  actual="$(db_python <<'PY'
+import sqlite3
+
+conn = sqlite3.connect("/data/codexmanager.db", timeout=5)
+cur = conn.cursor()
+tables = [
+    "client_bindings",
+    "conversation_bindings",
+    "conversation_threads",
+    "conversation_context_state",
+    "conversation_context_events",
+    "context_snapshots",
+]
+for table in tables:
+    count = cur.execute(f"SELECT COUNT(1) FROM {table}").fetchone()[0]
+    print(f"{table}={count}")
+conn.close()
+PY
+)"
+  local expected=$'client_bindings=0\nconversation_bindings=0\nconversation_threads=0\nconversation_context_state=0\nconversation_context_events=0\ncontext_snapshots=0'
+  if [[ "${actual}" != "${expected}" ]]; then
+    printf '\nExpected zero persistence:\n%s\n\nActual persistence:\n%s\n' "${expected}" "${actual}" >&2
+    die "affinity persistence expected to remain empty"
   fi
 }
 
@@ -325,20 +427,23 @@ restart_service() {
   sleep 6
 }
 
-send_turn_raw() {
-  local affinity_id="$1"
-  local text="$2"
-  local affinity_mode="${3:-cli}"
-  docker exec -i "${PROBE_CONTAINER}" python - "${PLATFORM_KEY}" "${affinity_id}" "${text}" "${affinity_mode}" <<'PY'
+send_turn_raw_via() {
+  local probe_container="$1"
+  local base_url="$2"
+  local affinity_id="$3"
+  local text="$4"
+  local affinity_mode="${5:-cli}"
+  docker exec -i "${probe_container}" python - "${PLATFORM_KEY}" "${base_url}" "${affinity_id}" "${text}" "${affinity_mode}" <<'PY'
 import json
 import sys
 import urllib.error
 import urllib.request
 
 platform_key = sys.argv[1]
-affinity_id = sys.argv[2]
-text = sys.argv[3]
-affinity_mode = sys.argv[4]
+base_url = sys.argv[2]
+affinity_id = sys.argv[3]
+text = sys.argv[4]
+affinity_mode = sys.argv[5]
 headers = {
     "Authorization": f"Bearer {platform_key}",
     "Content-Type": "application/json",
@@ -349,10 +454,12 @@ elif affinity_mode == "session":
     headers["session_id"] = affinity_id
 elif affinity_mode == "conversation":
     headers["conversation_id"] = affinity_id
+elif affinity_mode == "none":
+    pass
 else:
     raise SystemExit(f"unsupported affinity mode: {affinity_mode}")
 request = urllib.request.Request(
-    "http://service-test:48760/v1/responses",
+    f"{base_url}/v1/responses",
     data=json.dumps(
         {
             "model": "gpt-5.4",
@@ -371,13 +478,37 @@ request = urllib.request.Request(
 try:
     with urllib.request.urlopen(request, timeout=30) as response:
         body = response.read().decode("utf-8")
-        print(body)
+        assistant_text = body
+        try:
+            parsed = json.loads(body)
+            for item in parsed.get("output") or []:
+                if not isinstance(item, dict):
+                    continue
+                for content in item.get("content") or []:
+                    if not isinstance(content, dict):
+                        continue
+                    text_value = content.get("text")
+                    if isinstance(text_value, str) and text_value:
+                        assistant_text = text_value
+                        raise StopIteration
+        except StopIteration:
+            pass
+        except Exception:
+            assistant_text = body
+        print(assistant_text)
         print(response.status)
 except urllib.error.HTTPError as error:
     body = error.read().decode("utf-8")
     print(body)
     print(error.code)
 PY
+}
+
+send_turn_raw() {
+  local affinity_id="$1"
+  local text="$2"
+  local affinity_mode="${3:-cli}"
+  send_turn_raw_via "${PROBE_CONTAINER}" "http://service-test:48760" "${affinity_id}" "${text}" "${affinity_mode}"
 }
 
 send_turn() {
@@ -388,6 +519,20 @@ send_turn() {
   response="$(send_turn_raw "${affinity_id}" "${text}" "${affinity_mode}")"
   local status="${response##*$'\n'}"
   [[ "${status}" == "200" ]] || die "request failed for ${affinity_mode}:${affinity_id} with status ${status}"
+}
+
+assert_response_status() {
+  local response="$1"
+  local expected_status="$2"
+  local actual_status="${response##*$'\n'}"
+  [[ "${actual_status}" == "${expected_status}" ]] || die "expected HTTP ${expected_status}, got ${actual_status}"
+}
+
+assert_response_account() {
+  local response="$1"
+  local expected_token="$2"
+  local output_text="${response%$'\n'*}"
+  [[ "${output_text}" == "mock:${expected_token}:"* ]] || die "expected response from ${expected_token}, got ${output_text}"
 }
 
 run_turn_batch() {
@@ -401,19 +546,40 @@ run_turn_batch() {
 }
 
 cleanup() {
+  local exit_status=$?
+  local cleanup_failed="0"
   if [[ "${KEEP_TEST_STACK}" == "1" ]]; then
     log "keeping mock stack ${TEST_PROJECT}"
     return
   fi
   docker compose -p "${TEST_PROJECT}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down -v --remove-orphans >/dev/null 2>&1 || true
-  [[ -n "${ENV_FILE}" ]] && rm -f "${ENV_FILE}"
+  [[ -n "${NETWORK_NAME}" ]] && docker network rm "${NETWORK_NAME}" >/dev/null 2>&1 || true
   [[ -n "${DATA_VOLUME}" ]] && docker volume rm "${DATA_VOLUME}" >/dev/null 2>&1 || true
+  local containers
+  containers="$(docker ps -a --format '{{.Names}}' | grep "^${TEST_PROJECT}-" || true)"
+  local volumes
+  volumes="$(docker volume ls --format '{{.Name}}' | grep "^${TEST_PROJECT}-" || true)"
+  local networks
+  networks="$(docker network ls --format '{{.Name}}' | grep "^${TEST_PROJECT}_" || true)"
+  if [[ -n "${containers}" || -n "${volumes}" || -n "${networks}" ]]; then
+    cleanup_failed="1"
+    printf '\n[ERROR] cleanup residue detected for %s\n' "${TEST_PROJECT}" >&2
+    [[ -n "${containers}" ]] && printf 'containers:\n%s\n' "${containers}" >&2
+    [[ -n "${volumes}" ]] && printf 'volumes:\n%s\n' "${volumes}" >&2
+    [[ -n "${networks}" ]] && printf 'networks:\n%s\n' "${networks}" >&2
+  fi
+  [[ -n "${ENV_FILE}" ]] && rm -f "${ENV_FILE}"
+  if [[ "${exit_status}" -ne 0 ]]; then
+    exit "${exit_status}"
+  fi
+  if [[ "${cleanup_failed}" != "0" ]]; then
+    exit 1
+  fi
 }
 trap cleanup EXIT
 
 DATA_VOLUME="${TEST_PROJECT}-data"
 NETWORK_NAME="${TEST_PROJECT}_affinity-net"
-PROBE_CONTAINER="${TEST_PROJECT}-mock-upstream-1"
 docker volume create "${DATA_VOLUME}" >/dev/null
 ENV_FILE="$(mktemp "/tmp/codexmanager-affinity-env.XXXXXX")"
 cat >"${ENV_FILE}" <<EOF
@@ -421,6 +587,14 @@ AFFINITY_TEST_DATA_VOLUME=${DATA_VOLUME}
 AFFINITY_SERVICE_PORT=${SERVICE_PORT}
 AFFINITY_WEB_PORT=${WEB_PORT}
 AFFINITY_TEST_PLATFORM_KEY=${PLATFORM_KEY}
+AFFINITY_TEST_CLIENT_ENTITY_MODE=off
+AFFINITY_TEST_NETWORK_SUBNET=${NETWORK_SUBNET}
+AFFINITY_TEST_TRUSTED_PEERS=${TRUSTED_PEERS}
+AFFINITY_TEST_SERVICE_IP=${SERVICE_IP}
+AFFINITY_TEST_WEB_IP=${WEB_IP}
+AFFINITY_TEST_PROBE_A_IP=${PROBE_A_IP}
+AFFINITY_TEST_PROBE_B_IP=${PROBE_B_IP}
+AFFINITY_TEST_MOCK_UPSTREAM_IP=${MOCK_UPSTREAM_IP}
 EOF
 
 cd "${ROOT_DIR}"
@@ -432,6 +606,10 @@ fi
 
 log "starting affinity mock stack ${TEST_PROJECT}"
 docker compose -p "${TEST_PROJECT}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up --build -d
+
+PROBE_A_CONTAINER="${TEST_PROJECT}-probe-a-1"
+PROBE_B_CONTAINER="${TEST_PROJECT}-probe-b-1"
+PROBE_CONTAINER="${PROBE_A_CONTAINER}"
 
 log "waiting for seed/init and endpoints"
 wait_seed_success
@@ -530,6 +708,51 @@ apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100
 restart_service
 send_turn "case-i-conv-1" "conversation-fallback" "conversation"
 assert_affinity_bound_to "cid" "case-i-conv-1" "aff-acc-1"
+
+log "switching service-test to docker-peer-runtime mode"
+set_client_entity_mode "docker-peer-runtime"
+
+log "scenario J: docker peer runtime keeps per-probe live pin without DB bindings"
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://service-test:48760" "case-j-none-a-1" "peer-runtime-probe-a-first" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-1"
+assert_no_affinity_persistence
+
+apply_usage_map '{"aff-acc-1":100,"aff-acc-2":10,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+sleep 6
+response="$(send_turn_raw_via "${PROBE_B_CONTAINER}" "http://service-test:48760" "case-j-none-b-1" "peer-runtime-probe-b-first" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_no_affinity_persistence
+
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":10,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+sleep 6
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://service-test:48760" "case-j-none-a-2" "peer-runtime-probe-a-second" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-1"
+response="$(send_turn_raw_via "${PROBE_B_CONTAINER}" "http://service-test:48760" "case-j-none-b-2" "peer-runtime-probe-b-second" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_no_affinity_persistence
+
+log "scenario K: host-gateway path must not create trusted peer runtime pin"
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":100,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://host.docker.internal:${SERVICE_PORT}" "case-k-none-a-1" "host-gateway-negative" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-1"
+apply_usage_map '{"aff-acc-1":80,"aff-acc-2":10,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+sleep 6
+response="$(send_turn_raw_via "${PROBE_A_CONTAINER}" "http://host.docker.internal:${SERVICE_PORT}" "case-k-none-a-2" "host-gateway-negative-second" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_no_affinity_persistence
 
 docker compose -p "${TEST_PROJECT}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
 log "affinity mock stack verification complete"

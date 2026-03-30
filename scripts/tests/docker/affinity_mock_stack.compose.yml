@@ -9,16 +9,23 @@ services:
       CODEXMANAGER_DB_PATH: /data/codexmanager.db
       CODEXMANAGER_RPC_TOKEN_FILE: /data/codexmanager.rpc-token
       CODEXMANAGER_AFFINITY_ROUTING_MODE: enforce
+      CODEXMANAGER_CLIENT_ENTITY_MODE: ${AFFINITY_TEST_CLIENT_ENTITY_MODE:-off}
       CODEXMANAGER_CONTEXT_REPLAY_ENABLED: "1"
+      CODEXMANAGER_DISABLE_POLLING: "1"
+      CODEXMANAGER_USAGE_POLLING_ENABLED: "0"
       CODEXMANAGER_AFFINITY_SOFT_QUOTA_PERCENT: "5"
+      CODEXMANAGER_PEER_RUNTIME_TRUSTED_CIDRS: ${AFFINITY_TEST_TRUSTED_PEERS}
+      CODEXMANAGER_PEER_RUNTIME_TTL_SECS: "1800"
       CODEXMANAGER_REPLAY_MAX_TURNS: "12"
       CODEXMANAGER_ROUTE_STRATEGY: balanced
+      CODEXMANAGER_TOKEN_REFRESH_POLLING_ENABLED: "0"
     volumes:
       - affinity-data:/data
     ports:
       - "${AFFINITY_SERVICE_PORT}:48760"
     networks:
-      - affinity-net
+      affinity-net:
+        ipv4_address: ${AFFINITY_TEST_SERVICE_IP}
 
   web-test:
     build:
@@ -39,7 +46,8 @@ services:
     ports:
       - "${AFFINITY_WEB_PORT}:48761"
     networks:
-      - affinity-net
+      affinity-net:
+        ipv4_address: ${AFFINITY_TEST_WEB_IP}
 
   mock-upstream:
     image: python:3.12-slim
@@ -52,7 +60,32 @@ services:
     volumes:
       - ../../..:/workspace:ro
     networks:
-      - affinity-net
+      affinity-net:
+        ipv4_address: ${AFFINITY_TEST_MOCK_UPSTREAM_IP}
+
+  probe-a:
+    image: python:3.12-slim
+    command:
+      - python
+      - -c
+      - "import time; time.sleep(10**9)"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      affinity-net:
+        ipv4_address: ${AFFINITY_TEST_PROBE_A_IP}
+
+  probe-b:
+    image: python:3.12-slim
+    command:
+      - python
+      - -c
+      - "import time; time.sleep(10**9)"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      affinity-net:
+        ipv4_address: ${AFFINITY_TEST_PROBE_B_IP}
 
   seed-init:
     build:
@@ -76,7 +109,9 @@ services:
 
 networks:
   affinity-net:
-    internal: true
+    ipam:
+      config:
+        - subnet: ${AFFINITY_TEST_NETWORK_SUBNET}
 
 volumes:
   affinity-data:

@@ -26,7 +26,7 @@ fn filter_request_headers_drops_forbidden_headers() {
         HeaderValue::from_static("keep-alive"),
     );
 
-    let filtered = filter_request_headers(&headers);
+    let filtered = filter_request_headers(&headers, false, &[]);
     assert!(filtered.contains_key("content-type"));
     assert!(!filtered.contains_key("host"));
     assert!(!filtered.contains_key("connection"));

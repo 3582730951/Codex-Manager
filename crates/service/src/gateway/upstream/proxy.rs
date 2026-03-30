@@ -76,7 +76,6 @@ pub(in super::super) fn proxy_validated_request(
         key_id,
         platform_key_hash,
         local_conversation_id,
-        conversation_binding,
         model_for_log,
         reasoning_for_log,
         method,
@@ -218,15 +217,22 @@ pub(in super::super) fn proxy_validated_request(
         } => (request, candidates),
         CandidatePrecheckResult::Responded => return Ok(()),
     };
-    let affinity_locks = super::super::affinity::derive_affinity_lock_keys(
+    let request_preflight = super::super::affinity::prepare_request_preflight(
         &incoming_headers,
+        platform_key_hash.as_str(),
         local_conversation_id.as_deref(),
-    )
-    .into_iter()
-    .map(|affinity_key| {
-        super::super::affinity::acquire_affinity_lock(platform_key_hash.as_str(), affinity_key.as_str())
-    })
-    .collect::<Vec<_>>();
+    );
+    let affinity_locks = request_preflight
+        .lock_keys
+        .iter()
+        .into_iter()
+        .map(|affinity_key| {
+            super::super::affinity::acquire_affinity_lock(
+                platform_key_hash.as_str(),
+                affinity_key.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
     let _affinity_guards = affinity_locks
         .iter()
         .map(|lock| crate::lock_utils::lock_recover(lock.as_ref(), "gateway_affinity_request_lock"))
@@ -238,6 +244,7 @@ pub(in super::super) fn proxy_validated_request(
         response_adapter,
         protocol_type.as_str(),
         upstream_base_url.as_deref(),
+        &request_preflight,
         has_prompt_cache_key,
         &incoming_headers,
         &body,
@@ -245,7 +252,6 @@ pub(in super::super) fn proxy_validated_request(
         key_id.as_str(),
         platform_key_hash.as_str(),
         local_conversation_id.as_deref(),
-        conversation_binding.as_ref(),
         model_for_log.as_deref(),
         trace_id.as_str(),
     ) {
@@ -255,7 +261,7 @@ pub(in super::super) fn proxy_validated_request(
             return Ok(());
         }
     };
-    let conversation_lock = setup.affinity_resolution.as_ref().map(|resolution| {
+    let conversation_lock = setup.persistent_affinity_resolution().map(|resolution| {
         super::super::affinity::acquire_conversation_lock(
             platform_key_hash.as_str(),
             resolution.affinity_key.as_str(),

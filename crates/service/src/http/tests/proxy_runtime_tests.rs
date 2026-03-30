@@ -1,8 +1,12 @@
-use super::{build_backend_base_url, build_local_backend_client, proxy_handler, ProxyState};
+use super::{
+    build_backend_base_url, build_internal_entity_headers, build_local_backend_client,
+    proxy_handler_with_peer, ProxyState,
+};
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
 use axum::http::{Request as HttpRequest, StatusCode};
 use reqwest::Client;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 struct EnvGuard {
     key: &'static str,
@@ -59,7 +63,11 @@ fn request_without_content_length_over_limit_returns_413() {
         .body(Body::from(vec![b'x'; 9]))
         .expect("request");
 
-    let response = runtime.block_on(proxy_handler(State(state), request));
+    let response = runtime.block_on(proxy_handler_with_peer(
+        State(state),
+        SocketAddr::from(([127, 0, 0, 1], 34567)),
+        request,
+    ));
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let body = runtime
         .block_on(to_bytes(response.into_body(), usize::MAX))
@@ -84,7 +92,11 @@ fn backend_send_failure_returns_502() {
         .body(Body::empty())
         .expect("request");
 
-    let response = runtime.block_on(proxy_handler(State(state), request));
+    let response = runtime.block_on(proxy_handler_with_peer(
+        State(state),
+        SocketAddr::from(([127, 0, 0, 1], 34567)),
+        request,
+    ));
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let error_code = response
         .headers()
@@ -100,4 +112,23 @@ fn backend_send_failure_returns_502() {
         text.contains("backend proxy error:"),
         "unexpected body: {text}"
     );
+}
+
+#[test]
+fn build_internal_entity_headers_uses_peer_runtime_mode() {
+    let _mode = EnvGuard::set("CODEXMANAGER_CLIENT_ENTITY_MODE", "docker-peer-runtime");
+    let _cidrs = EnvGuard::set("CODEXMANAGER_PEER_RUNTIME_TRUSTED_CIDRS", "172.18.0.0/16");
+    crate::gateway::reload_runtime_config_from_env();
+
+    let headers = build_internal_entity_headers(
+        &axum::http::HeaderMap::new(),
+        "POST",
+        "/v1/responses",
+        IpAddr::V4(Ipv4Addr::new(172, 18, 0, 8)),
+    )
+    .expect("internal peer headers");
+
+    assert_eq!(headers.len(), 3);
+    assert_eq!(headers[0].0, crate::gateway::affinity::INTERNAL_CLIENT_ENTITY_HEADER);
+    assert_eq!(headers[0].1, "peerip:172.18.0.8");
 }

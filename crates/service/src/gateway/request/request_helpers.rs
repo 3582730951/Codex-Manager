@@ -123,6 +123,7 @@ pub(crate) fn should_drop_incoming_header(name: &str) -> bool {
         || name.eq_ignore_ascii_case("x-api-key")
         || name.eq_ignore_ascii_case("Host")
         || name.eq_ignore_ascii_case("Content-Length")
+        || lower.starts_with("x-codex-internal-")
         // 中文注释：Claude SDK/CLI 会附带 anthropic/x-stainless 指纹头；
         // 直接透传到 ChatGPT upstream 会提高 challenge 概率，这里统一剔除。
         || lower.starts_with("anthropic-")

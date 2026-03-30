@@ -139,6 +139,7 @@ pub(super) fn finalize_upstream_response(
     client_is_stream: bool,
     path: &str,
     affinity_resolution: Option<&AffinityRoutingResolution>,
+    peer_runtime_key: Option<&str>,
     trace_id: &str,
     started_at: std::time::Instant,
     model_for_log: Option<&str>,
@@ -255,6 +256,15 @@ pub(super) fn finalize_upstream_response(
             status_for_log,
             final_error.as_deref(),
         );
+    }
+    if bridge_ok
+        && status_for_log < 400
+        && !client_delivery_failed
+        && !upstream_eof_without_terminal
+    {
+        if let Some(runtime_key) = peer_runtime_key {
+            super::super::super::affinity::record_peer_runtime_success(runtime_key, account_id);
+        }
     }
     context.log_final_result_with_model(
         Some(account_id),

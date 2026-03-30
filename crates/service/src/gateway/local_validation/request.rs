@@ -116,7 +116,6 @@ pub(super) fn build_local_validation_result(
             key_id: api_key.id,
             platform_key_hash: api_key.key_hash,
             local_conversation_id: initial_local_conversation_id,
-            conversation_binding: None,
             model_for_log,
             reasoning_for_log,
             method,
@@ -152,47 +151,23 @@ pub(super) fn build_local_validation_result(
         response_adapter = super::super::ResponseAdapter::Passthrough;
         tool_name_restore_map.clear();
     }
-    // 中文注释：下游调用方的 stream 语义应在请求改写前确定；
-    // 否则上游兼容改写（例如 /responses 强制 stream=true）会污染下游响应模式判断。
-    let client_request_meta = super::super::parse_request_metadata(&body);
+    // 中文注释：下游调用方的 stream / shape 语义必须以原始请求体为准；
+    // anthropic -> responses 改写会强制上游 stream=true，不能反向污染下游响应模式与日志。
+    let client_request_meta = initial_request_meta.clone();
     let (effective_model, effective_reasoning, effective_service_tier) =
         resolve_effective_request_overrides(&api_key);
     let local_conversation_id = incoming_headers.conversation_id().map(str::to_string);
-    let conversation_binding = super::super::conversation_binding::load_conversation_binding(
-        &storage,
-        api_key.key_hash.as_str(),
-        local_conversation_id.as_deref(),
-    )
-    .map_err(|err| LocalValidationError::new(500, err))?;
-    let effective_thread_anchor = super::super::conversation_binding::effective_thread_anchor(
-        local_conversation_id.as_deref(),
-        conversation_binding.as_ref(),
-    );
-    // 中文注释：保留原始 local conversation_id 作为对外会话标识；
-    // 线程世代只参与 prompt_cache_key 与路由绑定，不直接污染对外请求头。
     let incoming_headers =
         incoming_headers.with_conversation_id_override(local_conversation_id.as_deref());
-    body = if effective_thread_anchor.is_some() {
-        super::super::apply_request_overrides_with_service_tier_and_forced_prompt_cache_key(
-            &path,
-            body,
-            effective_model.as_deref(),
-            effective_reasoning.as_deref(),
-            effective_service_tier.as_deref(),
-            api_key.upstream_base_url.as_deref(),
-            effective_thread_anchor.as_deref(),
-        )
-    } else {
-        super::super::apply_request_overrides_with_service_tier_and_prompt_cache_key(
-            &path,
-            body,
-            effective_model.as_deref(),
-            effective_reasoning.as_deref(),
-            effective_service_tier.as_deref(),
-            api_key.upstream_base_url.as_deref(),
-            None,
-        )
-    };
+    body = super::super::apply_request_overrides_with_service_tier_and_prompt_cache_key(
+        &path,
+        body,
+        effective_model.as_deref(),
+        effective_reasoning.as_deref(),
+        effective_service_tier.as_deref(),
+        api_key.upstream_base_url.as_deref(),
+        None,
+    );
 
     let request_meta = super::super::parse_request_metadata(&body);
     let model_for_log = request_meta.model.or(api_key.model_slug.clone());
@@ -222,7 +197,6 @@ pub(super) fn build_local_validation_result(
         key_id: api_key.id,
         platform_key_hash: api_key.key_hash,
         local_conversation_id,
-        conversation_binding,
         rotation_strategy: api_key.rotation_strategy,
         aggregate_api_id: api_key.aggregate_api_id,
         model_for_log,

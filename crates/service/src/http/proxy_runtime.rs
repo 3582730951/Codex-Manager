@@ -1,10 +1,11 @@
 use axum::body::{to_bytes, Body};
-use axum::extract::State;
-use axum::http::{header, Request as HttpRequest, Response, StatusCode};
+use axum::extract::{ConnectInfo, State};
+use axum::http::{header, HeaderMap, Request as HttpRequest, Response, StatusCode};
 use axum::routing::{any, post};
 use axum::Router;
 use reqwest::Client;
 use std::io;
+use std::net::SocketAddr;
 
 use crate::http::proxy_bridge::run_proxy_server;
 use crate::http::proxy_request::{build_target_url, filter_request_headers};
@@ -36,6 +37,15 @@ fn build_local_backend_client() -> Result<Client, reqwest::Error> {
 
 async fn proxy_handler(
     State(state): State<ProxyState>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    request: HttpRequest<Body>,
+) -> Response<Body> {
+    proxy_handler_with_peer(State(state), remote_addr, request).await
+}
+
+async fn proxy_handler_with_peer(
+    State(state): State<ProxyState>,
+    remote_addr: SocketAddr,
     request: HttpRequest<Body>,
 ) -> Response<Body> {
     let (parts, body) = request.into_parts();
@@ -59,7 +69,28 @@ async fn proxy_handler(
         }
     }
 
-    let outbound_headers = filter_request_headers(&parts.headers);
+    let injected_headers = match build_internal_entity_headers(
+        &parts.headers,
+        parts.method.as_str(),
+        parts.uri.path_and_query().map(|value| value.as_str()).unwrap_or("/"),
+        remote_addr.ip(),
+    ) {
+        Ok(headers) => headers,
+        Err(err) => {
+            log::warn!(
+                "event=front_proxy_internal_entity_invalid remote_addr={} path={} err={}",
+                remote_addr,
+                parts.uri,
+                err
+            );
+            Vec::new()
+        }
+    };
+    let outbound_headers = filter_request_headers(
+        &parts.headers,
+        crate::gateway::affinity::should_strip_external_cli_affinity_id(),
+        injected_headers.as_slice(),
+    );
     let body_bytes = match to_bytes(body, max_body_bytes).await {
         Ok(bytes) => bytes,
         Err(_) => {
@@ -107,6 +138,47 @@ async fn proxy_handler(
             text_error_response(StatusCode::INTERNAL_SERVER_ERROR, message)
         }
     }
+}
+
+fn build_internal_entity_headers(
+    headers: &HeaderMap,
+    method: &str,
+    path: &str,
+    socket_peer_ip: std::net::IpAddr,
+) -> Result<Vec<(&'static str, String)>, String> {
+    let mode = crate::gateway::affinity::current_client_entity_mode();
+    let entity = match mode {
+        crate::gateway::affinity::ClientEntityMode::EdgeEnforced => {
+            crate::gateway::affinity::filter_and_validate_edge_entity_headers(
+                headers,
+                method,
+                path,
+                socket_peer_ip,
+            )?
+        }
+        crate::gateway::affinity::ClientEntityMode::DockerPeerRuntime => {
+            crate::gateway::affinity::trusted_peer_runtime_entity(socket_peer_ip)
+        }
+        crate::gateway::affinity::ClientEntityMode::Off => None,
+    };
+    let Some(entity) = entity else {
+        return Ok(Vec::new());
+    };
+    let peer_ip = socket_peer_ip.to_string();
+    Ok(vec![
+        (
+            crate::gateway::affinity::INTERNAL_CLIENT_ENTITY_HEADER,
+            entity.clone(),
+        ),
+        (
+            crate::gateway::affinity::INTERNAL_ENTITY_PEER_IP_HEADER,
+            peer_ip.clone(),
+        ),
+        (
+            crate::gateway::affinity::INTERNAL_HOP_SIG_HEADER,
+            crate::gateway::affinity::sign_internal_hop(entity.as_str(), peer_ip.as_str()),
+        ),
+    ])
 }
 
 fn build_front_proxy_app(state: ProxyState) -> Router {

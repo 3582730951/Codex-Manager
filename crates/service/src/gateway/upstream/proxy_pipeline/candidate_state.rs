@@ -19,11 +19,7 @@ impl CandidateExecutionState {
         body: &'a Bytes,
         setup: &'a UpstreamRequestSetup,
     ) -> &'a Bytes {
-        setup
-            .affinity_resolution
-            .as_ref()
-            .and_then(|resolution| resolution.request_body_override.as_ref())
-            .unwrap_or(body)
+        setup.request_body_override.as_ref().unwrap_or(body)
     }
 
     fn rewrite_cache_key(
@@ -50,9 +46,9 @@ impl CandidateExecutionState {
         &mut self,
         account: &Account,
         idx: usize,
-        anthropic_has_prompt_cache_key: bool,
+        has_prompt_cache_affinity: bool,
     ) -> bool {
-        if !anthropic_has_prompt_cache_key {
+        if !has_prompt_cache_affinity {
             return idx > 0;
         }
         let candidate_scope = account
@@ -202,8 +198,9 @@ mod tests {
             has_sticky_fallback_session: false,
             has_sticky_fallback_conversation: false,
             has_body_encrypted_content: false,
-            conversation_routing: None,
-            affinity_resolution: None,
+            request_body_override: None,
+            routing_state: super::super::request_setup::RequestRoutingState::StatelessNoLegacy,
+            peer_runtime_key: None,
         };
 
         let actual = state.body_for_attempt(

@@ -29,6 +29,13 @@ fn request_header_keeps_normal_content_type() {
 }
 
 #[test]
+fn request_header_filters_internal_entity_headers() {
+    let internal = HeaderName::from_static("x-codex-internal-client-entity");
+    let value = HeaderValue::from_static("peerip:172.18.0.8");
+    assert!(should_skip_request_header(&internal, &value));
+}
+
+#[test]
 fn response_header_filters_content_length_and_connection() {
     let content_length = HeaderName::from_static("content-length");
     assert!(should_skip_response_header(&content_length));

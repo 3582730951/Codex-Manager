@@ -1,7 +1,7 @@
 use crate::storage_helpers::open_storage;
 
 #[path = "affinity/mod.rs"]
-mod affinity;
+pub(crate) mod affinity;
 mod anchor_fingerprint;
 #[path = "routing/conversation_binding.rs"]
 mod conversation_binding;

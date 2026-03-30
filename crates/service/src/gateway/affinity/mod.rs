@@ -5,8 +5,16 @@ use std::sync::OnceLock;
 
 use super::IncomingHeaderSnapshot;
 
+mod client_entity;
 mod routing;
 
+pub(crate) use client_entity::{
+    current_mode as current_client_entity_mode, filter_and_validate_edge_entity_headers,
+    prepare_request_preflight, record_peer_runtime_success, resolve_peer_runtime_hint,
+    should_strip_external_cli_affinity_id, sign_internal_hop, trusted_peer_runtime_entity,
+    ClientEntityMode, ClientEntityRequestPreflight,
+    INTERNAL_CLIENT_ENTITY_HEADER, INTERNAL_ENTITY_PEER_IP_HEADER, INTERNAL_HOP_SIG_HEADER,
+};
 pub(crate) use routing::{
     acquire_affinity_lock, acquire_conversation_lock, finalize_affinity_success,
     record_affinity_attempt_feedback, resolve_enforced_routing, AffinityRoutingResolution,
@@ -76,6 +84,7 @@ pub(crate) fn reload_from_env() {
         env_u64_or(ENV_REPLAY_MAX_TURNS, DEFAULT_REPLAY_MAX_TURNS).max(1),
         Ordering::Relaxed,
     );
+    client_entity::reload_from_env();
 }
 
 pub(crate) fn current_mode() -> AffinityRoutingMode {
@@ -281,7 +290,7 @@ fn ensure_loaded() {
     let _ = AFFINITY_RUNTIME_LOADED.get_or_init(|| reload_from_env());
 }
 
-fn normalize_key_part(value: Option<&str>) -> Option<String> {
+pub(super) fn normalize_key_part(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())

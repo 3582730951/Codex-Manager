@@ -15,6 +15,9 @@ pub(crate) struct IncomingHeaderSnapshot {
     turn_metadata: Option<String>,
     turn_state: Option<String>,
     conversation_id: Option<String>,
+    internal_client_entity: Option<String>,
+    internal_peer_ip: Option<String>,
+    internal_hop_sig: Option<String>,
 }
 
 impl IncomingHeaderSnapshot {
@@ -99,6 +102,39 @@ impl IncomingHeaderSnapshot {
                 if !value.is_empty() {
                     snapshot.conversation_id = Some(value.to_string());
                 }
+                continue;
+            }
+            if snapshot.internal_client_entity.is_none()
+                && header
+                    .field
+                    .equiv(crate::gateway::affinity::INTERNAL_CLIENT_ENTITY_HEADER)
+            {
+                let value = header.value.as_str().trim();
+                if !value.is_empty() {
+                    snapshot.internal_client_entity = Some(value.to_string());
+                }
+                continue;
+            }
+            if snapshot.internal_peer_ip.is_none()
+                && header
+                    .field
+                    .equiv(crate::gateway::affinity::INTERNAL_ENTITY_PEER_IP_HEADER)
+            {
+                let value = header.value.as_str().trim();
+                if !value.is_empty() {
+                    snapshot.internal_peer_ip = Some(value.to_string());
+                }
+                continue;
+            }
+            if snapshot.internal_hop_sig.is_none()
+                && header
+                    .field
+                    .equiv(crate::gateway::affinity::INTERNAL_HOP_SIG_HEADER)
+            {
+                let value = header.value.as_str().trim();
+                if !value.is_empty() {
+                    snapshot.internal_hop_sig = Some(value.to_string());
+                }
             }
         }
         snapshot
@@ -154,6 +190,18 @@ impl IncomingHeaderSnapshot {
 
     pub(crate) fn conversation_id(&self) -> Option<&str> {
         self.conversation_id.as_deref()
+    }
+
+    pub(crate) fn internal_client_entity(&self) -> Option<&str> {
+        self.internal_client_entity.as_deref()
+    }
+
+    pub(crate) fn internal_peer_ip(&self) -> Option<&str> {
+        self.internal_peer_ip.as_deref()
+    }
+
+    pub(crate) fn internal_hop_sig(&self) -> Option<&str> {
+        self.internal_hop_sig.as_deref()
     }
 
     pub(crate) fn with_conversation_id_override(&self, conversation_id: Option<&str>) -> Self {

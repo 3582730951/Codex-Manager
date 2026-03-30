@@ -120,16 +120,13 @@ pub(in super::super) fn execute_candidate_sequence(
             let (account, token) = candidates
                 .get_mut(idx)
                 .expect("candidate should exist for scheduler loop");
-            let strip_session_affinity =
-                state.strip_session_affinity(account, idx, setup.anthropic_has_prompt_cache_key);
             let legacy_attempt_thread =
                 super::super::super::conversation_binding::resolve_attempt_thread(
-                    setup.conversation_routing.as_ref(),
+                    setup.legacy_conversation_routing(),
                     account,
                 );
             let (attempt_thread_anchor, reset_session_affinity) = setup
-                .affinity_resolution
-                .as_ref()
+                .persistent_affinity_resolution()
                 .map(|resolution| {
                     (
                         Some(resolution.thread_anchor.as_str()),
@@ -145,6 +142,11 @@ pub(in super::super) fn execute_candidate_sequence(
                     })
                 })
                 .unwrap_or((None, false));
+            let strip_session_affinity = state.strip_session_affinity(
+                account,
+                idx,
+                setup.anthropic_has_prompt_cache_key || attempt_thread_anchor.is_some(),
+            );
             let attempt_headers = if attempt_thread_anchor.is_some() {
                 incoming_headers
                     .with_thread_affinity_override(attempt_thread_anchor, reset_session_affinity)
@@ -228,7 +230,7 @@ pub(in super::super) fn execute_candidate_sequence(
 
             match decision {
                 CandidateUpstreamDecision::Failover => {
-                    if setup.affinity_resolution.is_some() {
+                    if setup.records_persistent_affinity() {
                         super::super::super::affinity::record_affinity_attempt_feedback(
                             &account.id,
                             attempt_trace.last_status_code.unwrap_or(502),
@@ -244,7 +246,7 @@ pub(in super::super) fn execute_candidate_sequence(
                     status_code,
                     message,
                 } => {
-                    if setup.affinity_resolution.is_some() {
+                    if setup.records_persistent_affinity() {
                         super::super::super::affinity::record_affinity_attempt_feedback(
                             &account.id,
                             status_code,
@@ -308,7 +310,7 @@ pub(in super::super) fn execute_candidate_sequence(
                                 request_body_for_success = retry_body.clone();
                             }
                             CandidateUpstreamDecision::Failover => {
-                                if setup.affinity_resolution.is_some() {
+                                if setup.records_persistent_affinity() {
                                     super::super::super::affinity::record_affinity_attempt_feedback(
                                         &account.id,
                                         attempt_trace.last_status_code.unwrap_or(502),
@@ -324,7 +326,7 @@ pub(in super::super) fn execute_candidate_sequence(
                                 status_code,
                                 message,
                             } => {
-                                if setup.affinity_resolution.is_some() {
+                                if setup.records_persistent_affinity() {
                                     super::super::super::affinity::record_affinity_attempt_feedback(
                                         &account.id,
                                         status_code,
@@ -356,10 +358,10 @@ pub(in super::super) fn execute_candidate_sequence(
                     let guard = inflight_guard
                         .take()
                         .expect("inflight guard should be available before terminal response");
-                    if setup.affinity_resolution.is_none() {
+                    if setup.records_legacy_conversation_binding() {
                         if let Err(err) = super::super::super::conversation_binding::record_conversation_binding_terminal_response(
                             storage,
-                            setup.conversation_routing.as_ref(),
+                            setup.legacy_conversation_routing(),
                             account,
                             attempt_model_for_log,
                             resp.status().as_u16(),
@@ -385,7 +387,8 @@ pub(in super::super) fn execute_candidate_sequence(
                         tool_name_restore_map,
                         client_is_stream,
                         path,
-                        setup.affinity_resolution.as_ref(),
+                        setup.persistent_affinity_resolution(),
+                        setup.peer_runtime_key.as_deref(),
                         trace_id,
                         started_at,
                         attempt_model_for_log,
