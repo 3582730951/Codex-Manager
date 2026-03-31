@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "toolchains": {
+    "ollvm": {
+      "llvm_major": 17,
+      "plugin": {
+        "label": "Kotoamatsukami",
+        "repo": "zzzcccyyyggg/Kotoamatsukami",
+        "ref": "bcc95a054bb179b353b7b3c38aef1ca12bbfe757",
+        "delivery": "pass-plugin"
+      },
+      "fork": {
+        "label": "Akira-obfuscator",
+        "repo": "thomasxm/Akira-obfuscator",
+        "ref": "112e63dadff9d1b81a65b24b1a16a03f56d63a0f",
+        "delivery": "full-fork"
+      }
+    }
+  }
+}

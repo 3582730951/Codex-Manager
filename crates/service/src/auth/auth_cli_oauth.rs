@@ -78,6 +78,7 @@ pub(crate) fn handle_authorize_approve_request(mut request: Request) -> Result<(
             return Ok(());
         }
     };
+    let issuer_base = issuer_base_url(&request);
     let password_required = crate::auth::web_access_password_configured();
     if password_required {
         let provided_password = form
@@ -87,7 +88,7 @@ pub(crate) fn handle_authorize_approve_request(mut request: Request) -> Result<(
         if !crate::auth::verify_web_access_password(provided_password) {
             let body = build_authorize_page(
                 &params,
-                issuer_base_url(&request).as_deref(),
+                issuer_base.as_deref(),
                 password_required,
                 Some("Invalid web access password."),
             );
@@ -102,20 +103,38 @@ pub(crate) fn handle_authorize_approve_request(mut request: Request) -> Result<(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "missing employee_api_key".to_string())?;
 
-    let storage = open_storage().ok_or_else(|| "storage unavailable".to_string())?;
-    let binding = resolve_parent_key_binding(&storage, employee_api_key)?;
+    let Some(storage) = open_storage() else {
+        let _ = request.respond(text_response(503, "storage unavailable"));
+        return Ok(());
+    };
+    let binding = match resolve_parent_key_binding(&storage, employee_api_key) {
+        Ok(binding) => binding,
+        Err(err) => {
+            let body =
+                build_authorize_page(&params, issuer_base.as_deref(), password_required, Some(&err));
+            let _ = request.respond(html_response(400, body));
+            return Ok(());
+        }
+    };
     let now = now_ts();
     let authorization_code = generate_platform_key();
     let refresh_token = generate_platform_key();
     let session_id = format!("sess_{}", generate_platform_key());
-    let id_token = build_id_token(
+    let id_token = match build_id_token(
         params.client_id.as_str(),
         binding.cli_instance_uuid.as_str(),
         session_id.as_str(),
         now,
         now + AUTHORIZATION_CODE_EXPIRES_SECS,
-        issuer_base_url(&request).as_deref(),
-    )?;
+        issuer_base.as_deref(),
+    ) {
+        Ok(id_token) => id_token,
+        Err(err) => {
+            let message = format!("build id token failed: {err}");
+            let _ = request.respond(text_response(500, &message));
+            return Ok(());
+        }
+    };
     let session = CliOAuthSession {
         session_id,
         child_key_id: binding.child_key_id.clone(),
@@ -136,9 +155,11 @@ pub(crate) fn handle_authorize_approve_request(mut request: Request) -> Result<(
         updated_at: now,
         last_seen_at: now,
     };
-    storage
-        .save_cli_oauth_session(&session)
-        .map_err(|err| format!("save cli oauth session failed: {err}"))?;
+    if let Err(err) = storage.save_cli_oauth_session(&session) {
+        let message = format!("save cli oauth session failed: {err}");
+        let _ = request.respond(text_response(500, &message));
+        return Ok(());
+    }
 
     let mut redirect = validate_cli_redirect_uri(&params.redirect_uri)?;
     {
@@ -863,50 +884,854 @@ fn build_authorize_page(
     password_required: bool,
     error: Option<&str>,
 ) -> String {
+    let translations_json = r#"{
+  "en": {
+    "page_title": "Authorize API Key",
+    "eyebrow_cli_oauth": "CodexManager CLI OAuth",
+    "hero_title": "Authorize API Key",
+    "hero_copy": "Issue a CLI child key for this session.",
+    "hero_signal_parent": "Parent key",
+    "hero_signal_child": "CLI child key",
+    "hero_signal_loopback": "Local callback",
+    "hero_note": "Only the child key is returned to the container.",
+    "step1_title": "Paste an active parent API key",
+    "step1_desc": "Only parent keys are accepted here. Existing CLI child keys are rejected to prevent nested delegation.",
+    "step2_title": "Approve this pending CLI session",
+    "step2_desc": "CodexManager binds the new child key to this one OAuth session and preserves the parent ownership chain for logging and routing.",
+    "step3_title": "Return to the waiting callback",
+    "step3_desc": "The browser redirects back to the loopback callback on your machine so the container can finish the token exchange locally.",
+    "summary_issuer_label": "Issuer",
+    "summary_issuer_desc": "Approval target",
+    "summary_callback_label": "Callback",
+    "summary_callback_desc": "Waiting callback",
+    "eyebrow_parent_key_approval": "Parent Key Approval",
+    "form_title": "Authorize API Key",
+    "form_copy": "Issue a CLI child key for this session.",
+    "status_pkce_loopback": "PKCE + Loopback",
+    "meta_client_id": "Client ID",
+    "meta_callback_host": "Callback Host",
+    "meta_callback_path": "Callback Path",
+    "meta_challenge_method": "Challenge Method",
+    "meta_scopes": "Scopes",
+    "meta_toggle_label": "Session details",
+    "meta_toggle_hint": "Client, callback, scopes",
+    "alert_error_title": "Authorization failed",
+    "alert_password_title": "Web password required",
+    "alert_password_desc": "This instance also requires the Web Access Password.",
+    "alert_parent_only_title": "Ready",
+    "alert_parent_only_desc": "This instance only needs a parent API key.",
+    "label_parent_api_key": "Parent API key",
+    "placeholder_parent_api_key": "Paste parent API key",
+    "hint_parent_api_key": "A CLI child key is issued for this login. The parent key is not returned to the CLI.",
+    "label_web_password": "Web access password",
+    "placeholder_web_password": "Required by this CodexManager instance",
+    "hint_web_password": "Used only for browser access. It is never stored here.",
+    "remember_key_label": "Remember in this browser",
+    "action_authorize": "Authorize",
+    "action_authorizing": "Authorizing...",
+    "action_clear_saved_key": "Clear saved",
+    "action_paste": "Paste",
+    "action_show": "Show",
+    "action_hide": "Hide",
+    "key_status_opt_in": "",
+    "key_status_none_saved": "",
+    "key_status_will_remember": "Will be remembered ({count})",
+    "key_status_loaded_unsaved": "",
+    "footer_note_html": "",
+    "lang_switch_label": "Language",
+    "server_errors": {
+      "Invalid web access password.": "Invalid web access password.",
+      "invalid employee API key": "invalid employee API key",
+      "employee API key is disabled": "employee API key is disabled",
+      "employee API key must be a parent key, not a CLI child key": "employee API key must be a parent key, not a CLI child key",
+      "storage unavailable": "storage unavailable"
+    }
+  },
+  "zh": {
+    "page_title": "授权 API Key",
+    "eyebrow_cli_oauth": "CodexManager CLI OAuth",
+    "hero_title": "授权 API Key",
+    "hero_copy": "为本次会话签发 CLI 子 Key。",
+    "hero_signal_parent": "父级 Key",
+    "hero_signal_child": "CLI 子 Key",
+    "hero_signal_loopback": "本地回调",
+    "hero_note": "只有子 Key 会返回给容器。",
+    "step1_title": "粘贴一个有效的父级 API Key",
+    "step1_desc": "这里只接受父级 Key。现有的 CLI 子 Key 会被拒绝，以防止继续嵌套委派。",
+    "step2_title": "批准当前等待中的 CLI 会话",
+    "step2_desc": "CodexManager 会把新的子 Key 绑定到这一次 OAuth 会话，并保留父级归属链用于日志和路由。",
+    "step3_title": "回到等待中的本地回调",
+    "step3_desc": "浏览器会跳回你机器上的 loopback 回调地址，容器随后会在本地完成 token exchange。",
+    "summary_issuer_label": "Issuer",
+    "summary_issuer_desc": "授权提交目标",
+    "summary_callback_label": "回调",
+    "summary_callback_desc": "等待中的回调",
+    "eyebrow_parent_key_approval": "父级 Key 授权",
+    "form_title": "授权 API Key",
+    "form_copy": "为本次会话签发 CLI 子 Key。",
+    "status_pkce_loopback": "PKCE + Loopback",
+    "meta_client_id": "Client ID",
+    "meta_callback_host": "回调主机",
+    "meta_callback_path": "回调路径",
+    "meta_challenge_method": "Challenge Method",
+    "meta_scopes": "Scopes",
+    "meta_toggle_label": "会话详情",
+    "meta_toggle_hint": "客户端、回调、Scopes",
+    "alert_error_title": "授权失败",
+    "alert_password_title": "需要 Web 密码",
+    "alert_password_desc": "当前实例还需要 Web 访问密码。",
+    "alert_parent_only_title": "可以直接授权",
+    "alert_parent_only_desc": "当前实例只需要父级 API Key。",
+    "label_parent_api_key": "父级 API Key",
+    "placeholder_parent_api_key": "粘贴父级 API Key",
+    "hint_parent_api_key": "系统会为本次登录签发 CLI 子 Key，父级 Key 不会返回给 CLI。",
+    "label_web_password": "Web 访问密码",
+    "placeholder_web_password": "当前 CodexManager 实例要求填写",
+    "hint_web_password": "仅用于浏览器访问控制，不会在这里保存。",
+    "remember_key_label": "仅在当前浏览器记住",
+    "action_authorize": "授权",
+    "action_authorizing": "授权中...",
+    "action_clear_saved_key": "清除已保存",
+    "action_paste": "粘贴",
+    "action_show": "显示",
+    "action_hide": "隐藏",
+    "key_status_opt_in": "",
+    "key_status_none_saved": "",
+    "key_status_will_remember": "将记住（{count}）",
+    "key_status_loaded_unsaved": "",
+    "footer_note_html": "",
+    "lang_switch_label": "语言",
+    "server_errors": {
+      "Invalid web access password.": "Web 访问密码错误。",
+      "invalid employee API key": "父级 API Key 无效。",
+      "employee API key is disabled": "父级 API Key 已被禁用。",
+      "employee API key must be a parent key, not a CLI child key": "这里只能使用父级 API Key，不能使用 CLI 子 Key。",
+      "storage unavailable": "存储服务暂时不可用。"
+    }
+  }
+}"#;
     let error_html = error
         .map(html_escape)
-        .map(|message| format!(r#"<p class="error">{message}</p>"#))
+        .map(|message| {
+            format!(
+                r#"<div class="alert alert-error" role="alert">
+      <div class="alert-title" data-i18n="alert_error_title">Authorization failed</div>
+      <p class="server-error-message" data-server-error="{message}">{message}</p>
+    </div>"#
+            )
+        })
         .unwrap_or_default();
     let password_html = if password_required {
-        r#"<label>Web Access Password<input type="password" name="web_password" autocomplete="current-password"></label>"#
+        r#"<div class="field">
+        <div class="field-head">
+          <label for="web_password" data-i18n="label_web_password">Web access password</label>
+          <div class="field-actions">
+            <button type="button" class="ghost-button" data-toggle-target="web_password" data-toggle-show-key="action_show" data-toggle-hide-key="action_hide">Show</button>
+          </div>
+        </div>
+        <input
+          id="web_password"
+          type="password"
+          name="web_password"
+          autocomplete="current-password"
+          required
+          data-i18n-placeholder="placeholder_web_password"
+          placeholder="Required by this CodexManager instance"
+        >
+      </div>"#
             .to_string()
     } else {
         String::new()
     };
-    let issuer_hint = issuer_base
-        .map(html_escape)
-        .map(|value| format!(r#"<p class="muted">Issuer: <code>{value}</code></p>"#))
-        .unwrap_or_default();
     let scope_value = params.scope.as_deref().unwrap_or(OAUTH_SCOPE);
+    let scope_badges = scope_value
+        .split_whitespace()
+        .map(html_escape)
+        .map(|scope| format!(r#"<span class="scope-chip">{scope}</span>"#))
+        .collect::<Vec<_>>()
+        .join("");
+    let issuer_label = issuer_base
+        .map(html_escape)
+        .unwrap_or_else(|| "Resolved from current request".to_string());
+    let redirect = Url::parse(&params.redirect_uri).ok();
+    let callback_host = redirect
+        .as_ref()
+        .and_then(|url| url.host_str())
+        .unwrap_or("localhost")
+        .to_string();
+    let callback_port = redirect
+        .as_ref()
+        .and_then(|url| url.port_or_known_default())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let callback_path = redirect
+        .as_ref()
+        .map(|url| url.path().to_string())
+        .unwrap_or_else(|| "/callback".to_string());
+    let password_notice = if password_required {
+        r#"<div class="alert alert-warn">
+      <div class="alert-title" data-i18n="alert_password_title">Extra confirmation required</div>
+      <p data-i18n="alert_password_desc">This CodexManager instance is protected by a Web Access Password. Enter it below after the parent API key.</p>
+    </div>"#
+            .to_string()
+    } else {
+        String::new()
+    };
+    let storage_key = html_escape(&format!(
+        "codexmanager.oauth.parent-key::{issuer_label}::{}",
+        params.client_id
+    ));
     format!(
         r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Authorize CLI</title>
+  <title>Authorize API Key</title>
   <style>
-    body {{ font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; padding: 32px; color: #0f172a; background: #f8fafc; }}
-    .card {{ max-width: 640px; margin: 40px auto; background: #fff; border: 1px solid #dbe3ee; border-radius: 18px; padding: 24px; box-shadow: 0 12px 32px rgba(15,23,42,.08); }}
-    h1 {{ margin: 0 0 8px; font-size: 24px; }}
-    p {{ margin: 8px 0; line-height: 1.6; }}
-    label {{ display: block; margin-top: 16px; font-size: 14px; font-weight: 600; }}
-    input {{ width: 100%; margin-top: 8px; padding: 12px 14px; border-radius: 12px; border: 1px solid #cbd5e1; font: inherit; }}
-    button {{ margin-top: 20px; padding: 12px 16px; border: 0; border-radius: 12px; background: #0f172a; color: #fff; font: inherit; cursor: pointer; }}
-    .muted {{ color: #64748b; font-size: 13px; }}
-    .error {{ color: #b91c1c; background: #fff1f2; border-radius: 12px; padding: 12px 14px; }}
-    code {{ background: #e2e8f0; padding: 2px 6px; border-radius: 6px; }}
+    :root {{
+      color-scheme: light;
+      --bg: #07111f;
+      --bg-2: #0f2138;
+      --card: rgba(255, 255, 255, 0.9);
+      --card-border: rgba(148, 163, 184, 0.28);
+      --ink: #0f172a;
+      --muted: #526072;
+      --muted-2: #6b7a8f;
+      --accent: #0f766e;
+      --accent-2: #f97316;
+      --accent-3: #2563eb;
+      --surface: rgba(255, 255, 255, 0.72);
+      --shadow: 0 28px 90px rgba(2, 12, 27, 0.24);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --radius-sm: 12px;
+    }}
+
+    * {{ box-sizing: border-box; }}
+
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.28), transparent 34%),
+        radial-gradient(circle at top right, rgba(249, 115, 22, 0.22), transparent 28%),
+        linear-gradient(145deg, var(--bg) 0%, var(--bg-2) 55%, #10223b 100%);
+      padding: 32px;
+    }}
+
+    body::before,
+    body::after {{
+      content: "";
+      position: fixed;
+      inset: auto;
+      border-radius: 999px;
+      pointer-events: none;
+      filter: blur(10px);
+      opacity: 0.8;
+    }}
+
+    body::before {{
+      width: 280px;
+      height: 280px;
+      top: 52px;
+      right: 8%;
+      background: rgba(45, 212, 191, 0.18);
+    }}
+
+    body::after {{
+      width: 340px;
+      height: 340px;
+      left: 6%;
+      bottom: 8%;
+      background: rgba(249, 115, 22, 0.14);
+    }}
+
+    .layout {{
+      position: relative;
+      z-index: 1;
+      max-width: 760px;
+      margin: 0 auto;
+    }}
+
+    .panel {{
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-xl);
+      background: var(--card);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+      overflow: hidden;
+    }}
+
+    .hero {{
+      position: relative;
+      padding: 34px;
+      background:
+        linear-gradient(160deg, rgba(255, 255, 255, 0.86), rgba(233, 248, 247, 0.82)),
+        linear-gradient(135deg, rgba(14, 116, 144, 0.08), rgba(249, 115, 22, 0.04));
+    }}
+
+    .hero::after {{
+      content: "";
+      position: absolute;
+      inset: auto -70px -90px auto;
+      width: 250px;
+      height: 250px;
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(37, 99, 235, 0.18), transparent 70%);
+      pointer-events: none;
+    }}
+
+    .hero-top {{
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 16px;
+    }}
+
+    .eyebrow {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: rgba(15, 118, 110, 0.1);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+
+    .eyebrow::before {{
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: currentColor;
+      box-shadow: 0 0 0 6px rgba(15, 118, 110, 0.12);
+    }}
+
+    .lang-switch {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+    }}
+
+    .lang-button {{
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 9px 14px;
+      min-width: 58px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: background .18s ease, color .18s ease, transform .18s ease, box-shadow .18s ease;
+    }}
+
+    .lang-button:hover {{
+      transform: translateY(-1px);
+      color: var(--ink);
+    }}
+
+    .lang-button.is-active {{
+      background: linear-gradient(135deg, #0f172a, #1e293b);
+      color: #fff;
+      box-shadow: 0 10px 22px rgba(15, 23, 42, 0.2);
+    }}
+
+    h1 {{
+      margin: 22px 0 14px;
+      font-size: clamp(34px, 5vw, 54px);
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+    }}
+
+    .hero-copy {{
+      max-width: 520px;
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.75;
+      color: var(--muted);
+    }}
+
+    .signal-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 22px 0 14px;
+    }}
+
+    .signal-chip {{
+      display: inline-flex;
+      align-items: center;
+      padding: 9px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.68);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }}
+
+    .hero-note {{
+      margin-top: 2px;
+    }}
+
+    .summary-card p,
+    .alert p,
+    .hint,
+    .micro {{
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.65;
+    }}
+
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }}
+
+    .summary-card {{
+      padding: 18px;
+      border-radius: var(--radius-lg);
+      background: linear-gradient(180deg, rgba(8, 15, 31, 0.94), rgba(15, 23, 42, 0.88));
+      color: #f8fafc;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }}
+
+    .summary-card .label {{
+      display: block;
+      margin-bottom: 10px;
+      color: rgba(226, 232, 240, 0.72);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+
+    .summary-card strong {{
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+      line-height: 1.3;
+    }}
+
+    .summary-card code,
+    .meta code {{
+      display: inline-block;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      padding: 4px 8px;
+      border-radius: 10px;
+      background: rgba(148, 163, 184, 0.16);
+      color: inherit;
+      font-size: 13px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }}
+
+    .form-panel {{
+      padding: 30px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.94));
+    }}
+
+    .form-top {{
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }}
+
+    .top-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: end;
+      align-items: center;
+      gap: 10px;
+    }}
+
+    .form-top h2 {{
+      margin: 0 0 10px;
+      font-size: 30px;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+    }}
+
+    .form-top p {{
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+      max-width: 420px;
+    }}
+
+    .status-pill {{
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 13px;
+      border-radius: 999px;
+      background: rgba(37, 99, 235, 0.1);
+      color: var(--accent-3);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+
+    .status-pill::before {{
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: currentColor;
+    }}
+
+    details.meta {{
+      margin-bottom: 20px;
+      border-radius: var(--radius-lg);
+      background: rgba(241, 245, 249, 0.72);
+      border: 1px solid rgba(203, 213, 225, 0.65);
+      overflow: hidden;
+    }}
+
+    .meta-summary {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 18px;
+      cursor: pointer;
+      list-style: none;
+    }}
+
+    .meta-summary::-webkit-details-marker {{
+      display: none;
+    }}
+
+    .meta-summary strong {{
+      font-size: 14px;
+      font-weight: 700;
+    }}
+
+    .meta-chevron {{
+      width: 11px;
+      height: 11px;
+      border-right: 2px solid rgba(15, 23, 42, 0.46);
+      border-bottom: 2px solid rgba(15, 23, 42, 0.46);
+      transform: rotate(45deg);
+      transition: transform .18s ease;
+      flex: 0 0 auto;
+      margin-right: 4px;
+    }}
+
+    details.meta[open] .meta-chevron {{
+      transform: rotate(225deg);
+      margin-top: 6px;
+    }}
+
+    .meta-body {{
+      display: grid;
+      gap: 12px;
+      padding: 0 18px 18px;
+      border-top: 1px solid rgba(203, 213, 225, 0.62);
+    }}
+
+    .meta-row {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+    }}
+
+    .meta-row span {{
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted-2);
+    }}
+
+    .scope-grid {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+
+    .scope-chip {{
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(14, 165, 233, 0.1);
+      color: #0f172a;
+      border: 1px solid rgba(14, 165, 233, 0.16);
+      font-size: 12px;
+      font-weight: 700;
+    }}
+
+    .alert {{
+      margin-bottom: 18px;
+      padding: 12px 14px;
+      border-radius: var(--radius-lg);
+      border: 1px solid transparent;
+    }}
+
+    .alert-title {{
+      margin-bottom: 4px;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+
+    .alert-error {{
+      background: #fff1f2;
+      border-color: rgba(244, 63, 94, 0.18);
+      color: #9f1239;
+    }}
+
+    .alert-warn {{
+      background: #fff7ed;
+      border-color: rgba(249, 115, 22, 0.18);
+      color: #9a3412;
+    }}
+
+    .alert-info {{
+      background: #ecfeff;
+      border-color: rgba(8, 145, 178, 0.18);
+      color: #155e75;
+    }}
+
+    form {{
+      display: grid;
+      gap: 16px;
+    }}
+
+    .field {{
+      display: grid;
+      gap: 10px;
+    }}
+
+    .field-head {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }}
+
+    label {{
+      font-size: 14px;
+      font-weight: 700;
+    }}
+
+    .field-actions,
+    .button-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }}
+
+    input[type="password"],
+    input[type="text"] {{
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      font: inherit;
+      color: var(--ink);
+      transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+    }}
+
+    input[type="password"]:focus,
+    input[type="text"]:focus {{
+      outline: none;
+      border-color: rgba(15, 118, 110, 0.58);
+      box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.12);
+      transform: translateY(-1px);
+    }}
+
+    .remember-row {{
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 13px 15px;
+      border-radius: var(--radius-md);
+      background: rgba(241, 245, 249, 0.88);
+      border: 1px solid rgba(203, 213, 225, 0.75);
+      cursor: pointer;
+    }}
+
+    .remember-row input {{
+      width: 18px;
+      height: 18px;
+      margin: 0;
+      accent-color: var(--accent);
+    }}
+
+    .hint {{
+      font-size: 13px;
+    }}
+
+    .micro {{
+      font-size: 12px;
+      color: var(--muted-2);
+    }}
+
+    #key_status:empty,
+    .micro:empty {{
+      display: none;
+    }}
+
+    .primary-button,
+    .secondary-button,
+    .ghost-button {{
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform .18s ease, box-shadow .18s ease, background .18s ease, opacity .18s ease;
+    }}
+
+    .primary-button {{
+      padding: 14px 18px;
+      background: linear-gradient(135deg, var(--accent), #0f766e 55%, #0ea5e9);
+      color: #fff;
+      box-shadow: 0 18px 36px rgba(15, 118, 110, 0.22);
+    }}
+
+    .secondary-button {{
+      padding: 14px 18px;
+      background: #e2e8f0;
+      color: var(--ink);
+    }}
+
+    .ghost-button {{
+      padding: 9px 12px;
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--ink);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }}
+
+    .primary-button:hover,
+    .secondary-button:hover,
+    .ghost-button:hover {{
+      transform: translateY(-1px);
+    }}
+
+    .primary-button:disabled {{
+      opacity: 0.72;
+      cursor: progress;
+      transform: none;
+    }}
+
+    .footer-note {{
+      margin-top: 2px;
+    }}
+
+    @media (max-width: 980px) {{
+      body {{ padding: 18px; }}
+      .form-panel {{ padding: 24px; }}
+      .form-top {{ flex-direction: column; }}
+      .top-actions {{
+        width: 100%;
+        justify-content: space-between;
+      }}
+    }}
+
+    @media (max-width: 640px) {{
+      h1 {{ font-size: 34px; }}
+      .form-top h2 {{ font-size: 24px; }}
+      .meta-row {{ display: grid; gap: 6px; }}
+      .meta-summary {{
+        align-items: start;
+      }}
+      .top-actions {{
+        align-items: stretch;
+      }}
+      .lang-switch {{
+        width: 100%;
+        justify-content: space-between;
+      }}
+    }}
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Authorize CLI Access</h1>
-    <p>This CLI instance will be linked to one employee parent API key. OAuth tokens stay local to the login flow; the CLI child key is returned by OAuth token exchange.</p>
-    {issuer_hint}
-    <p class="muted">client_id=<code>{client_id}</code></p>
-    <p class="muted">scope=<code>{scope}</code></p>
-    {error_html}
-    <form method="post" action="/oauth/authorize/approve">
+  <main class="layout">
+    <section class="panel form-panel">
+      <div class="form-top">
+        <div>
+          <span class="eyebrow" data-i18n="eyebrow_parent_key_approval">Parent Key Approval</span>
+          <h1 data-i18n="hero_title">Authorize API Key</h1>
+          <p class="hero-copy" data-i18n="hero_copy">Issue a CLI child key for this session.</p>
+        </div>
+        <div class="top-actions">
+          <span class="status-pill" data-i18n="status_pkce_loopback">PKCE + Loopback</span>
+          <div class="lang-switch" role="group" aria-label="Language switch">
+            <button type="button" class="lang-button" data-lang-option="en">EN</button>
+            <button type="button" class="lang-button" data-lang-option="zh">中文</button>
+          </div>
+        </div>
+      </div>
+
+      <details class="meta">
+        <summary class="meta-summary">
+          <strong data-i18n="meta_toggle_label">Session details</strong>
+          <span class="meta-chevron" aria-hidden="true"></span>
+        </summary>
+        <div class="meta-body">
+          <div class="meta-row">
+            <span data-i18n="meta_client_id">Client ID</span>
+            <code>{client_id}</code>
+          </div>
+          <div class="meta-row">
+            <span data-i18n="meta_callback_host">Callback Host</span>
+            <code>{callback_host}:{callback_port}</code>
+          </div>
+          <div class="meta-row">
+            <span data-i18n="meta_callback_path">Callback Path</span>
+            <code>{callback_path}</code>
+          </div>
+          <div class="meta-row">
+            <span data-i18n="meta_challenge_method">Challenge Method</span>
+            <code>{code_challenge_method}</code>
+          </div>
+          <div>
+            <span class="micro" data-i18n="meta_scopes">Scopes</span>
+            <div class="scope-grid">{scope_badges}</div>
+          </div>
+        </div>
+      </details>
+
+      {error_html}
+      {password_notice}
+
+      <form
+        id="authorize-form"
+        method="post"
+        action="/oauth/authorize/approve"
+        data-storage-key="{storage_key}"
+      >
       <input type="hidden" name="response_type" value="code">
       <input type="hidden" name="client_id" value="{client_id}">
       <input type="hidden" name="redirect_uri" value="{redirect_uri}">
@@ -914,14 +1739,278 @@ fn build_authorize_page(
       <input type="hidden" name="code_challenge" value="{code_challenge}">
       <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
       <input type="hidden" name="scope" value="{scope}">
-      <label>Employee Parent API Key<input type="password" name="employee_api_key" autocomplete="off" required></label>
+
+      <div class="field">
+        <div class="field-head">
+          <label for="employee_api_key" data-i18n="label_parent_api_key">Parent API key</label>
+          <div class="field-actions">
+            <button type="button" class="ghost-button" data-paste-target="employee_api_key" data-i18n="action_paste">Paste</button>
+            <button type="button" class="ghost-button" data-toggle-target="employee_api_key" data-toggle-show-key="action_show" data-toggle-hide-key="action_hide">Show</button>
+          </div>
+        </div>
+        <input
+          id="employee_api_key"
+          type="password"
+          name="employee_api_key"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          required
+          data-i18n-placeholder="placeholder_parent_api_key"
+          placeholder="Paste parent API key"
+        >
+      </div>
+
       {password_html}
-      <button type="submit">Authorize</button>
+
+      <label class="remember-row" for="remember_key">
+        <input id="remember_key" type="checkbox">
+        <span data-i18n="remember_key_label">Remember in this browser</span>
+      </label>
+
+      <div class="button-row">
+        <button id="authorize_button" class="primary-button" type="submit" data-i18n="action_authorize">Authorize</button>
+        <button id="clear_saved_key" class="secondary-button" type="button" data-i18n="action_clear_saved_key">Clear saved</button>
+      </div>
+
+      <p id="key_status" class="hint footer-note"></p>
+      <p class="micro" data-i18n-html="footer_note_html"></p>
     </form>
-  </div>
+
+    </section>
+  </main>
+
+  <script>
+    (() => {{
+      const form = document.getElementById("authorize-form");
+      const apiKeyInput = document.getElementById("employee_api_key");
+      const rememberKey = document.getElementById("remember_key");
+      const clearSavedKey = document.getElementById("clear_saved_key");
+      const authorizeButton = document.getElementById("authorize_button");
+      const keyStatus = document.getElementById("key_status");
+      const storageKey = form?.dataset.storageKey || "";
+      const languageStorageKey = "codexmanager.oauth.ui-language";
+      const translations = {translations_json};
+
+      const safeStorage = {{
+        get(key) {{
+          try {{
+            return window.localStorage.getItem(key);
+          }} catch (_err) {{
+            return null;
+          }}
+        }},
+        set(key, value) {{
+          try {{
+            window.localStorage.setItem(key, value);
+          }} catch (_err) {{
+            return;
+          }}
+        }},
+        remove(key) {{
+          try {{
+            window.localStorage.removeItem(key);
+          }} catch (_err) {{
+            return;
+          }}
+        }},
+      }};
+
+      const normalizeLanguage = (value) => {{
+        if (!value) {{
+          return "en";
+        }}
+        return String(value).toLowerCase().startsWith("zh") ? "zh" : "en";
+      }};
+
+      const resolveLanguage = () => {{
+        const stored = normalizeLanguage(safeStorage.get(languageStorageKey));
+        if (translations[stored]) {{
+          return stored;
+        }}
+        return normalizeLanguage(window.navigator?.language);
+      }};
+
+      let currentLanguage = resolveLanguage();
+
+      const interpolate = (template, replacements = {{}}) =>
+        String(template).replace(/\{{(\w+)\}}/g, (_match, key) =>
+          Object.prototype.hasOwnProperty.call(replacements, key) ? replacements[key] : ""
+        );
+
+      const t = (key, replacements = {{}}) => {{
+        const bundle = translations[currentLanguage] || translations.en || {{}};
+        const fallback = translations.en || {{}};
+        const template = bundle[key] || fallback[key] || key;
+        return interpolate(template, replacements);
+      }};
+
+      const translateServerError = (message) => {{
+        if (!message) {{
+          return "";
+        }}
+        const bundle = translations[currentLanguage] || translations.en || {{}};
+        const serverErrors = bundle.server_errors || {{}};
+        return serverErrors[message] || message;
+      }};
+
+      const updateKeyStatus = () => {{
+        const value = apiKeyInput?.value.trim() || "";
+        if (!keyStatus) {{
+          return;
+        }}
+        if (!value) {{
+          keyStatus.textContent = "";
+          return;
+        }}
+        keyStatus.textContent = rememberKey?.checked
+          ? t("key_status_will_remember", {{ count: String(value.length) }})
+          : "";
+      }};
+
+      if (storageKey && apiKeyInput && rememberKey) {{
+        const savedKey = safeStorage.get(storageKey);
+        if (savedKey) {{
+          apiKeyInput.value = savedKey;
+          rememberKey.checked = true;
+        }}
+      }}
+
+      const applyTranslations = () => {{
+        document.documentElement.lang = currentLanguage === "zh" ? "zh-CN" : "en";
+        document.title = t("page_title");
+
+        document.querySelectorAll("[data-i18n]").forEach((node) => {{
+          const key = node.dataset.i18n;
+          if (key) {{
+            node.textContent = t(key);
+          }}
+        }});
+
+        document.querySelectorAll("[data-i18n-html]").forEach((node) => {{
+          const key = node.dataset.i18nHtml;
+          if (key) {{
+            node.innerHTML = t(key);
+          }}
+        }});
+
+        document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {{
+          const key = node.dataset.i18nPlaceholder;
+          if (key) {{
+            node.setAttribute("placeholder", t(key));
+          }}
+        }});
+
+        document.querySelectorAll(".server-error-message[data-server-error]").forEach((node) => {{
+          node.textContent = translateServerError(node.dataset.serverError || "");
+        }});
+
+        document.querySelectorAll("[data-lang-option]").forEach((button) => {{
+          const isActive = button.dataset.langOption === currentLanguage;
+          button.classList.toggle("is-active", isActive);
+          button.setAttribute("aria-pressed", isActive ? "true" : "false");
+        }});
+
+        document.querySelectorAll("[data-toggle-target]").forEach((button) => {{
+          const input = document.getElementById(button.dataset.toggleTarget || "");
+          const translationKey =
+            input?.type === "text"
+              ? button.dataset.toggleHideKey || "action_hide"
+              : button.dataset.toggleShowKey || "action_show";
+          button.textContent = t(translationKey);
+        }});
+
+        updateKeyStatus();
+      }};
+
+      document.querySelectorAll("[data-toggle-target]").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const input = document.getElementById(button.dataset.toggleTarget || "");
+          if (!input) {{
+            return;
+          }}
+          const nextType = input.type === "password" ? "text" : "password";
+          input.type = nextType;
+          button.textContent = t(
+            nextType === "password"
+              ? button.dataset.toggleShowKey || "action_show"
+              : button.dataset.toggleHideKey || "action_hide"
+          );
+        }});
+      }});
+
+      document.querySelectorAll("[data-paste-target]").forEach((button) => {{
+        button.addEventListener("click", async () => {{
+          const input = document.getElementById(button.dataset.pasteTarget || "");
+          if (!input || !navigator.clipboard?.readText) {{
+            return;
+          }}
+          try {{
+            const text = await navigator.clipboard.readText();
+            if (text.trim()) {{
+              input.value = text.trim();
+              input.dispatchEvent(new Event("input", {{ bubbles: true }}));
+              input.focus();
+            }}
+          }} catch (_err) {{
+            return;
+          }}
+        }});
+      }});
+
+      clearSavedKey?.addEventListener("click", () => {{
+        if (storageKey) {{
+          safeStorage.remove(storageKey);
+        }}
+        if (apiKeyInput) {{
+          apiKeyInput.value = "";
+          apiKeyInput.focus();
+        }}
+        if (rememberKey) {{
+          rememberKey.checked = false;
+        }}
+        updateKeyStatus();
+      }});
+
+      document.querySelectorAll("[data-lang-option]").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const nextLanguage = button.dataset.langOption;
+          if (!translations[nextLanguage] || nextLanguage === currentLanguage) {{
+            return;
+          }}
+          currentLanguage = nextLanguage;
+          safeStorage.set(languageStorageKey, currentLanguage);
+          applyTranslations();
+        }});
+      }});
+
+      apiKeyInput?.addEventListener("input", updateKeyStatus);
+      rememberKey?.addEventListener("change", updateKeyStatus);
+      applyTranslations();
+
+      form?.addEventListener("submit", () => {{
+        const value = apiKeyInput?.value.trim() || "";
+        if (storageKey) {{
+          if (rememberKey?.checked && value) {{
+            safeStorage.set(storageKey, value);
+          }} else {{
+            safeStorage.remove(storageKey);
+          }}
+        }}
+        if (authorizeButton) {{
+          authorizeButton.disabled = true;
+          authorizeButton.textContent = t("action_authorizing");
+        }}
+      }});
+    }})();
+  </script>
 </body>
 </html>"#,
-        issuer_hint = issuer_hint,
+        callback_host = html_escape(&callback_host),
+        callback_port = html_escape(&callback_port),
+        callback_path = html_escape(&callback_path),
+        scope_badges = scope_badges,
         client_id = html_escape(&params.client_id),
         redirect_uri = html_escape(&params.redirect_uri),
         state = html_escape(&params.state),
@@ -929,7 +2018,10 @@ fn build_authorize_page(
         code_challenge_method = html_escape(&params.code_challenge_method),
         scope = html_escape(scope_value),
         password_html = password_html,
+        password_notice = password_notice,
         error_html = error_html,
+        storage_key = storage_key,
+        translations_json = translations_json,
     )
 }
 

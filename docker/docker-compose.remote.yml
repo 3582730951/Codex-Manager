@@ -1,0 +1,67 @@
+services:
+  codexmanager-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.service
+      target: service-runtime
+    restart: unless-stopped
+    environment:
+      CODEXMANAGER_SERVICE_ADDR: 0.0.0.0:48760
+      CODEXMANAGER_DB_PATH: /data/codexmanager.db
+      CODEXMANAGER_RPC_TOKEN_FILE: /data/codexmanager.rpc-token
+      CODEXMANAGER_AFFINITY_ROUTING_MODE: enforce
+      CODEXMANAGER_CLIENT_ENTITY_MODE: auto
+      CODEXMANAGER_CONTEXT_REPLAY_ENABLED: "1"
+      CODEXMANAGER_AFFINITY_SOFT_QUOTA_PERCENT: "5"
+      CODEXMANAGER_REPLAY_MAX_TURNS: "12"
+      CODEXMANAGER_UPSTREAM_PROXY_URL: ${CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL:-}
+      CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL: ${CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL:-}
+    volumes:
+      - codexmanager-data:/data
+    expose:
+      - "48760"
+
+  codexmanager-web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      codexmanager-service:
+        condition: service_healthy
+    environment:
+      CODEXMANAGER_WEB_ADDR: 0.0.0.0:48761
+      CODEXMANAGER_WEB_NO_SPAWN_SERVICE: "1"
+      CODEXMANAGER_SERVICE_ADDR: codexmanager-service:48760
+      CODEXMANAGER_DB_PATH: /data/codexmanager.db
+      CODEXMANAGER_RPC_TOKEN_FILE: /data/codexmanager.rpc-token
+      CODEXMANAGER_WEB_NO_OPEN: "1"
+    volumes:
+      - codexmanager-data:/data
+    expose:
+      - "48761"
+
+  codexmanager-nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      codexmanager-service:
+        condition: service_healthy
+      codexmanager-web:
+        condition: service_healthy
+    ports:
+      - "${CODEXMANAGER_REMOTE_HTTP_PORT:-80}:80"
+    volumes:
+      - type: bind
+        source: ${CODEXMANAGER_REMOTE_NGINX_CONF_PATH:?set CODEXMANAGER_REMOTE_NGINX_CONF_PATH}
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  codexmanager-data:

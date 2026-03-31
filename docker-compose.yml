@@ -1,0 +1,77 @@
+services:
+  codex:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${IMAGE_NAME}
+    container_name: ${CONTAINER_NAME}
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    environment:
+      HOME: /root
+      CODEX_HOME: /root/.codex
+      CODEX_MANAGED_SKILLS_ROOT: /root/.agents/skills
+      CODEX_LEGACY_SKILLS_ROOT: /root/.codex/skills
+      CODEX_SKILL_SYNC_MODE: ${CODEX_SKILL_SYNC_MODE:-always}
+      CODEX_SKILL_UPDATE_MODE: ${CODEX_SKILL_UPDATE_MODE:-auto}
+      CODEX_AUTH_MODE: ${CODEX_AUTH_MODE:-apikey}
+      COMPOSER_CACHE_DIR: /tmp/composer-cache
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE}
+      CODEX_API_BASE: ${CODEX_API_BASE}
+      CODEX_OAUTH_BROWSER_ISSUER_BASE_URL: ${CODEX_OAUTH_BROWSER_ISSUER_BASE_URL:-}
+      CODEX_OAUTH_TOKEN_ISSUER_BASE_URL: ${CODEX_OAUTH_TOKEN_ISSUER_BASE_URL:-}
+      CODEX_OAUTH_CLIENT_ID: ${CODEX_OAUTH_CLIENT_ID:-}
+      CODEX_OAUTH_CALLBACK_PUBLIC_URL: ${CODEX_OAUTH_CALLBACK_PUBLIC_URL:-}
+      CODEX_OAUTH_CALLBACK_BIND_HOST: ${CODEX_OAUTH_CALLBACK_BIND_HOST:-0.0.0.0}
+      CODEX_OAUTH_CALLBACK_BIND_PORT: ${CODEX_OAUTH_CALLBACK_BIND_PORT:-1455}
+      COCKPIT_TOOLS_WEB_URL: ${COCKPIT_TOOLS_WEB_URL:-}
+      COCKPIT_TOOLS_WS_URL: ${COCKPIT_TOOLS_WS_URL:-}
+      PLAYWRIGHT_BROWSERS_PATH: /root/.cache/ms-playwright
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    command: ["sleep", "infinity"]
+    volumes:
+      - ${WORKSPACE_PATH}:/workspace
+      - agents_home:/root/.agents
+      - codex_home:/root/.codex
+      - npm_cache:/root/.npm
+      - pnpm_store:/root/.local/share/pnpm/store
+      - pip_cache:/root/.cache/pip
+      - playwright_cache:/root/.cache/ms-playwright
+      - maven_cache:/root/.m2
+      - gradle_cache:/root/.gradle
+      - composer_cache:/tmp/composer-cache
+      - cargo_cache:/usr/local/cargo/registry
+      - cargo_git:/usr/local/cargo/git
+      - go_cache:/root/go/pkg/mod
+      - nuget_cache:/root/.nuget/packages
+    ports:
+      - "${PORT_3000}:3000"
+      - "${PORT_5173}:5173"
+      - "${PORT_8080}:8080"
+      - "${PORT_1455}:1455"
+    networks:
+      - runtime
+
+networks:
+  runtime:
+    external: true
+    name: ${NETWORK_NAME}
+
+volumes:
+  agents_home:
+  codex_home:
+  npm_cache:
+  pnpm_store:
+  pip_cache:
+  playwright_cache:
+  maven_cache:
+  gradle_cache:
+  composer_cache:
+  cargo_cache:
+  cargo_git:
+  go_cache:
+  nuget_cache:

@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "bundle_name": "codex-full-stack-skills",
+  "bundle_version": "2026.03.28-fullstack.2",
+  "generated_on": "2026-03-28",
+  "reserved_system_skill_names": [
+    "imagegen",
+    "openai-docs",
+    "plugin-creator",
+    "skill-creator",
+    "skill-installer"
+  ],
+  "selection_policy": {
+    "official": "Install every OpenAI curated skill from openai/skills.",
+    "third_party": "Install every local-skill-capable vendor/community skill tree chosen from community-indexed repositories.",
+    "community_index": "VoltAgent/awesome-agent-skills"
+  },
+  "sources": [
+    {
+      "kind": "github-skill-tree",
+      "label": "openai-curated",
+      "repo": "openai/skills",
+      "ref": "736f600bf6ecbc000c04f1d2710b990899f28903",
+      "base_path": "skills/.curated"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "anthropics",
+      "repo": "anthropics/skills",
+      "ref": "98669c11ca63e9c81c11501e1437e5c47b556621",
+      "base_path": "skills",
+      "exclude_frontmatter_names": [
+        "pdf"
+      ]
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "vercel-agent-skills",
+      "repo": "vercel-labs/agent-skills",
+      "ref": "64484e9a6022c81e3af59f5dcee6fb6d631bf53e",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "vercel-next-skills",
+      "repo": "vercel-labs/next-skills",
+      "ref": "038954e07bfc313e97fa5f6ff7caf87226e4a782",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "cloudflare",
+      "repo": "cloudflare/skills",
+      "ref": "ed57ea9dcb5d520f6ed055d3b1418993ed1ae593",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "firecrawl",
+      "repo": "firecrawl/cli",
+      "ref": "6838c4b8d2d1294b8571d133aafeab6700b5dd50",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "hashicorp-terraform",
+      "repo": "hashicorp/agent-skills",
+      "ref": "9f2ede91f6eb72780c5fd787b3b1720623626dfb",
+      "base_path": "terraform"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "callstack",
+      "repo": "callstackincubator/agent-skills",
+      "ref": "fa8694ceaa306a9442202feda37c4b5798e3512a",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "supabase",
+      "repo": "supabase/agent-skills",
+      "ref": "c7f83da3b60e198d2bed28cff4b56e8ac705e694",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "neon",
+      "repo": "neondatabase/agent-skills",
+      "ref": "1304e290a0b24b3f46d60ee20e9f40271db9b41c",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "composio",
+      "repo": "ComposioHQ/skills",
+      "ref": "c4b270016aa8c832bb6d5824175da1bb94690b89",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "gemini",
+      "repo": "google-gemini/gemini-skills",
+      "ref": "51f1bedafbd15776826dae6242482b2017f2e568",
+      "base_path": "skills"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "better-auth",
+      "repo": "better-auth/skills",
+      "ref": "6a1636950a1d7fc53602639ce7505a4a5d39c797",
+      "base_path": "better-auth"
+    },
+    {
+      "kind": "github-skill-tree",
+      "label": "user-plan-skills",
+      "repo": "3582730951/codex-skills",
+      "ref": "c85f1b895103790e795d61cd9bfe46a1054452a0",
+      "base_path": "plan_skills"
+    },
+    {
+      "kind": "uipro-codex-template",
+      "label": "ui-ux-pro-max",
+      "repo": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "ref": "506d9230e990c611a6a67c54c4e3a938ea20559d",
+      "platform": "codex"
+    }
+  ]
+}

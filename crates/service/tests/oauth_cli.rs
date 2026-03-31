@@ -295,6 +295,81 @@ fn oauth_cli_authorize_rejects_non_loopback_redirect_uri() {
 }
 
 #[test]
+fn oauth_cli_authorize_with_invalid_parent_key_returns_error_page() {
+    let _env_guard = OAUTH_TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = new_test_dir("codexmanager-oauth-cli-invalid-parent");
+    let db_path = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init schema");
+
+    let server = codexmanager_service::start_test_server().expect("start server");
+    let base_url = format!("http://{}", server.addr);
+    let client = Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .expect("build http client");
+
+    let response = client
+        .post(format!("{base_url}/oauth/authorize/approve"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(format!(
+            "response_type=code&client_id=cli-client&redirect_uri={}&state=test-state&code_challenge={}&code_challenge_method=S256&employee_api_key={}",
+            urlencoding::encode("http://127.0.0.1:1455/callback"),
+            urlencoding::encode(code_challenge("oauth-cli-verifier").as_str()),
+            urlencoding::encode("wrong-parent-secret"),
+        ))
+        .send()
+        .expect("authorize approve");
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body = response.text().expect("read response body");
+    assert!(body.contains("Authorization failed"));
+    assert!(body.contains("invalid employee API key"));
+    assert!(body.contains("Authorize API Key"));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn oauth_cli_authorize_page_includes_language_switch_controls() {
+    let _env_guard = OAUTH_TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = new_test_dir("codexmanager-oauth-cli-page-lang");
+    let db_path = dir.join("codexmanager.db");
+    let _db_guard = EnvGuard::set("CODEXMANAGER_DB_PATH", db_path.to_string_lossy().as_ref());
+
+    let storage = Storage::open(&db_path).expect("open db");
+    storage.init().expect("init schema");
+
+    let server = codexmanager_service::start_test_server().expect("start server");
+    let base_url = format!("http://{}", server.addr);
+    let client = Client::builder().build().expect("build http client");
+
+    let response = client
+        .get(format!(
+            "{base_url}/oauth/authorize?response_type=code&client_id=cli-client&redirect_uri={}&state=test-state&code_challenge={}&code_challenge_method=S256",
+            urlencoding::encode("http://127.0.0.1:1455/callback"),
+            urlencoding::encode(code_challenge("oauth-cli-verifier").as_str()),
+        ))
+        .send()
+        .expect("authorize page");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body = response.text().expect("read response body");
+    assert!(body.contains(r#"data-lang-option="en""#));
+    assert!(body.contains(r#"data-lang-option="zh""#));
+    assert!(body.contains("codexmanager.oauth.ui-language"));
+    assert!(body.contains("placeholder_parent_api_key"));
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn oauth_cli_child_key_uses_latest_parent_model_config() {
     let _env_guard = OAUTH_TEST_ENV_LOCK
         .lock()
