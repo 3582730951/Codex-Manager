@@ -7,6 +7,7 @@ mod account_metadata;
 mod accounts;
 mod aggregate_apis;
 mod api_keys;
+mod cli_oauth;
 mod conversation_affinity;
 mod conversation_bindings;
 mod events;
@@ -203,6 +204,7 @@ pub enum AffinityTurnCommitOutcome {
 pub struct RequestLog {
     pub trace_id: Option<String>,
     pub key_id: Option<String>,
+    pub owner_key_id: Option<String>,
     pub account_id: Option<String>,
     pub initial_account_id: Option<String>,
     pub attempted_account_ids_json: Option<String>,
@@ -234,6 +236,7 @@ pub struct RequestLog {
 pub struct RequestTokenStat {
     pub request_log_id: i64,
     pub key_id: Option<String>,
+    pub owner_key_id: Option<String>,
     pub account_id: Option<String>,
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
@@ -266,6 +269,53 @@ pub struct RequestLogQuerySummary {
 pub struct ApiKeyTokenUsageSummary {
     pub key_id: String,
     pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CliChildKey {
+    pub child_key_id: String,
+    pub owner_key_id: String,
+    pub cli_instance_uuid: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_seen_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CliOAuthSession {
+    pub session_id: String,
+    pub child_key_id: String,
+    pub owner_key_id: String,
+    pub cli_instance_uuid: String,
+    pub client_id: String,
+    pub redirect_uri: String,
+    pub pkce_challenge: String,
+    pub pkce_method: String,
+    pub state: String,
+    pub authorization_code_hash: Option<String>,
+    pub refresh_token_hash: String,
+    pub status: String,
+    pub id_token: String,
+    pub expires_at: i64,
+    pub refresh_expires_at: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub last_seen_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyOwnerContext {
+    pub owner_key_id: String,
+    pub cli_instance_uuid: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountQuotaExhaustion {
+    pub account_id: String,
+    pub reason: String,
+    pub exhausted_until: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -526,10 +576,24 @@ impl Storage {
             "040_gateway_affinity_routing",
             include_str!("../../migrations/040_gateway_affinity_routing.sql"),
         )?;
+        self.apply_sql_or_compat_migration(
+            "041_cli_oauth_child_keys_and_quota",
+            include_str!("../../migrations/041_cli_oauth_child_keys_and_quota.sql"),
+            |s| {
+                s.ensure_cli_child_keys_table()?;
+                s.ensure_cli_oauth_sessions_table()?;
+                s.ensure_account_quota_exhaustion_table()?;
+                s.ensure_request_log_owner_key_column()?;
+                s.ensure_request_token_stat_owner_key_column()
+            },
+        )?;
         self.ensure_api_key_rotation_columns()?;
         self.ensure_aggregate_apis_table()?;
         self.ensure_aggregate_api_secrets_table()?;
         self.ensure_request_token_stats_table()?;
+        self.ensure_cli_child_keys_table()?;
+        self.ensure_cli_oauth_sessions_table()?;
+        self.ensure_account_quota_exhaustion_table()?;
         Ok(())
     }
 

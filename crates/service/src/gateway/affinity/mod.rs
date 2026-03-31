@@ -12,12 +12,14 @@ pub(crate) use client_entity::{
     current_mode as current_client_entity_mode, filter_and_validate_edge_entity_headers,
     prepare_request_preflight, record_peer_runtime_success, resolve_peer_runtime_hint,
     should_strip_external_cli_affinity_id, sign_internal_hop, trusted_peer_runtime_entity,
-    ClientEntityMode, ClientEntityRequestPreflight,
-    INTERNAL_CLIENT_ENTITY_HEADER, INTERNAL_ENTITY_PEER_IP_HEADER, INTERNAL_HOP_SIG_HEADER,
+    ClientEntityMode, ClientEntityRequestPreflight, INTERNAL_CLIENT_ENTITY_HEADER,
+    INTERNAL_ENTITY_PEER_IP_HEADER, INTERNAL_HOP_SIG_HEADER,
 };
 pub(crate) use routing::{
-    acquire_affinity_lock, acquire_conversation_lock, finalize_affinity_success,
-    record_affinity_attempt_feedback, resolve_enforced_routing, AffinityRoutingResolution,
+    acquire_affinity_lock, acquire_conversation_lock, build_attempt_replay_body,
+    clear_account_hard_quota_exhaustion, finalize_affinity_success, is_hard_quota_error_message,
+    mark_account_hard_quota_exhausted, record_affinity_attempt_feedback,
+    resolve_attempt_thread_assignment, resolve_enforced_routing, AffinityRoutingResolution,
 };
 
 const ENV_AFFINITY_ROUTING_MODE: &str = "CODEXMANAGER_AFFINITY_ROUTING_MODE";
@@ -33,8 +35,7 @@ const MODE_ENFORCE: u8 = 2;
 
 static AFFINITY_MODE: AtomicU8 = AtomicU8::new(MODE_OFF);
 static CONTEXT_REPLAY_ENABLED: AtomicBool = AtomicBool::new(true);
-static AFFINITY_SOFT_QUOTA_PERCENT: AtomicU64 =
-    AtomicU64::new(DEFAULT_AFFINITY_SOFT_QUOTA_PERCENT);
+static AFFINITY_SOFT_QUOTA_PERCENT: AtomicU64 = AtomicU64::new(DEFAULT_AFFINITY_SOFT_QUOTA_PERCENT);
 static REPLAY_MAX_TURNS: AtomicU64 = AtomicU64::new(DEFAULT_REPLAY_MAX_TURNS);
 static AFFINITY_RUNTIME_LOADED: OnceLock<()> = OnceLock::new();
 
@@ -163,7 +164,7 @@ pub(crate) fn derive_affinity_key_from_parts(
     subagent: Option<&str>,
     client_request_id: Option<&str>,
 ) -> Option<DerivedAffinityKey> {
-    if let Some(value) = normalize_key_part(cli_affinity_id) {
+    if let Some(value) = normalize_cli_affinity_part(cli_affinity_id) {
         return Some(DerivedAffinityKey {
             key: format!("cli:{value}"),
             source: "x-codex-cli-affinity-id",
@@ -204,7 +205,11 @@ pub(crate) fn derive_compat_affinity_keys(
             "sid",
             "session_id",
         ),
-        (normalize_key_part(conversation_id), "cid", "conversation_id"),
+        (
+            normalize_key_part(conversation_id),
+            "cid",
+            "conversation_id",
+        ),
         (
             normalize_key_part(incoming_headers.subagent()),
             "sub",
@@ -297,8 +302,22 @@ pub(super) fn normalize_key_part(value: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn normalize_cli_affinity_part(value: Option<&str>) -> Option<String> {
+    normalize_key_part(value).map(|value| {
+        value
+            .strip_prefix("cli:")
+            .map(str::to_string)
+            .unwrap_or(value)
+    })
+}
+
 fn parse_affinity_mode(raw: Option<&str>) -> Option<AffinityRoutingMode> {
-    match raw.map(str::trim).unwrap_or_default().to_ascii_lowercase().as_str() {
+    match raw
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "" | "off" | "disabled" => Some(AffinityRoutingMode::Off),
         "observe" | "read_only" | "readonly" => Some(AffinityRoutingMode::Observe),
         "enforce" | "on" | "enabled" => Some(AffinityRoutingMode::Enforce),
@@ -359,6 +378,21 @@ mod tests {
         .expect("derive affinity key");
 
         assert_eq!(derived.key, "cli:cli-1");
+        assert_eq!(derived.source, "x-codex-cli-affinity-id");
+    }
+
+    #[test]
+    fn derive_affinity_key_deduplicates_prefixed_cli_values() {
+        let derived = derive_affinity_key_from_parts(
+            Some("cli:stable-cli"),
+            Some("conv-1"),
+            Some("sid-1"),
+            Some("sub-1"),
+            Some("req-1"),
+        )
+        .expect("derive affinity key");
+
+        assert_eq!(derived.key, "cli:stable-cli");
         assert_eq!(derived.source, "x-codex-cli-affinity-id");
     }
 

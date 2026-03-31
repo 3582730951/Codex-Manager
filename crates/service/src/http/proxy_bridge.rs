@@ -11,10 +11,13 @@ async fn wait_for_shutdown_signal() {
 }
 
 async fn serve_proxy_on_listener(listener: tokio::net::TcpListener, app: Router) -> io::Result<()> {
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(wait_for_shutdown_signal())
-        .await
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(wait_for_shutdown_signal())
+    .await
+    .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
 }
 
 pub(crate) async fn run_proxy_server(addr: &str, app: Router) -> io::Result<()> {

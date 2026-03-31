@@ -6,13 +6,14 @@ impl Storage {
     pub fn insert_request_token_stat(&self, stat: &RequestTokenStat) -> Result<()> {
         self.conn.execute(
             "INSERT INTO request_token_stats (
-                request_log_id, key_id, account_id, model,
+                request_log_id, key_id, owner_key_id, account_id, model,
                 input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
                 estimated_cost_usd, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             (
                 stat.request_log_id,
                 &stat.key_id,
+                &stat.owner_key_id,
                 &stat.account_id,
                 &stat.model,
                 stat.input_tokens,
@@ -64,7 +65,7 @@ impl Storage {
     pub fn summarize_request_token_stats_by_key(&self) -> Result<Vec<ApiKeyTokenUsageSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT
-                key_id,
+                COALESCE(owner_key_id, key_id) AS usage_key_id,
                 IFNULL(
                     SUM(
                         CASE
@@ -81,9 +82,10 @@ impl Storage {
                     0
                 ) AS total_tokens
              FROM request_token_stats
-             WHERE key_id IS NOT NULL AND TRIM(key_id) <> ''
-             GROUP BY key_id
-             ORDER BY total_tokens DESC, key_id ASC",
+             WHERE COALESCE(owner_key_id, key_id) IS NOT NULL
+               AND TRIM(COALESCE(owner_key_id, key_id)) <> ''
+             GROUP BY usage_key_id
+             ORDER BY total_tokens DESC, usage_key_id ASC",
         )?;
         let mut rows = stmt.query([])?;
         let mut items = Vec::new();
@@ -102,6 +104,7 @@ impl Storage {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 request_log_id INTEGER NOT NULL,
                 key_id TEXT,
+                owner_key_id TEXT,
                 account_id TEXT,
                 model TEXT,
                 input_tokens INTEGER,
@@ -135,17 +138,23 @@ impl Storage {
             [],
         )?;
         self.ensure_column("request_token_stats", "total_tokens", "INTEGER")?;
+        self.ensure_column("request_token_stats", "owner_key_id", "TEXT")?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_stats_owner_key_id_created_at
+             ON request_token_stats(owner_key_id, created_at DESC)",
+            [],
+        )?;
 
         if self.has_column("request_logs", "input_tokens")? {
             // 中文注释：迁移历史 request_logs 里的 token 字段，避免升级后今日统计突然归零。
             self.conn.execute(
                 "INSERT OR IGNORE INTO request_token_stats (
-                    request_log_id, key_id, account_id, model,
+                    request_log_id, key_id, owner_key_id, account_id, model,
                     input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
                     estimated_cost_usd, created_at
                  )
                  SELECT
-                    id, key_id, account_id, model,
+                    id, key_id, NULL, account_id, model,
                     input_tokens, cached_input_tokens, output_tokens, NULL, reasoning_output_tokens,
                     estimated_cost_usd, created_at
                  FROM request_logs
@@ -157,6 +166,16 @@ impl Storage {
                 [],
             )?;
         }
+        Ok(())
+    }
+
+    pub(super) fn ensure_request_token_stat_owner_key_column(&self) -> Result<()> {
+        self.ensure_column("request_token_stats", "owner_key_id", "TEXT")?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_token_stats_owner_key_id_created_at
+             ON request_token_stats(owner_key_id, created_at DESC)",
+            [],
+        )?;
         Ok(())
     }
 }

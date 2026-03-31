@@ -1,8 +1,9 @@
 use bytes::Bytes;
+use chrono::{DateTime, Duration, FixedOffset, NaiveTime, TimeZone, Utc};
 use codexmanager_core::storage::{
-    now_ts, Account, AffinityKeyMigration, AffinityScopePromotion, AffinityTurnCommitOutcome,
-    ClientBinding, ConversationContextEvent, ConversationContextState, ConversationThread,
-    Storage, Token,
+    now_ts, Account, AccountQuotaExhaustion, AffinityKeyMigration, AffinityScopePromotion,
+    AffinityTurnCommitOutcome, ClientBinding, ContextSnapshot, ConversationContextEvent,
+    ConversationContextState, ConversationThread, Storage, Token,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -19,6 +20,8 @@ use super::{
 const RECENT_OUTCOME_WINDOW: usize = 32;
 const BINDING_ACTIVE_TTL_SECS: i64 = 1_800;
 const REPLAY_PAYLOAD_MAX_BYTES: usize = 512 * 1024;
+const DEFAULT_HARD_QUOTA_EXHAUSTION_SECS: i64 = 30 * 60;
+const ENV_HARD_QUOTA_EXHAUSTION_SECS: &str = "CODEXMANAGER_QUOTA_EXHAUSTED_FALLBACK_COOLDOWN_SECS";
 
 #[derive(Debug, Clone)]
 pub(crate) struct AffinityRoutingResolution {
@@ -30,13 +33,17 @@ pub(crate) struct AffinityRoutingResolution {
     pub(crate) affinity_source: &'static str,
     pub(crate) conversation_scope_id: String,
     pub(crate) committed_conversation_scope_id: String,
+    pub(crate) requested_conversation_id: Option<String>,
     pub(crate) binding: Option<ClientBinding>,
     pub(crate) thread: Option<ConversationThread>,
     pub(crate) chosen_account_id: String,
     pub(crate) candidate_account_ids: Vec<String>,
     pub(crate) request_body_override: Option<Bytes>,
+    #[allow(dead_code)]
     pub(crate) thread_epoch: i64,
+    #[allow(dead_code)]
     pub(crate) thread_anchor: String,
+    #[allow(dead_code)]
     pub(crate) reset_session_affinity: bool,
     pub(crate) requires_replay: bool,
     pub(crate) current_turn_index: i64,
@@ -83,10 +90,7 @@ fn runtime_state() -> &'static Mutex<AffinityRuntimeState> {
     AFFINITY_RUNTIME_STATE.get_or_init(|| Mutex::new(AffinityRuntimeState::default()))
 }
 
-pub(crate) fn acquire_affinity_lock(
-    platform_key_hash: &str,
-    affinity_key: &str,
-) -> Arc<Mutex<()>> {
+pub(crate) fn acquire_affinity_lock(platform_key_hash: &str, affinity_key: &str) -> Arc<Mutex<()>> {
     let lock_key = format!("{platform_key_hash}:{affinity_key}");
     let mut state = crate::lock_utils::lock_recover(runtime_state(), "affinity_runtime_state");
     state
@@ -125,15 +129,16 @@ pub(crate) fn record_affinity_attempt_feedback(
         .entry(account_id.to_string())
         .or_default();
     let is_success = (200..=299).contains(&status_code)
-        && error
-            .map(str::trim)
-            .is_none_or(|value| value.is_empty());
+        && error.map(str::trim).is_none_or(|value| value.is_empty());
     outcomes.push_back(is_success);
     while outcomes.len() > RECENT_OUTCOME_WINDOW {
         outcomes.pop_front();
     }
 
-    let quota_faults = state.quota_faults.entry(account_id.to_string()).or_default();
+    let quota_faults = state
+        .quota_faults
+        .entry(account_id.to_string())
+        .or_default();
     prune_quota_faults(quota_faults, now);
     if is_quota_like_429(status_code, error) {
         quota_faults.push_back(now);
@@ -172,10 +177,137 @@ fn is_quota_like_429(status_code: u16, error: Option<&str>) -> bool {
         "challenge",
         "cloudflare",
     ];
-    quota_markers.iter().any(|marker| normalized.contains(marker))
+    quota_markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
         && !non_quota_markers
             .iter()
             .any(|marker| normalized.contains(marker))
+}
+
+fn hard_quota_reason(message: &str) -> Option<&'static str> {
+    let normalized = message.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.contains("you've hit your usage limit")
+        || normalized.contains("usage_limit_reached")
+    {
+        return Some("usage_limit_reached");
+    }
+    if normalized.contains("insufficient_quota") {
+        return Some("insufficient_quota");
+    }
+    if normalized.contains("billing_hard_limit") {
+        return Some("billing_hard_limit");
+    }
+    if normalized.contains("monthly_quota_exceeded") {
+        return Some("monthly_quota_exceeded");
+    }
+    None
+}
+
+pub(crate) fn is_hard_quota_error_message(message: &str) -> bool {
+    hard_quota_reason(message).is_some()
+}
+
+fn hard_quota_fallback_cooldown_secs() -> i64 {
+    std::env::var(ENV_HARD_QUOTA_EXHAUSTION_SECS)
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_HARD_QUOTA_EXHAUSTION_SECS)
+}
+
+fn parse_retry_after_exhausted_until(headers: &reqwest::header::HeaderMap) -> Option<i64> {
+    let retry_after = headers.get(reqwest::header::RETRY_AFTER)?;
+    let retry_after = retry_after.to_str().ok()?.trim();
+    if retry_after.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = retry_after.parse::<i64>() {
+        return Some(now_ts().saturating_add(seconds.max(0)));
+    }
+    chrono::DateTime::parse_from_rfc2822(retry_after)
+        .ok()
+        .map(|value| value.timestamp())
+}
+
+fn upstream_reference_time(headers: Option<&reqwest::header::HeaderMap>) -> DateTime<FixedOffset> {
+    headers
+        .and_then(|map| map.get(reqwest::header::DATE))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| chrono::DateTime::parse_from_rfc2822(value).ok())
+        .unwrap_or_else(|| Utc::now().fixed_offset())
+}
+
+fn parse_message_exhausted_until(
+    headers: Option<&reqwest::header::HeaderMap>,
+    message: &str,
+) -> Option<i64> {
+    let normalized = message.to_ascii_lowercase();
+    let reference = upstream_reference_time(headers);
+    for marker in ["try again at ", "again at "] {
+        let Some(start) = normalized.find(marker) else {
+            continue;
+        };
+        let tail = &message[start + marker.len()..];
+        let candidate = tail
+            .chars()
+            .take_while(|ch| {
+                ch.is_ascii_digit()
+                    || *ch == ':'
+                    || ch.is_ascii_whitespace()
+                    || matches!(ch, 'a' | 'A' | 'p' | 'P' | 'm' | 'M')
+            })
+            .collect::<String>()
+            .trim()
+            .trim_matches(|ch: char| ch == '.' || ch == ',' || ch == ';')
+            .to_string();
+        if candidate.is_empty() {
+            continue;
+        }
+        let parsed_time = NaiveTime::parse_from_str(candidate.as_str(), "%I:%M %p")
+            .or_else(|_| NaiveTime::parse_from_str(candidate.as_str(), "%I %p"))
+            .or_else(|_| NaiveTime::parse_from_str(candidate.as_str(), "%H:%M"))
+            .ok()?;
+        let today = reference.date_naive();
+        let mut target = reference
+            .offset()
+            .from_local_datetime(&today.and_time(parsed_time))
+            .single()?;
+        if target.timestamp() <= reference.timestamp() {
+            target += Duration::days(1);
+        }
+        return Some(target.timestamp());
+    }
+    None
+}
+
+pub(crate) fn mark_account_hard_quota_exhausted(
+    storage: &Storage,
+    account_id: &str,
+    headers: Option<&reqwest::header::HeaderMap>,
+    message: Option<&str>,
+) -> Option<i64> {
+    let message = message.map(str::trim).filter(|value| !value.is_empty())?;
+    let reason = hard_quota_reason(message)?;
+    let exhausted_until = headers
+        .and_then(parse_retry_after_exhausted_until)
+        .or_else(|| parse_message_exhausted_until(headers, message))
+        .unwrap_or_else(|| now_ts().saturating_add(hard_quota_fallback_cooldown_secs()));
+    let _ = storage.upsert_account_quota_exhaustion(&AccountQuotaExhaustion {
+        account_id: account_id.to_string(),
+        reason: reason.to_string(),
+        exhausted_until,
+        updated_at: now_ts(),
+    });
+    crate::gateway::scheduler_set_account_cooldown_until(account_id, Some(exhausted_until), true);
+    Some(exhausted_until)
+}
+
+pub(crate) fn clear_account_hard_quota_exhaustion(storage: &Storage, account_id: &str) {
+    let _ = storage.delete_account_quota_exhaustion(account_id);
 }
 
 pub(crate) fn resolve_enforced_routing(
@@ -218,7 +350,8 @@ pub(crate) fn resolve_enforced_routing(
         .get_client_binding(platform_key_hash, derived.key.as_str())
         .map_err(|err| format!("load client binding failed: {err}"))?;
     if binding.is_none() && allow_compat_lookup {
-        for compat_candidate in super::derive_compat_affinity_keys(incoming_headers, local_conversation_id)
+        for compat_candidate in
+            super::derive_compat_affinity_keys(incoming_headers, local_conversation_id)
         {
             let compat_binding = storage
                 .get_client_binding(platform_key_hash, compat_candidate.key.as_str())
@@ -298,11 +431,9 @@ pub(crate) fn resolve_enforced_routing(
         binding.as_ref(),
         tie_break_index,
     )?;
-    let Some((chosen, candidate_account_ids, switch_reason)) = choose_target_candidates(
-        candidates.as_slice(),
-        binding.as_ref(),
-        scored.as_slice(),
-    ) else {
+    let Some((chosen, candidate_account_ids, switch_reason)) =
+        choose_target_candidates(candidates.as_slice(), binding.as_ref(), scored.as_slice())
+    else {
         return Err("no available account".to_string());
     };
 
@@ -349,6 +480,7 @@ pub(crate) fn resolve_enforced_routing(
         affinity_source: derived.source,
         conversation_scope_id,
         committed_conversation_scope_id,
+        requested_conversation_id,
         binding,
         thread,
         chosen_account_id: chosen,
@@ -367,6 +499,49 @@ pub(crate) fn resolve_enforced_routing(
         selected_final_score: Some(selected_candidate.final_score),
         switch_reason,
     }))
+}
+
+pub(crate) fn resolve_attempt_thread_assignment(
+    resolution: &AffinityRoutingResolution,
+    platform_key_hash: &str,
+    account_id: &str,
+) -> (i64, String, bool) {
+    resolve_thread_assignment(
+        resolution.binding.as_ref(),
+        resolution.thread.as_ref(),
+        platform_key_hash,
+        resolution.affinity_key.as_str(),
+        resolution.committed_conversation_scope_id.as_str(),
+        resolution.requested_conversation_id.as_deref(),
+        account_id,
+    )
+}
+
+pub(crate) fn build_attempt_replay_body(
+    storage: &Storage,
+    resolution: &AffinityRoutingResolution,
+    path: &str,
+    body: &[u8],
+    platform_key_hash: &str,
+    account_id: &str,
+) -> Result<Option<Bytes>, String> {
+    let Some(thread) = resolution.thread.as_ref() else {
+        return Ok(None);
+    };
+    if thread.account_id == account_id {
+        return Ok(None);
+    }
+    if let Some(prebuilt) = resolution.request_body_override.as_ref() {
+        return Ok(Some(prebuilt.clone()));
+    }
+    Ok(Some(Bytes::from(build_replay_request_body(
+        storage,
+        path,
+        body,
+        platform_key_hash,
+        resolution.affinity_key.as_str(),
+        resolution.conversation_scope_id.as_str(),
+    )?)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -390,11 +565,9 @@ pub(crate) fn finalize_affinity_success(
     let parsed_response = completed_response_body
         .and_then(parse_canonical_response_output_items)
         .ok_or_else(|| "missing canonical completed response for affinity context".to_string())?;
-    if let Some(existing_state) = load_existing_context_state_for_commit(
-        storage,
-        platform_key_hash,
-        resolution,
-    )? {
+    if let Some(existing_state) =
+        load_existing_context_state_for_commit(storage, platform_key_hash, resolution)?
+    {
         fill_missing_request_context_from_state(&mut parsed_request, &existing_state);
     }
     let now = now_ts();
@@ -412,6 +585,8 @@ pub(crate) fn finalize_affinity_success(
     let selected_final_score = (resolution.chosen_account_id == account_id)
         .then_some(resolution.selected_final_score)
         .flatten();
+    let (resolved_thread_epoch, resolved_thread_anchor, _) =
+        resolve_attempt_thread_assignment(resolution, platform_key_hash, account_id);
     let expected_binding_version = resolution.binding.as_ref().map(|item| item.binding_version);
     let expected_thread_version = resolution.thread.as_ref().map(|item| item.thread_version);
     let next_binding_version = match resolution.binding.as_ref() {
@@ -458,8 +633,8 @@ pub(crate) fn finalize_affinity_success(
             affinity_key: commit_affinity_key.to_string(),
             conversation_scope_id: resolution.committed_conversation_scope_id.clone(),
             account_id: account_id.to_string(),
-            thread_epoch: resolution.thread_epoch,
-            thread_anchor: resolution.thread_anchor.clone(),
+            thread_epoch: resolved_thread_epoch,
+            thread_anchor: resolved_thread_anchor.clone(),
             thread_version: expected_thread_version.unwrap_or(0) + 1,
             created_at: resolution
                 .thread
@@ -469,14 +644,16 @@ pub(crate) fn finalize_affinity_success(
             updated_at: now,
             last_seen_at: now,
         };
-        let scope_promotion = resolution.scope_promotion.as_ref().map(|promotion| {
-            AffinityScopePromotion {
-                platform_key_hash: promotion.platform_key_hash.clone(),
-                affinity_key: commit_affinity_key.to_string(),
-                from_scope_id: promotion.from_scope_id.clone(),
-                to_scope_id: promotion.to_scope_id.clone(),
-            }
-        });
+        let scope_promotion =
+            resolution
+                .scope_promotion
+                .as_ref()
+                .map(|promotion| AffinityScopePromotion {
+                    platform_key_hash: promotion.platform_key_hash.clone(),
+                    affinity_key: commit_affinity_key.to_string(),
+                    from_scope_id: promotion.from_scope_id.clone(),
+                    to_scope_id: promotion.to_scope_id.clone(),
+                });
         let context_state = ConversationContextState {
             platform_key_hash: platform_key_hash.to_string(),
             affinity_key: commit_affinity_key.to_string(),
@@ -548,7 +725,15 @@ pub(crate) fn finalize_affinity_success(
             resolution.canonical_affinity_key.as_str(),
             Some(&key_migration),
         )? {
-            AffinityTurnCommitOutcome::Committed => return Ok(()),
+            AffinityTurnCommitOutcome::Committed => {
+                refresh_context_snapshot(
+                    storage,
+                    platform_key_hash,
+                    resolution.canonical_affinity_key.as_str(),
+                    resolution.committed_conversation_scope_id.as_str(),
+                )?;
+                return Ok(());
+            }
             AffinityTurnCommitOutcome::MigrationConflict => {
                 log::warn!(
                     "event=gateway_affinity_compat_migrate_conflict trace_id={} account_id={} from_affinity_key={} to_affinity_key={}",
@@ -558,12 +743,22 @@ pub(crate) fn finalize_affinity_success(
                     resolution.canonical_affinity_key,
                 );
             }
-            AffinityTurnCommitOutcome::Conflict => return Err("affinity_commit_conflict".to_string()),
+            AffinityTurnCommitOutcome::Conflict => {
+                return Err("affinity_commit_conflict".to_string())
+            }
         }
     }
 
     match commit_with_key(resolution.affinity_key.as_str(), None)? {
-        AffinityTurnCommitOutcome::Committed => Ok(()),
+        AffinityTurnCommitOutcome::Committed => {
+            refresh_context_snapshot(
+                storage,
+                platform_key_hash,
+                resolution.affinity_key.as_str(),
+                resolution.committed_conversation_scope_id.as_str(),
+            )?;
+            Ok(())
+        }
         AffinityTurnCommitOutcome::Conflict | AffinityTurnCommitOutcome::MigrationConflict => {
             Err("affinity_commit_conflict".to_string())
         }
@@ -663,7 +858,12 @@ fn resolve_thread_assignment(
             let epoch = thread.thread_epoch + 1;
             (
                 epoch,
-                derive_thread_anchor(platform_key_hash, affinity_key, conversation_scope_id, epoch),
+                derive_thread_anchor(
+                    platform_key_hash,
+                    affinity_key,
+                    conversation_scope_id,
+                    epoch,
+                ),
                 true,
             )
         }
@@ -678,7 +878,12 @@ fn resolve_thread_assignment(
                 requested_conversation_id
                     .map(str::to_string)
                     .unwrap_or_else(|| {
-                        derive_thread_anchor(platform_key_hash, affinity_key, conversation_scope_id, 1)
+                        derive_thread_anchor(
+                            platform_key_hash,
+                            affinity_key,
+                            conversation_scope_id,
+                            1,
+                        )
                     }),
                 false,
             )
@@ -714,17 +919,21 @@ fn score_candidates(
     let mut total_supply = 0.0_f64;
     let mut total_effective_bindings = 0_i64;
     for (account, token) in candidates {
-        let snapshot =
-            super::super::scheduler::account_runtime_snapshot(storage, account.id.as_str(), token, 0);
-        let state = evaluate_candidate_state(account, token, &snapshot);
+        let snapshot = super::super::scheduler::account_runtime_snapshot(
+            storage,
+            account.id.as_str(),
+            token,
+            0,
+        );
+        let state = evaluate_candidate_state(storage, account, token, &snapshot);
         let quota_ratio = if snapshot.usage_known && snapshot.usage_snapshot_fresh {
             (snapshot.remaining_quota_percent / 100.0).clamp(0.0, 1.0)
         } else {
             0.5
         };
         let pass_prob_recent32 = pass_probability_recent32(account.id.as_str());
-        let route_health_norm = (f64::from(snapshot.route_health_score.clamp(0, 200)) / 200.0)
-            .clamp(0.0, 1.0);
+        let route_health_norm =
+            (f64::from(snapshot.route_health_score.clamp(0, 200)) / 200.0).clamp(0.0, 1.0);
         let headroom = if snapshot.dynamic_limit == 0 {
             1.0
         } else {
@@ -743,7 +952,11 @@ fn score_candidates(
             + 0.15 * latency_score;
         let supply = quota_ratio * quality_score;
         let effective_bindings = storage
-            .count_recent_client_bindings_for_account(account.id.as_str(), recent_cutoff, exclude_key)
+            .count_recent_client_bindings_for_account(
+                account.id.as_str(),
+                recent_cutoff,
+                exclude_key,
+            )
             .map_err(|err| format!("count recent client bindings failed: {err}"))?;
         total_effective_bindings += effective_bindings;
         if state == CandidateState::Active {
@@ -772,36 +985,39 @@ fn score_candidates(
 
     Ok(base
         .into_iter()
-        .map(|(account_id, supply, effective_bindings, state, tie_break_index)| {
-            let target_bindings = targets.get(account_id.as_str()).copied().unwrap_or(0);
-            let pressure_score = if target_bindings <= 0 || effective_bindings <= target_bindings {
-                1.0
-            } else {
-                let pressure = effective_bindings as f64 / target_bindings.max(1) as f64;
-                (1.0 / (1.0 + 0.85 * (pressure - 1.0))).clamp(0.0, 1.0)
-            };
-            let mut final_score = if state == CandidateState::Active {
-                supply * pressure_score
-            } else {
-                0.0
-            };
-            if manual_preferred
-                .as_deref()
-                .is_some_and(|preferred| preferred == account_id)
-                && state == CandidateState::Active
-            {
-                final_score += 0.08;
-            }
-            ScoredCandidate {
-                account_id,
-                supply_score: supply,
-                pressure_score,
-                final_score,
-                deficit: (target_bindings - effective_bindings).max(0),
-                state,
-                tie_break_index,
-            }
-        })
+        .map(
+            |(account_id, supply, effective_bindings, state, tie_break_index)| {
+                let target_bindings = targets.get(account_id.as_str()).copied().unwrap_or(0);
+                let pressure_score =
+                    if target_bindings <= 0 || effective_bindings <= target_bindings {
+                        1.0
+                    } else {
+                        let pressure = effective_bindings as f64 / target_bindings.max(1) as f64;
+                        (1.0 / (1.0 + 0.85 * (pressure - 1.0))).clamp(0.0, 1.0)
+                    };
+                let mut final_score = if state == CandidateState::Active {
+                    supply * pressure_score
+                } else {
+                    0.0
+                };
+                if manual_preferred
+                    .as_deref()
+                    .is_some_and(|preferred| preferred == account_id)
+                    && state == CandidateState::Active
+                {
+                    final_score += 0.08;
+                }
+                ScoredCandidate {
+                    account_id,
+                    supply_score: supply,
+                    pressure_score,
+                    final_score,
+                    deficit: (target_bindings - effective_bindings).max(0),
+                    state,
+                    tie_break_index,
+                }
+            },
+        )
         .collect())
 }
 
@@ -869,15 +1085,30 @@ fn choose_target_candidates(
     active.sort_by(compare_scored_candidates);
 
     let bound = binding
-        .and_then(|item| scored.iter().find(|candidate| candidate.account_id == item.account_id))
+        .and_then(|item| {
+            scored
+                .iter()
+                .find(|candidate| candidate.account_id == item.account_id)
+        })
         .cloned();
     if let Some(bound) = bound.as_ref() {
         match bound.state {
             CandidateState::Active => {
-                return Some((bound.account_id.clone(), vec![bound.account_id.clone()], None));
+                let mut accounts = vec![bound.account_id.clone()];
+                if let Some(spare) = active
+                    .iter()
+                    .find(|candidate| candidate.account_id != bound.account_id)
+                {
+                    accounts.push(spare.account_id.clone());
+                }
+                return Some((bound.account_id.clone(), accounts, None));
             }
             CandidateState::Draining if active.is_empty() => {
-                return Some((bound.account_id.clone(), vec![bound.account_id.clone()], None));
+                return Some((
+                    bound.account_id.clone(),
+                    vec![bound.account_id.clone()],
+                    None,
+                ));
             }
             CandidateState::Draining if !active.is_empty() => {
                 let next = active[0].account_id.clone();
@@ -888,7 +1119,11 @@ fn choose_target_candidates(
                 return Some((next, accounts, Some("soft_quota_drain".to_string())));
             }
             CandidateState::Cooldown if active.is_empty() => {
-                return Some((bound.account_id.clone(), vec![bound.account_id.clone()], None));
+                return Some((
+                    bound.account_id.clone(),
+                    vec![bound.account_id.clone()],
+                    None,
+                ));
             }
             _ => {}
         }
@@ -916,13 +1151,18 @@ fn choose_target_candidates(
             first.account_id.clone(),
             vec![first.account_id.clone()],
             binding
-                .and_then(|item| (item.account_id != first.account_id).then_some("affinity_fallback"))
+                .and_then(|item| {
+                    (item.account_id != first.account_id).then_some("affinity_fallback")
+                })
                 .map(str::to_string),
         )
     })
 }
 
-fn compare_scored_candidates(left: &ScoredCandidate, right: &ScoredCandidate) -> std::cmp::Ordering {
+fn compare_scored_candidates(
+    left: &ScoredCandidate,
+    right: &ScoredCandidate,
+) -> std::cmp::Ordering {
     right
         .deficit
         .cmp(&left.deficit)
@@ -958,6 +1198,7 @@ fn reorder_candidates(candidates: &mut Vec<(Account, Token)>, ordered_account_id
 }
 
 fn evaluate_candidate_state(
+    storage: &Storage,
     account: &Account,
     token: &Token,
     snapshot: &super::super::scheduler::SchedulerAccountSnapshot,
@@ -968,6 +1209,9 @@ fn evaluate_candidate_state(
     {
         return CandidateState::Unavailable;
     }
+    if active_account_quota_exhaustion(storage, account.id.as_str()).is_some() {
+        return CandidateState::Exhausted;
+    }
     let quota_faults = quota_fault_count(account.id.as_str());
     if snapshot.usage_snapshot_fresh && snapshot.remaining_quota_percent <= 0.0 {
         return CandidateState::Exhausted;
@@ -975,7 +1219,10 @@ fn evaluate_candidate_state(
     if quota_faults >= 2 {
         return CandidateState::Exhausted;
     }
-    if snapshot.cooldown_until.is_some_and(|value| value > now_ts()) {
+    if snapshot
+        .cooldown_until
+        .is_some_and(|value| value > now_ts())
+    {
         return CandidateState::Cooldown;
     }
     let soft_quota = current_affinity_soft_quota_percent() as f64;
@@ -987,6 +1234,20 @@ fn evaluate_candidate_state(
         return CandidateState::Draining;
     }
     CandidateState::Active
+}
+
+fn active_account_quota_exhaustion(
+    storage: &Storage,
+    account_id: &str,
+) -> Option<codexmanager_core::storage::AccountQuotaExhaustion> {
+    match storage.get_account_quota_exhaustion(account_id) {
+        Ok(Some(record)) if record.exhausted_until > now_ts() => Some(record),
+        Ok(Some(_)) => {
+            let _ = storage.delete_account_quota_exhaustion(account_id);
+            None
+        }
+        _ => None,
+    }
 }
 
 fn pass_probability_recent32(account_id: &str) -> f64 {
@@ -1009,7 +1270,10 @@ fn quota_fault_count(account_id: &str) -> usize {
 }
 
 fn prune_quota_faults(queue: &mut VecDeque<i64>, now: i64) {
-    while queue.front().is_some_and(|value| now.saturating_sub(*value) > 60) {
+    while queue
+        .front()
+        .is_some_and(|value| now.saturating_sub(*value) > 60)
+    {
         queue.pop_front();
     }
     while queue.len() > 2 {
@@ -1039,8 +1303,7 @@ fn supports_affinity_persistence_request(
         && adapted_path.starts_with("/v1/responses")
 }
 
-#[derive(Default)]
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 struct ParsedRequestContext {
     model: Option<String>,
     instructions_text: Option<String>,
@@ -1060,12 +1323,17 @@ fn parse_canonical_request_body(body: &[u8]) -> Option<ParsedRequestContext> {
     let object = value.as_object()?;
     let input_items = normalize_input_items(object.get("input"))?;
     Some(ParsedRequestContext {
-        model: object.get("model").and_then(Value::as_str).map(str::to_string),
+        model: object
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         instructions_text: object
             .get("instructions")
             .and_then(Value::as_str)
             .map(str::to_string),
-        tools_json: object.get("tools").and_then(|item| serde_json::to_string(item).ok()),
+        tools_json: object
+            .get("tools")
+            .and_then(|item| serde_json::to_string(item).ok()),
         tool_choice_json: object
             .get("tool_choice")
             .and_then(|item| serde_json::to_string(item).ok()),
@@ -1073,7 +1341,9 @@ fn parse_canonical_request_body(body: &[u8]) -> Option<ParsedRequestContext> {
         reasoning_json: object
             .get("reasoning")
             .and_then(|item| serde_json::to_string(item).ok()),
-        text_format_json: object.get("text").and_then(|item| serde_json::to_string(item).ok()),
+        text_format_json: object
+            .get("text")
+            .and_then(|item| serde_json::to_string(item).ok()),
         service_tier: object
             .get("service_tier")
             .and_then(Value::as_str)
@@ -1090,7 +1360,8 @@ fn parse_canonical_request_body(body: &[u8]) -> Option<ParsedRequestContext> {
 
 fn parse_canonical_response_output_items(body: &[u8]) -> Option<Vec<Value>> {
     let value = serde_json::from_slice::<Value>(body).ok()?;
-    value.get("output")
+    value
+        .get("output")
         .and_then(Value::as_array)
         .cloned()
         .or_else(|| {
@@ -1121,13 +1392,14 @@ fn build_replay_request_body(
     if !context_replay_enabled() || !path.starts_with("/v1/responses") {
         return Err("affinity_migration_context_unavailable".to_string());
     }
-    let mut request_value =
-        serde_json::from_slice::<Value>(body).map_err(|_| "invalid replay request body".to_string())?;
-    let request_object = request_value
-        .as_object_mut()
-        .ok_or_else(|| "invalid replay request object".to_string())?;
-    let current_items = normalize_input_items(request_object.get("input"))
-        .ok_or_else(|| "missing replay request input".to_string())?;
+    let request_value = serde_json::from_slice::<Value>(body)
+        .map_err(|_| "invalid replay request body".to_string())?;
+    let current_items = normalize_input_items(
+        request_value
+            .as_object()
+            .and_then(|value| value.get("input")),
+    )
+    .ok_or_else(|| "missing replay request input".to_string())?;
     let state = storage
         .get_conversation_context_state(platform_key_hash, affinity_key, conversation_scope_id)
         .map_err(|err| format!("load conversation context state failed: {err}"))?
@@ -1135,17 +1407,28 @@ fn build_replay_request_body(
     let events = storage
         .list_conversation_context_events(platform_key_hash, affinity_key, conversation_scope_id)
         .map_err(|err| format!("load conversation context events failed: {err}"))?;
-    let replay_items = trim_replay_items(events)?;
-    fill_missing_top_level_fields(request_object, &state);
-    let mut merged = replay_items;
-    merged.extend(current_items);
-    request_object.insert("input".to_string(), Value::Array(merged));
-    let bytes = serde_json::to_vec(&request_value)
-        .map_err(|err| format!("serialize replay request failed: {err}"))?;
-    if bytes.len() > REPLAY_PAYLOAD_MAX_BYTES {
-        return Err("affinity_migration_context_unavailable".to_string());
+    if let Ok(replay_items) = trim_replay_items(events.clone()) {
+        let bytes =
+            serialize_replay_request(&request_value, &state, replay_items, current_items.clone())?;
+        if bytes.len() <= REPLAY_PAYLOAD_MAX_BYTES {
+            return Ok(bytes);
+        }
     }
-    Ok(bytes)
+    for snapshot in storage
+        .list_context_snapshots(platform_key_hash, affinity_key, conversation_scope_id)
+        .map_err(|err| format!("load context snapshots failed: {err}"))?
+    {
+        let replay_items = build_snapshot_replay_items(events.as_slice(), &snapshot)?;
+        if replay_items.is_empty() {
+            continue;
+        }
+        let bytes =
+            serialize_replay_request(&request_value, &state, replay_items, current_items.clone())?;
+        if bytes.len() <= REPLAY_PAYLOAD_MAX_BYTES {
+            return Ok(bytes);
+        }
+    }
+    Err("affinity_migration_context_unavailable".to_string())
 }
 
 fn trim_replay_items(events: Vec<ConversationContextEvent>) -> Result<Vec<Value>, String> {
@@ -1175,6 +1458,188 @@ fn trim_replay_items(events: Vec<ConversationContextEvent>) -> Result<Vec<Value>
     Ok(items)
 }
 
+fn serialize_replay_request(
+    request_value: &Value,
+    state: &ConversationContextState,
+    replay_items: Vec<Value>,
+    current_items: Vec<Value>,
+) -> Result<Vec<u8>, String> {
+    let mut request_value = request_value.clone();
+    let request_object = request_value
+        .as_object_mut()
+        .ok_or_else(|| "invalid replay request object".to_string())?;
+    fill_missing_top_level_fields(request_object, state);
+    let mut merged = replay_items;
+    merged.extend(current_items);
+    request_object.insert("input".to_string(), Value::Array(merged));
+    serde_json::to_vec(&request_value)
+        .map_err(|err| format!("serialize replay request failed: {err}"))
+}
+
+fn build_snapshot_replay_items(
+    events: &[ConversationContextEvent],
+    snapshot: &ContextSnapshot,
+) -> Result<Vec<Value>, String> {
+    if events
+        .iter()
+        .any(|event| event.turn_index <= snapshot.upto_turn_index && is_tool_pair_event(event))
+    {
+        return Err("affinity_migration_context_unavailable".to_string());
+    }
+    let mut items = Vec::new();
+    let summary_text = snapshot.summary_text.trim();
+    if !summary_text.is_empty() {
+        items.push(serde_json::json!({
+            "type": "message",
+            "role": "system",
+            "content": [{
+                "type": "input_text",
+                "text": format!("Conversation summary before failover:\n{summary_text}")
+            }]
+        }));
+    }
+    let remaining = events
+        .iter()
+        .filter(|event| event.turn_index > snapshot.upto_turn_index)
+        .cloned()
+        .collect::<Vec<_>>();
+    items.extend(trim_replay_items(remaining)?);
+    Ok(items)
+}
+
+fn refresh_context_snapshot(
+    storage: &Storage,
+    platform_key_hash: &str,
+    affinity_key: &str,
+    conversation_scope_id: &str,
+) -> Result<(), String> {
+    let events = storage
+        .list_conversation_context_events(platform_key_hash, affinity_key, conversation_scope_id)
+        .map_err(|err| format!("load events for snapshot failed: {err}"))?;
+    let mut turns = BTreeMap::<i64, Vec<ConversationContextEvent>>::new();
+    for event in events {
+        turns.entry(event.turn_index).or_default().push(event);
+    }
+    let replay_max_turns = current_replay_max_turns() as usize;
+    if turns.len() <= replay_max_turns {
+        return Ok(());
+    }
+    let retain_from_index = turns.len().saturating_sub(replay_max_turns);
+    let ordered_turns = turns.keys().copied().collect::<Vec<_>>();
+    if retain_from_index == 0 {
+        return Ok(());
+    }
+    let upto_turn_index = ordered_turns[retain_from_index - 1];
+    if turns
+        .iter()
+        .filter(|(turn_index, _)| **turn_index <= upto_turn_index)
+        .any(|(_, turn_events)| turn_events.iter().any(is_tool_pair_event))
+    {
+        return Ok(());
+    }
+    let summary_text = build_snapshot_summary_text(&turns, upto_turn_index)?;
+    if summary_text.trim().is_empty() {
+        return Ok(());
+    }
+    let now = now_ts();
+    storage
+        .save_context_snapshot(&ContextSnapshot {
+            platform_key_hash: platform_key_hash.to_string(),
+            affinity_key: affinity_key.to_string(),
+            conversation_scope_id: conversation_scope_id.to_string(),
+            upto_turn_index,
+            summary_text,
+            created_at: now,
+            updated_at: now,
+        })
+        .map_err(|err| format!("save context snapshot failed: {err}"))
+}
+
+fn build_snapshot_summary_text(
+    turns: &BTreeMap<i64, Vec<ConversationContextEvent>>,
+    upto_turn_index: i64,
+) -> Result<String, String> {
+    let mut lines = Vec::new();
+    for (turn_index, turn_events) in turns {
+        if *turn_index > upto_turn_index {
+            break;
+        }
+        let mut turn_events = turn_events.clone();
+        turn_events.sort_by_key(|event| event.item_seq);
+        for event in turn_events {
+            let value = serde_json::from_str::<Value>(&event.item_json)
+                .map_err(|err| format!("parse snapshot item failed: {err}"))?;
+            let role = value
+                .get("role")
+                .and_then(Value::as_str)
+                .or_else(|| event.role.as_deref())
+                .unwrap_or("item");
+            let text = snapshot_text_from_value(&value);
+            if text.is_empty() {
+                continue;
+            }
+            lines.push(format!("turn {} {}: {}", turn_index, role, text));
+            if lines.len() >= 48 {
+                break;
+            }
+        }
+        if lines.len() >= 48 {
+            break;
+        }
+    }
+    let mut summary = lines.join("\n");
+    if summary.len() > 8 * 1024 {
+        summary.truncate(8 * 1024);
+    }
+    Ok(summary)
+}
+
+fn snapshot_text_from_value(value: &Value) -> String {
+    let mut parts = Vec::new();
+    collect_snapshot_text(value, &mut parts);
+    let mut summary = parts
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if summary.len() > 240 {
+        summary.truncate(240);
+    }
+    summary
+}
+
+fn collect_snapshot_text(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            let text = text.trim();
+            if !text.is_empty() {
+                out.push(text.to_string());
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_snapshot_text(item, out);
+            }
+        }
+        Value::Object(map) => {
+            for key in ["text", "summary", "output_text", "input_text"] {
+                if let Some(text) = map.get(key).and_then(Value::as_str) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        out.push(text.to_string());
+                    }
+                }
+            }
+            for key in ["content", "input", "output"] {
+                if let Some(value) = map.get(key) {
+                    collect_snapshot_text(value, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn fill_missing_top_level_fields(
     request_object: &mut serde_json::Map<String, Value>,
     state: &ConversationContextState,
@@ -1186,7 +1651,10 @@ fn fill_missing_top_level_fields(
     }
     if request_object.get("instructions").is_none() {
         if let Some(instructions) = state.instructions_text.as_ref() {
-            request_object.insert("instructions".to_string(), Value::String(instructions.clone()));
+            request_object.insert(
+                "instructions".to_string(),
+                Value::String(instructions.clone()),
+            );
         }
     }
     if request_object.get("tools").is_none() {
@@ -1205,7 +1673,10 @@ fn fill_missing_top_level_fields(
     }
     if request_object.get("parallel_tool_calls").is_none() {
         if let Some(parallel_tool_calls) = state.parallel_tool_calls {
-            request_object.insert("parallel_tool_calls".to_string(), Value::Bool(parallel_tool_calls));
+            request_object.insert(
+                "parallel_tool_calls".to_string(),
+                Value::Bool(parallel_tool_calls),
+            );
         }
     }
     if request_object.get("reasoning").is_none() {
@@ -1224,7 +1695,10 @@ fn fill_missing_top_level_fields(
     }
     if request_object.get("service_tier").is_none() {
         if let Some(service_tier) = state.service_tier.as_ref() {
-            request_object.insert("service_tier".to_string(), Value::String(service_tier.clone()));
+            request_object.insert(
+                "service_tier".to_string(),
+                Value::String(service_tier.clone()),
+            );
         }
     }
     if request_object.get("metadata").is_none() {
@@ -1378,7 +1852,12 @@ fn build_context_event(
 fn is_tool_pair_event(event: &ConversationContextEvent) -> bool {
     serde_json::from_str::<Value>(&event.item_json)
         .ok()
-        .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .is_some_and(|kind| kind == "function_call" || kind == "function_call_output")
 }
 
@@ -1394,12 +1873,12 @@ mod tests {
     use super::{
         build_replay_request_body, compare_scored_candidates, evaluate_candidate_state,
         hamilton_targets, now_ts, record_affinity_attempt_feedback, resolve_scope_id,
-        supports_affinity_persistence_request, trim_replay_items, Account,
-        AffinityScopePromotion, ClientBinding, ConversationContextEvent,
-        ConversationContextState, ConversationThread, ScoredCandidate, Storage, Token,
+        supports_affinity_persistence_request, trim_replay_items, Account, AffinityScopePromotion,
+        ClientBinding, ConversationContextEvent, ConversationContextState, ConversationThread,
+        ScoredCandidate, Storage, Token,
     };
-    use bytes::Bytes;
     use crate::gateway::ResponseAdapter;
+    use bytes::Bytes;
     use std::sync::{Mutex, OnceLock};
 
     fn affinity_runtime_lock() -> &'static Mutex<()> {
@@ -1439,7 +1918,10 @@ mod tests {
             state: super::CandidateState::Active,
             tie_break_index: 1,
         };
-        assert_eq!(compare_scored_candidates(&left, &right), std::cmp::Ordering::Less);
+        assert_eq!(
+            compare_scored_candidates(&left, &right),
+            std::cmp::Ordering::Less
+        );
     }
 
     #[test]
@@ -1614,6 +2096,7 @@ mod tests {
             affinity_source: "session_id",
             conversation_scope_id: "scope".to_string(),
             committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
             binding: None,
             thread: None,
             chosen_account_id: "acc-1".to_string(),
@@ -1662,7 +2145,10 @@ mod tests {
             Some("[{\"type\":\"function\",\"name\":\"lookup\"}]")
         );
         assert_eq!(state.parallel_tool_calls, Some(true));
-        assert_eq!(state.metadata_json.as_deref(), Some("{\"source\":\"saved\"}"));
+        assert_eq!(
+            state.metadata_json.as_deref(),
+            Some("{\"source\":\"saved\"}")
+        );
 
         crate::gateway::affinity::set_mode(previous_mode.as_str()).expect("restore mode");
     }
@@ -1704,6 +2190,7 @@ mod tests {
             affinity_source: "session_id",
             conversation_scope_id: "affinity::synthetic".to_string(),
             committed_conversation_scope_id: "conv-real".to_string(),
+            requested_conversation_id: None,
             binding: None,
             thread: None,
             chosen_account_id: "acc-1".to_string(),
@@ -1756,7 +2243,10 @@ mod tests {
             state.tools_json.as_deref(),
             Some("[{\"type\":\"function\",\"name\":\"lookup\"}]")
         );
-        assert_eq!(state.metadata_json.as_deref(), Some("{\"scope\":\"synthetic\"}"));
+        assert_eq!(
+            state.metadata_json.as_deref(),
+            Some("{\"scope\":\"synthetic\"}")
+        );
 
         crate::gateway::affinity::set_mode(previous_mode.as_str()).expect("restore mode");
     }
@@ -1837,12 +2327,14 @@ mod tests {
             .get_client_binding("pk", "sid:test")
             .expect("get binding")
             .expect("binding exists");
-        let (
-            source_scope_id,
-            commit_scope_id,
-            primary_scope_id_for_commit,
-            scope_promotion,
-        ) = resolve_scope_id(&storage, "pk", "sid:test", Some(&binding), Some("conv-real"))
+        let (source_scope_id, commit_scope_id, primary_scope_id_for_commit, scope_promotion) =
+            resolve_scope_id(
+                &storage,
+                "pk",
+                "sid:test",
+                Some(&binding),
+                Some("conv-real"),
+            )
             .expect("resolve scope");
 
         assert_eq!(source_scope_id, "affinity::synthetic");
@@ -1860,21 +2352,26 @@ mod tests {
             committed_binding.primary_scope_id.as_deref(),
             Some("affinity::synthetic")
         );
-        assert!(
-            storage
-                .get_conversation_thread("pk", "sid:test", "conv-real")
-                .expect("requested thread lookup")
-                .is_none()
-        );
+        assert!(storage
+            .get_conversation_thread("pk", "sid:test", "conv-real")
+            .expect("requested thread lookup")
+            .is_none());
     }
 
     #[test]
     fn evaluate_candidate_state_prefers_exhausted_over_cooldown() {
-        crate::gateway::scheduler_set_account_cooldown_until("acc-exhausted", Some(now_ts() + 60), true);
+        crate::gateway::scheduler_set_account_cooldown_until(
+            "acc-exhausted",
+            Some(now_ts() + 60),
+            true,
+        );
         record_affinity_attempt_feedback("acc-exhausted", 429, Some("insufficient_quota"));
         record_affinity_attempt_feedback("acc-exhausted", 429, Some("billing_hard_limit"));
+        let storage = Storage::open_in_memory().expect("open in memory");
+        storage.init().expect("init schema");
 
         let state = evaluate_candidate_state(
+            &storage,
             &Account {
                 id: "acc-exhausted".to_string(),
                 label: "acc-exhausted".to_string(),
@@ -1928,6 +2425,7 @@ mod tests {
             affinity_source: "session_id",
             conversation_scope_id: "affinity::synthetic".to_string(),
             committed_conversation_scope_id: "affinity::synthetic".to_string(),
+            requested_conversation_id: None,
             binding: None,
             thread: None,
             chosen_account_id: "acc-1".to_string(),
@@ -2050,6 +2548,7 @@ mod tests {
             affinity_source: "session_id",
             conversation_scope_id: "scope".to_string(),
             committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
             binding: Some(existing_binding),
             thread: Some(ConversationThread {
                 platform_key_hash: "pk".to_string(),
@@ -2201,6 +2700,7 @@ mod tests {
             affinity_source: "cli_affinity_id",
             conversation_scope_id: "scope".to_string(),
             committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
             binding: Some(existing_binding),
             thread: Some(existing_thread),
             chosen_account_id: "acc-1".to_string(),
@@ -2239,12 +2739,10 @@ mod tests {
         )
         .expect("finalize success");
 
-        assert!(
-            storage
-                .get_client_binding("pk", "sid:legacy")
-                .expect("load old binding")
-                .is_none()
-        );
+        assert!(storage
+            .get_client_binding("pk", "sid:legacy")
+            .expect("load old binding")
+            .is_none());
         let binding = storage
             .get_client_binding("pk", "cli:stable-cli")
             .expect("load migrated binding")
@@ -2253,12 +2751,10 @@ mod tests {
         assert_eq!(binding.binding_version, 4);
         assert_eq!(binding.last_switch_reason.as_deref(), Some("legacy_bind"));
 
-        assert!(
-            storage
-                .get_conversation_thread("pk", "sid:legacy", "scope")
-                .expect("load old thread")
-                .is_none()
-        );
+        assert!(storage
+            .get_conversation_thread("pk", "sid:legacy", "scope")
+            .expect("load old thread")
+            .is_none());
         let thread = storage
             .get_conversation_thread("pk", "cli:stable-cli", "scope")
             .expect("load migrated thread")
@@ -2266,12 +2762,10 @@ mod tests {
         assert_eq!(thread.thread_anchor, "thread-legacy");
         assert_eq!(thread.thread_version, 3);
 
-        assert!(
-            storage
-                .get_conversation_context_state("pk", "sid:legacy", "scope")
-                .expect("load old state")
-                .is_none()
-        );
+        assert!(storage
+            .get_conversation_context_state("pk", "sid:legacy", "scope")
+            .expect("load old state")
+            .is_none());
         let state = storage
             .get_conversation_context_state("pk", "cli:stable-cli", "scope")
             .expect("load migrated state")
@@ -2284,12 +2778,10 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert!(events.iter().any(|event| event.turn_index == 0));
         assert!(events.iter().any(|event| event.turn_index == 1));
-        assert!(
-            storage
-                .list_conversation_context_events("pk", "sid:legacy", "scope")
-                .expect("load old events")
-                .is_empty()
-        );
+        assert!(storage
+            .list_conversation_context_events("pk", "sid:legacy", "scope")
+            .expect("load old events")
+            .is_empty());
 
         crate::gateway::affinity::set_mode(previous_mode.as_str()).expect("restore mode");
     }
@@ -2385,6 +2877,7 @@ mod tests {
             affinity_source: "cli_affinity_id",
             conversation_scope_id: "scope".to_string(),
             committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
             binding: Some(existing_binding),
             thread: Some(existing_thread),
             chosen_account_id: "acc-1".to_string(),
@@ -2423,12 +2916,10 @@ mod tests {
         )
         .expect("finalize success");
 
-        assert!(
-            storage
-                .get_client_binding("pk", "sid:legacy")
-                .expect("load old binding")
-                .is_none()
-        );
+        assert!(storage
+            .get_client_binding("pk", "sid:legacy")
+            .expect("load old binding")
+            .is_none());
         let binding = storage
             .get_client_binding("pk", "cli:stable-cli")
             .expect("load migrated binding")
@@ -2480,6 +2971,7 @@ mod tests {
             affinity_source: "session_id",
             conversation_scope_id: "scope".to_string(),
             committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
             binding: None,
             thread: None,
             chosen_account_id: "acc-1".to_string(),

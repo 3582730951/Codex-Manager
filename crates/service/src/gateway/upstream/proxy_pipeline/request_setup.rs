@@ -56,11 +56,17 @@ impl UpstreamRequestSetup {
     }
 
     pub(in super::super) fn records_persistent_affinity(&self) -> bool {
-        matches!(self.routing_state, RequestRoutingState::PersistentAffinity(_))
+        matches!(
+            self.routing_state,
+            RequestRoutingState::PersistentAffinity(_)
+        )
     }
 
     pub(in super::super) fn records_legacy_conversation_binding(&self) -> bool {
-        matches!(self.routing_state, RequestRoutingState::LegacyConversation(_))
+        matches!(
+            self.routing_state,
+            RequestRoutingState::LegacyConversation(_)
+        )
     }
 }
 
@@ -188,15 +194,17 @@ pub(in super::super) fn prepare_request_setup(
     }
 
     if request_preflight.legacy_allowed {
-        let conversation_binding = super::super::super::conversation_binding::load_conversation_binding(
-            storage,
-            platform_key_hash,
-            local_conversation_id,
-        )?;
-        let effective_thread_anchor = super::super::super::conversation_binding::effective_thread_anchor(
-            local_conversation_id,
-            conversation_binding.as_ref(),
-        );
+        let conversation_binding =
+            super::super::super::conversation_binding::load_conversation_binding(
+                storage,
+                platform_key_hash,
+                local_conversation_id,
+            )?;
+        let effective_thread_anchor =
+            super::super::super::conversation_binding::effective_thread_anchor(
+                local_conversation_id,
+                conversation_binding.as_ref(),
+            );
         let request_body_override = effective_thread_anchor.as_ref().map(|thread_anchor| {
             Bytes::from(
                 super::super::super::apply_request_overrides_with_service_tier_and_forced_prompt_cache_key(
@@ -224,7 +232,8 @@ pub(in super::super) fn prepare_request_setup(
                 key_id,
                 model_for_log,
             );
-            let preserve_head = routing.binding_selected || routing.manual_preferred_account_id.is_some();
+            let preserve_head =
+                routing.binding_selected || routing.manual_preferred_account_id.is_some();
             let account_dynamic_limits = super::super::super::rebalance_scheduler_candidates(
                 storage,
                 candidates,

@@ -10,11 +10,11 @@ use aggregate::{
     parse_sse_frame_json, parse_usage_from_json, reload_output_text_from_env, usage_has_signal,
     SseTerminal, UpstreamResponseBridgeResult, UpstreamResponseUsage,
 };
-pub(crate) use aggregate::{DeliveryState, UpstreamCompletionState};
 #[cfg(test)]
 use aggregate::{
     output_text_limit_bytes, parse_usage_from_sse_frame, OUTPUT_TEXT_TRUNCATED_MARKER,
 };
+pub(crate) use aggregate::{DeliveryState, UpstreamCompletionState};
 use openai::{
     apply_openai_stream_meta_defaults, build_chat_fallback_content_chunk,
     build_completion_fallback_text_chunk, extract_openai_completed_output_text,
@@ -43,6 +43,8 @@ pub(crate) fn summarize_upstream_error_hint_from_body(
 ) -> Option<String> {
     aggregate::extract_error_hint_from_body(status_code, body)
 }
+
+pub(crate) use aggregate::inspect_non_stream_sse_payload;
 
 fn push_trace_id_header(headers: &mut Vec<Header>, trace_id: &str) {
     let Some(trace_id) = Some(trace_id)

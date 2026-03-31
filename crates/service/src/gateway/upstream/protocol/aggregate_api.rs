@@ -5,8 +5,8 @@ use std::time::Instant;
 use tiny_http::Request;
 
 use crate::aggregate_api::{AGGREGATE_API_PROVIDER_CLAUDE, AGGREGATE_API_PROVIDER_CODEX};
-use crate::gateway::request_log::RequestLogUsage;
 use crate::gateway::http_bridge::UpstreamCompletionState;
+use crate::gateway::request_log::RequestLogUsage;
 
 const AGGREGATE_API_RETRY_ATTEMPTS_PER_CHANNEL: usize = 3;
 

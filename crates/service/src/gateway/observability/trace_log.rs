@@ -565,6 +565,29 @@ pub(crate) fn log_request_final(
     clear_trace_state(trace_id);
 }
 
+pub(crate) fn log_affinity_finalize_error(
+    trace_id: &str,
+    account_id: &str,
+    affinity_key: Option<&str>,
+    error: &str,
+) {
+    if trace_id.trim().is_empty() {
+        return;
+    }
+    mark_trace_has_error(trace_id);
+    let line = format!(
+        "ts={} event=AFFINITY_FINALIZE_ERROR trace_id={} account_id={} affinity_key={} error={}",
+        current_trace_ts(),
+        sanitize_text(trace_id),
+        sanitize_text(account_id),
+        sanitize_text(affinity_key.unwrap_or("-")),
+        sanitize_text(error),
+    );
+    buffer_trace_line(trace_id, line);
+    flush_trace_lines(trace_id);
+    clear_trace_state(trace_id);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn log_failed_request(
     ts: i64,

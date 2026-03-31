@@ -98,3 +98,59 @@ fn aggregate_passthrough_applies_model_reasoning_and_service_tier_overrides() {
     assert_eq!(model_for_log.as_deref(), Some("gpt-5.4"));
     assert_eq!(reasoning_for_log.as_deref(), Some("high"));
 }
+
+#[test]
+fn child_key_runtime_config_inherits_owner_overrides() {
+    let mut child_key = sample_api_key(
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        Some("gpt-4.1"),
+        Some("low"),
+        None,
+    );
+    child_key.id = "gk_child".to_string();
+    child_key.key_hash = "child-hash".to_string();
+
+    let mut parent_key = sample_api_key(
+        crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
+        Some("gpt-5.4"),
+        Some("high"),
+        Some("fast"),
+    );
+    parent_key.id = "gk_parent".to_string();
+    parent_key.rotation_strategy = crate::apikey_profile::ROTATION_AGGREGATE_API.to_string();
+    parent_key.aggregate_api_id = Some("agg_parent".to_string());
+    parent_key.aggregate_api_url = Some("https://aggregate.example".to_string());
+    parent_key.auth_scheme = "x_api_key".to_string();
+    parent_key.upstream_base_url = Some("https://upstream.example".to_string());
+    parent_key.static_headers_json = Some("{\"x-test\":\"1\"}".to_string());
+
+    let effective = inherit_parent_runtime_config(&child_key, &parent_key);
+
+    assert_eq!(effective.id, "gk_child");
+    assert_eq!(effective.key_hash, "child-hash");
+    assert_eq!(
+        effective.protocol_type,
+        crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE
+    );
+    assert_eq!(effective.model_slug.as_deref(), Some("gpt-5.4"));
+    assert_eq!(effective.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(effective.service_tier.as_deref(), Some("fast"));
+    assert_eq!(
+        effective.rotation_strategy,
+        crate::apikey_profile::ROTATION_AGGREGATE_API
+    );
+    assert_eq!(effective.aggregate_api_id.as_deref(), Some("agg_parent"));
+    assert_eq!(
+        effective.aggregate_api_url.as_deref(),
+        Some("https://aggregate.example")
+    );
+    assert_eq!(effective.auth_scheme, "x_api_key");
+    assert_eq!(
+        effective.upstream_base_url.as_deref(),
+        Some("https://upstream.example")
+    );
+    assert_eq!(
+        effective.static_headers_json.as_deref(),
+        Some("{\"x-test\":\"1\"}")
+    );
+}

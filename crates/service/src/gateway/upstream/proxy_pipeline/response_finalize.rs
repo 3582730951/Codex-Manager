@@ -1,9 +1,9 @@
 use tiny_http::Request;
 
 use super::super::super::request_log::RequestLogUsage;
+use super::execution_context::GatewayUpstreamExecutionContext;
 use crate::gateway::affinity::AffinityRoutingResolution;
 use crate::gateway::http_bridge::UpstreamCompletionState;
-use super::execution_context::GatewayUpstreamExecutionContext;
 
 pub(in super::super) fn respond_terminal(
     request: Request,
@@ -249,6 +249,30 @@ pub(super) fn finalize_upstream_response(
         },
     );
 
+    let hard_quota_headers = {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(retry_after) = bridge
+            .upstream_retry_after
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(retry_after) {
+                headers.insert(reqwest::header::RETRY_AFTER, value);
+            }
+        }
+        if let Some(date) = bridge
+            .upstream_date
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(date) {
+                headers.insert(reqwest::header::DATE, value);
+            }
+        }
+        (!headers.is_empty()).then_some(headers)
+    };
     let usage = bridge.usage;
     if affinity_resolution.is_some() && !client_delivery_failed && !upstream_eof_without_terminal {
         super::super::super::affinity::record_affinity_attempt_feedback(
@@ -262,9 +286,20 @@ pub(super) fn finalize_upstream_response(
         && !client_delivery_failed
         && !upstream_eof_without_terminal
     {
+        super::super::super::affinity::clear_account_hard_quota_exhaustion(
+            context.storage(),
+            account_id,
+        );
         if let Some(runtime_key) = peer_runtime_key {
             super::super::super::affinity::record_peer_runtime_success(runtime_key, account_id);
         }
+    } else {
+        let _ = super::super::super::affinity::mark_account_hard_quota_exhausted(
+            context.storage(),
+            account_id,
+            hard_quota_headers.as_ref(),
+            final_error.as_deref(),
+        );
     }
     context.log_final_result_with_model(
         Some(account_id),
@@ -302,6 +337,12 @@ pub(super) fn finalize_upstream_response(
                         trace_id,
                         account_id,
                         err
+                    );
+                    super::super::super::trace_log::log_affinity_finalize_error(
+                        trace_id,
+                        account_id,
+                        Some(resolution.affinity_key.as_str()),
+                        err.as_str(),
                     );
                 }
             } else {

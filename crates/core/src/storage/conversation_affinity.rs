@@ -93,12 +93,13 @@ fn affinity_key_exists(
     platform_key_hash: &str,
     affinity_key: &str,
 ) -> Result<bool> {
-    let sql = format!(
-        "SELECT COUNT(1) FROM {table} WHERE platform_key_hash = ?1 AND affinity_key = ?2"
-    );
-    let count: i64 = tx.query_row(sql.as_str(), params![platform_key_hash, affinity_key], |row| {
-        row.get(0)
-    })?;
+    let sql =
+        format!("SELECT COUNT(1) FROM {table} WHERE platform_key_hash = ?1 AND affinity_key = ?2");
+    let count: i64 = tx.query_row(
+        sql.as_str(),
+        params![platform_key_hash, affinity_key],
+        |row| row.get(0),
+    )?;
     Ok(count > 0)
 }
 
@@ -201,7 +202,12 @@ impl Storage {
                  WHERE account_id = ?1
                    AND last_seen_at >= ?2
                    AND NOT (platform_key_hash = ?3 AND affinity_key = ?4)",
-                params![account_id, last_seen_at_gte, platform_key_hash, affinity_key],
+                params![
+                    account_id,
+                    last_seen_at_gte,
+                    platform_key_hash,
+                    affinity_key
+                ],
                 |row| row.get(0),
             ),
             None => self.conn.query_row(
@@ -505,10 +511,7 @@ impl Storage {
             .optional()
     }
 
-    pub fn save_conversation_context_state(
-        &self,
-        state: &ConversationContextState,
-    ) -> Result<()> {
+    pub fn save_conversation_context_state(&self, state: &ConversationContextState) -> Result<()> {
         self.conn.execute(
             "INSERT INTO conversation_context_state (
                 platform_key_hash,
@@ -552,7 +555,9 @@ impl Storage {
                 &state.instructions_text,
                 &state.tools_json,
                 &state.tool_choice_json,
-                state.parallel_tool_calls.map(|value| if value { 1 } else { 0 }),
+                state
+                    .parallel_tool_calls
+                    .map(|value| if value { 1 } else { 0 }),
                 &state.reasoning_json,
                 &state.text_format_json,
                 &state.service_tier,
@@ -590,7 +595,11 @@ impl Storage {
                AND conversation_scope_id = ?3
              ORDER BY turn_index ASC, item_seq ASC",
         )?;
-        let mut rows = stmt.query(params![platform_key_hash, affinity_key, conversation_scope_id])?;
+        let mut rows = stmt.query(params![
+            platform_key_hash,
+            affinity_key,
+            conversation_scope_id
+        ])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(map_context_event(row)?);
@@ -613,7 +622,12 @@ impl Storage {
                AND affinity_key = ?2
                AND conversation_scope_id = ?3
                AND turn_index = ?4",
-            params![platform_key_hash, affinity_key, conversation_scope_id, turn_index],
+            params![
+                platform_key_hash,
+                affinity_key,
+                conversation_scope_id,
+                turn_index
+            ],
         )?;
         for event in events {
             tx.execute(
@@ -669,7 +683,11 @@ impl Storage {
                AND conversation_scope_id = ?3
              ORDER BY upto_turn_index DESC",
         )?;
-        let mut rows = stmt.query(params![platform_key_hash, affinity_key, conversation_scope_id])?;
+        let mut rows = stmt.query(params![
+            platform_key_hash,
+            affinity_key,
+            conversation_scope_id
+        ])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(map_context_snapshot(row)?);
@@ -1205,7 +1223,10 @@ impl Storage {
              )",
             [account_id],
         )?;
-        tx.execute("DELETE FROM client_bindings WHERE account_id = ?1", [account_id])?;
+        tx.execute(
+            "DELETE FROM client_bindings WHERE account_id = ?1",
+            [account_id],
+        )?;
         tx.execute(
             "DELETE FROM conversation_threads WHERE account_id = ?1",
             [account_id],

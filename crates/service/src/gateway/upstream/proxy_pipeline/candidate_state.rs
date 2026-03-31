@@ -18,8 +18,11 @@ impl CandidateExecutionState {
         &self,
         body: &'a Bytes,
         setup: &'a UpstreamRequestSetup,
+        body_override: Option<&'a Bytes>,
     ) -> &'a Bytes {
-        setup.request_body_override.as_ref().unwrap_or(body)
+        body_override
+            .or(setup.request_body_override.as_ref())
+            .unwrap_or(body)
     }
 
     fn rewrite_cache_key(
@@ -78,10 +81,11 @@ impl CandidateExecutionState {
         path: &str,
         body: &Bytes,
         setup: &UpstreamRequestSetup,
+        body_override: Option<&Bytes>,
         model_override: Option<&str>,
         prompt_cache_key: Option<&str>,
     ) -> Bytes {
-        let base_body = self.base_body_for_attempt(body, setup);
+        let base_body = self.base_body_for_attempt(body, setup, body_override);
         let Some(cache_key) = Self::rewrite_cache_key(model_override, prompt_cache_key) else {
             return base_body.clone();
         };
@@ -109,11 +113,18 @@ impl CandidateExecutionState {
         body: &Bytes,
         strip_session_affinity: bool,
         setup: &UpstreamRequestSetup,
+        body_override: Option<&Bytes>,
         model_override: Option<&str>,
         prompt_cache_key: Option<&str>,
     ) -> Bytes {
-        let rewritten =
-            self.rewrite_body_for_model(path, body, setup, model_override, prompt_cache_key);
+        let rewritten = self.rewrite_body_for_model(
+            path,
+            body,
+            setup,
+            body_override,
+            model_override,
+            prompt_cache_key,
+        );
         if strip_session_affinity && setup.has_body_encrypted_content {
             if let Some(cache_key) = Self::rewrite_cache_key(model_override, prompt_cache_key) {
                 return self
@@ -145,11 +156,18 @@ impl CandidateExecutionState {
         path: &str,
         body: &Bytes,
         setup: &UpstreamRequestSetup,
+        body_override: Option<&Bytes>,
         model_override: Option<&str>,
         prompt_cache_key: Option<&str>,
     ) -> Bytes {
-        let rewritten =
-            self.rewrite_body_for_model(path, body, setup, model_override, prompt_cache_key);
+        let rewritten = self.rewrite_body_for_model(
+            path,
+            body,
+            setup,
+            body_override,
+            model_override,
+            prompt_cache_key,
+        );
         if setup.has_body_encrypted_content {
             if let Some(cache_key) = Self::rewrite_cache_key(model_override, prompt_cache_key) {
                 return self
@@ -208,6 +226,7 @@ mod tests {
             &body,
             false,
             &setup,
+            None,
             Some("gpt-5.2"),
             Some("thread-2"),
         );

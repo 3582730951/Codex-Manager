@@ -7,9 +7,9 @@ use super::{
     mark_collector_terminal_success, merge_usage, normalize_chat_chunk_delta_role,
     parse_sse_frame_json, should_skip_chat_live_text_event, sse_keepalive_interval,
     stream_incomplete_message, stream_reader_disconnected_message, update_openai_stream_meta, Arc,
-    Cursor, Mutex, OpenAIStreamMeta, PassthroughSseCollector, Read, SseKeepAliveFrame,
-    SseTerminal, ToolNameRestoreMap, UpstreamCompletionState, UpstreamSseFramePump,
-    UpstreamSseFramePumpItem, Value,
+    Cursor, Mutex, OpenAIStreamMeta, PassthroughSseCollector, Read, SseKeepAliveFrame, SseTerminal,
+    ToolNameRestoreMap, UpstreamCompletionState, UpstreamSseFramePump, UpstreamSseFramePumpItem,
+    Value,
 };
 
 pub(crate) struct OpenAIChatCompletionsSseReader {

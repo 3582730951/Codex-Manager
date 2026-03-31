@@ -14,6 +14,34 @@ fn resolves_auth_callback_route() {
 }
 
 #[test]
+fn resolves_oauth_routes() {
+    assert_eq!(
+        resolve_backend_route("GET", "/oauth/authorize?client_id=abc"),
+        BackendRoute::OAuthAuthorize
+    );
+    assert_eq!(
+        resolve_backend_route("POST", "/oauth/authorize/approve"),
+        BackendRoute::OAuthApprove
+    );
+    assert_eq!(
+        resolve_backend_route("POST", "/oauth/token"),
+        BackendRoute::OAuthToken
+    );
+    assert_eq!(
+        resolve_backend_route("POST", "/api/accounts/deviceauth/usercode"),
+        BackendRoute::DeviceUserCode
+    );
+    assert_eq!(
+        resolve_backend_route("POST", "/api/accounts/deviceauth/token"),
+        BackendRoute::DeviceToken
+    );
+    assert_eq!(
+        resolve_backend_route("GET", "/codex/device"),
+        BackendRoute::DeviceVerify
+    );
+}
+
+#[test]
 fn resolves_metrics_route() {
     assert_eq!(
         resolve_backend_route("GET", "/metrics"),

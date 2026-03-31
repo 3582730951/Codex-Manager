@@ -42,6 +42,31 @@ fn try_refresh_chatgpt_access_token(
     Ok(Some(refreshed.to_string()))
 }
 
+fn is_sse_content_type(header: Option<&reqwest::header::HeaderValue>) -> bool {
+    header
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .is_some_and(|value| value.starts_with("text/event-stream"))
+}
+
+fn rebuild_upstream_response_from_bytes(
+    status: reqwest::StatusCode,
+    version: reqwest::Version,
+    headers: reqwest::header::HeaderMap,
+    body: bytes::Bytes,
+) -> Result<reqwest::blocking::Response, String> {
+    let mut builder = axum::http::Response::builder()
+        .status(status)
+        .version(version);
+    if let Some(target_headers) = builder.headers_mut() {
+        *target_headers = headers;
+    }
+    builder
+        .body(body)
+        .map(reqwest::blocking::Response::from)
+        .map_err(|err| format!("rebuild upstream response failed: {err}"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn retry_upstream_server_error_once(
     client: &reqwest::blocking::Client,
@@ -123,7 +148,8 @@ pub(super) fn process_upstream_post_retry_flow<F>(
     request_ctx: UpstreamRequestContext<'_>,
     incoming_headers: &super::super::super::IncomingHeaderSnapshot,
     body: &Bytes,
-    is_stream: bool,
+    _client_is_stream: bool,
+    upstream_is_stream: bool,
     auth_token: &str,
     account: &Account,
     token: &mut Token,
@@ -168,7 +194,7 @@ where
                     request_ctx,
                     incoming_headers,
                     body,
-                    is_stream,
+                    upstream_is_stream,
                     current_auth_token.as_str(),
                     account,
                     strip_session_affinity,
@@ -214,7 +240,7 @@ where
             request_ctx,
             incoming_headers,
             body,
-            is_stream,
+            upstream_is_stream,
             current_auth_token.as_str(),
             account,
             strip_session_affinity,
@@ -251,7 +277,7 @@ where
         request_ctx,
         incoming_headers,
         body,
-        is_stream,
+        upstream_is_stream,
         current_auth_token.as_str(),
         account,
         strip_session_affinity,
@@ -280,7 +306,7 @@ where
         request_ctx,
         incoming_headers,
         body,
-        is_stream,
+        upstream_is_stream,
         current_auth_token.as_str(),
         account,
         strip_session_affinity,
@@ -311,7 +337,7 @@ where
         method,
         incoming_headers,
         body,
-        is_stream,
+        upstream_is_stream,
         upstream_base,
         path,
         upstream_fallback_base,
@@ -341,6 +367,85 @@ where
                 message,
             };
         }
+    }
+
+    if status.is_success()
+        && is_sse_content_type(upstream.headers().get(reqwest::header::CONTENT_TYPE))
+    {
+        let response_status = upstream.status();
+        let response_version = upstream.version();
+        let response_headers = upstream.headers().clone();
+        let response_body = match upstream.bytes() {
+            Ok(body) => body,
+            Err(err) => {
+                return PostRetryFlowDecision::Terminal {
+                    status_code: 502,
+                    message: format!("read upstream body failed: {err}"),
+                };
+            }
+        };
+        let inspection = crate::gateway::inspect_non_stream_sse_payload(response_body.as_ref());
+        if let Some(terminal_error) = inspection
+            .terminal_error
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if crate::gateway::affinity::is_hard_quota_error_message(terminal_error) {
+                let _ = super::super::super::affinity::mark_account_hard_quota_exhausted(
+                    storage,
+                    &account.id,
+                    Some(&response_headers),
+                    Some(terminal_error),
+                );
+                log_gateway_result(Some(url), 429, Some(terminal_error));
+                return if has_more_candidates {
+                    PostRetryFlowDecision::Failover
+                } else {
+                    PostRetryFlowDecision::Terminal {
+                        status_code: 429,
+                        message: terminal_error.to_string(),
+                    }
+                };
+            }
+        }
+        upstream = match rebuild_upstream_response_from_bytes(
+            response_status,
+            response_version,
+            response_headers,
+            response_body,
+        ) {
+            Ok(response) => response,
+            Err(err) => {
+                return PostRetryFlowDecision::Terminal {
+                    status_code: 502,
+                    message: err,
+                };
+            }
+        };
+        status = upstream.status();
+    }
+
+    if status.as_u16() == 429 && has_more_candidates {
+        let headers = upstream.headers().clone();
+        let response_body = upstream.text().unwrap_or_default();
+        let response_hint = crate::gateway::summarize_upstream_error_hint_from_body(
+            status.as_u16(),
+            response_body.as_bytes(),
+        )
+        .or_else(|| {
+            let trimmed = response_body.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .unwrap_or_else(|| "upstream rate-limited".to_string());
+        let _ = super::super::super::affinity::mark_account_hard_quota_exhausted(
+            storage,
+            &account.id,
+            Some(&headers),
+            Some(response_hint.as_str()),
+        );
+        log_gateway_result(Some(url), status.as_u16(), Some(response_hint.as_str()));
+        return PostRetryFlowDecision::Failover;
     }
 
     match decide_upstream_outcome(
@@ -394,6 +499,66 @@ mod tests {
             api_key_access_token: Some("api-key-token".to_string()),
             last_refresh: now,
         }
+    }
+
+    fn send_test_upstream(
+        client: &reqwest::blocking::Client,
+        request_ctx: UpstreamRequestContext<'_>,
+        incoming_headers: &IncomingHeaderSnapshot,
+        body: &Bytes,
+        auth_token: &str,
+        account: &Account,
+        url: &str,
+    ) -> reqwest::blocking::Response {
+        super::super::transport::send_upstream_request(
+            client,
+            &reqwest::Method::POST,
+            url,
+            None,
+            request_ctx,
+            incoming_headers,
+            body,
+            false,
+            auth_token,
+            account,
+            false,
+        )
+        .expect("send initial request")
+    }
+
+    fn spawn_single_response_server(
+        status: u16,
+        content_type: &str,
+        body: &'static str,
+    ) -> (String, thread::JoinHandle<()>) {
+        let server = Server::http("127.0.0.1:0").expect("start server");
+        let addr = format!("http://{}", server.server_addr());
+        let body = body.to_string();
+        let content_type = content_type.to_string();
+        let join = thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(2))
+                .expect("receive upstream request")
+                .expect("request present");
+            let response = Response::from_string(body)
+                .with_status_code(StatusCode(status))
+                .with_header(
+                    tiny_http::Header::from_bytes(
+                        b"Content-Type".as_slice(),
+                        content_type.as_bytes(),
+                    )
+                    .expect("content-type header"),
+                )
+                .with_header(
+                    tiny_http::Header::from_bytes(
+                        b"Date".as_slice(),
+                        b"Tue, 31 Mar 2026 04:30:00 GMT".as_slice(),
+                    )
+                    .expect("date header"),
+                );
+            request.respond(response).expect("respond");
+        });
+        (addr, join)
     }
 
     #[test]
@@ -463,6 +628,7 @@ mod tests {
             &incoming_headers,
             &body,
             false,
+            false,
             auth_token.as_str(),
             &account,
             &mut token,
@@ -482,5 +648,281 @@ mod tests {
             PostRetryFlowDecision::RespondUpstream(resp) => assert_eq!(resp.status(), 200),
             _ => panic!("unexpected decision"),
         }
+    }
+
+    #[test]
+    fn non_stream_sse_response_failed_quota_triggers_failover() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-sse-quota-failed", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_quota_failed_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_quota_failed_1\",\"status\":\"failed\",\"error\":{\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\",\"message\":\"You exceeded your current quota, please check your plan and billing details.\"}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (addr, join) = spawn_single_response_server(200, "text/event-stream", sse);
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body = Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            false,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            true,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
+        assert!(matches!(decision, PostRetryFlowDecision::Failover));
+    }
+
+    #[test]
+    fn non_stream_sse_completed_then_usage_limit_error_triggers_failover() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-sse-quota-extra", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_quota_extra_1\",\"delta\":\"hello\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_quota_extra_1\",\"created\":1774960201,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"usage_limit_reached\",\"code\":\"usage_limit_reached\",\"message\":\"You've hit your usage limit. To get more access now, send a request to your admin or try again at 12:51 PM.\"}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (addr, join) = spawn_single_response_server(200, "text/event-stream", sse);
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body = Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            false,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            true,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
+        assert!(matches!(decision, PostRetryFlowDecision::Failover));
+    }
+
+    #[test]
+    fn streaming_sse_response_failed_quota_triggers_failover_before_delivery() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-stream-sse-quota-failed", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_quota_failed_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_stream_quota_failed_1\",\"delta\":\"hello\"}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_stream_quota_failed_1\",\"status\":\"failed\",\"error\":{\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\",\"message\":\"You exceeded your current quota, please check your plan and billing details.\"}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (addr, join) = spawn_single_response_server(200, "text/event-stream", sse);
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body =
+            Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            true,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            true,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
+        assert!(matches!(decision, PostRetryFlowDecision::Failover));
+    }
+
+    #[test]
+    fn streaming_sse_completed_then_usage_limit_error_triggers_failover_before_delivery() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-stream-sse-quota-extra", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let sse = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_stream_quota_extra_1\",\"delta\":\"hello\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_quota_extra_1\",\"created\":1774960201,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"usage_limit_reached\",\"code\":\"usage_limit_reached\",\"message\":\"You've hit your usage limit. To get more access now, send a request to your admin or try again at 12:51 PM.\"}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (addr, join) = spawn_single_response_server(200, "text/event-stream", sse);
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body =
+            Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            true,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            true,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
+        assert!(matches!(decision, PostRetryFlowDecision::Failover));
     }
 }

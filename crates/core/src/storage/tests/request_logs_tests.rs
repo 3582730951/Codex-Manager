@@ -85,6 +85,7 @@ fn insert_request_log_with_token_stat_is_visible_via_join() {
     let stat = RequestTokenStat {
         request_log_id: 0,
         key_id: log.key_id.clone(),
+        owner_key_id: None,
         account_id: log.account_id.clone(),
         model: log.model.clone(),
         input_tokens: Some(10),
@@ -168,6 +169,7 @@ fn token_stat_failure_still_commits_request_log() {
     let stat = RequestTokenStat {
         request_log_id: 0,
         key_id: log.key_id.clone(),
+        owner_key_id: None,
         account_id: log.account_id.clone(),
         model: log.model.clone(),
         input_tokens: Some(1),
@@ -242,6 +244,7 @@ fn request_logs_support_backend_pagination_and_status_filters() {
             .insert_request_token_stat(&RequestTokenStat {
                 request_log_id,
                 key_id: Some("gk-log".to_string()),
+                owner_key_id: None,
                 account_id: Some("acc-log".to_string()),
                 model: Some("gpt-5".to_string()),
                 input_tokens: Some(10 + index),
@@ -312,6 +315,7 @@ fn request_logs_filtered_summary_aggregates_counts_and_tokens() {
             .insert_request_token_stat(&RequestTokenStat {
                 request_log_id,
                 key_id: Some("gk-sum".to_string()),
+                owner_key_id: None,
                 account_id: Some("acc-sum".to_string()),
                 model: Some("gpt-5".to_string()),
                 input_tokens: None,

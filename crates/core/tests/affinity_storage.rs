@@ -102,11 +102,9 @@ fn conversation_affinity_storage_roundtrip_and_delete_for_account() {
         updated_at: now,
         last_seen_at: now,
     };
-    assert!(
-        storage
-            .save_client_binding(&binding, None)
-            .expect("insert client binding")
-    );
+    assert!(storage
+        .save_client_binding(&binding, None)
+        .expect("insert client binding"));
 
     let thread = ConversationThread {
         platform_key_hash: "platform-1".to_string(),
@@ -120,11 +118,9 @@ fn conversation_affinity_storage_roundtrip_and_delete_for_account() {
         updated_at: now,
         last_seen_at: now,
     };
-    assert!(
-        storage
-            .save_conversation_thread(&thread, None)
-            .expect("insert thread")
-    );
+    assert!(storage
+        .save_conversation_thread(&thread, None)
+        .expect("insert thread"));
 
     storage
         .save_conversation_context_state(&ConversationContextState {
@@ -234,36 +230,26 @@ fn conversation_affinity_storage_roundtrip_and_delete_for_account() {
         .delete_affinity_state_for_account("acc-1")
         .expect("delete affinity state");
 
-    assert!(
-        storage
-            .get_client_binding("platform-1", "sid:test-1")
-            .expect("binding after delete")
-            .is_none()
-    );
-    assert!(
-        storage
-            .get_conversation_thread("platform-1", "sid:test-1", "scope-1")
-            .expect("thread after delete")
-            .is_none()
-    );
-    assert!(
-        storage
-            .get_conversation_context_state("platform-1", "sid:test-1", "scope-1")
-            .expect("state after delete")
-            .is_none()
-    );
-    assert!(
-        storage
-            .list_conversation_context_events("platform-1", "sid:test-1", "scope-1")
-            .expect("events after delete")
-            .is_empty()
-    );
-    assert!(
-        storage
-            .list_context_snapshots("platform-1", "sid:test-1", "scope-1")
-            .expect("snapshots after delete")
-            .is_empty()
-    );
+    assert!(storage
+        .get_client_binding("platform-1", "sid:test-1")
+        .expect("binding after delete")
+        .is_none());
+    assert!(storage
+        .get_conversation_thread("platform-1", "sid:test-1", "scope-1")
+        .expect("thread after delete")
+        .is_none());
+    assert!(storage
+        .get_conversation_context_state("platform-1", "sid:test-1", "scope-1")
+        .expect("state after delete")
+        .is_none());
+    assert!(storage
+        .list_conversation_context_events("platform-1", "sid:test-1", "scope-1")
+        .expect("events after delete")
+        .is_empty());
+    assert!(storage
+        .list_context_snapshots("platform-1", "sid:test-1", "scope-1")
+        .expect("snapshots after delete")
+        .is_empty());
 }
 
 #[test]
@@ -418,12 +404,10 @@ fn commit_affinity_turn_success_rolls_back_on_cas_miss() {
         Some("affinity::synthetic")
     );
 
-    assert!(
-        storage
-            .get_conversation_thread("platform-1", "sid:test-1", "scope-real")
-            .expect("load promoted thread")
-            .is_none()
-    );
+    assert!(storage
+        .get_conversation_thread("platform-1", "sid:test-1", "scope-real")
+        .expect("load promoted thread")
+        .is_none());
     let original_thread = storage
         .get_conversation_thread("platform-1", "sid:test-1", "affinity::synthetic")
         .expect("load original thread")
@@ -431,12 +415,10 @@ fn commit_affinity_turn_success_rolls_back_on_cas_miss() {
     assert_eq!(original_thread.account_id, "acc-1");
     assert_eq!(original_thread.thread_anchor, "thread-synth");
 
-    assert!(
-        storage
-            .get_conversation_context_state("platform-1", "sid:test-1", "scope-real")
-            .expect("load promoted state")
-            .is_none()
-    );
+    assert!(storage
+        .get_conversation_context_state("platform-1", "sid:test-1", "scope-real")
+        .expect("load promoted state")
+        .is_none());
     let original_state = storage
         .get_conversation_context_state("platform-1", "sid:test-1", "affinity::synthetic")
         .expect("load original state")

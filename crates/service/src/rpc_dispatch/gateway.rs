@@ -27,7 +27,11 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             "options": ["off", "observe", "enforce"],
         })),
         "gateway/affinity/set" => {
-            let params = req.params.as_ref().cloned().unwrap_or_else(|| serde_json::json!({}));
+            let params = req
+                .params
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
             super::value_or_error(
                 serde_json::from_value::<crate::AffinitySettingsInput>(params)
                     .map_err(|err| format!("invalid affinity settings payload: {err}"))

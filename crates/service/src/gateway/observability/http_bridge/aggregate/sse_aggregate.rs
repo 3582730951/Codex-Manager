@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Cursor};
 use super::{
     append_output_text_raw, collect_output_text_from_event_fields, collect_response_output_text,
     inspect_sse_frame, is_response_completed_event_name, merge_usage, parse_sse_frame_json,
-    UpstreamResponseUsage,
+    SseTerminal, UpstreamResponseUsage,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -524,14 +524,22 @@ fn synthesize_chat_completion_body(synthesis: &ChatCompletionSseSynthesis) -> Op
     serde_json::to_vec(&Value::Object(out)).ok()
 }
 
-pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
-    payload: &[u8],
-) -> (Option<Vec<u8>>, UpstreamResponseUsage) {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NonStreamSseInspection {
+    pub synthesized_body: Option<Vec<u8>>,
+    pub usage: UpstreamResponseUsage,
+    pub terminal_error: Option<String>,
+    pub last_event_type: Option<String>,
+}
+
+pub(crate) fn inspect_non_stream_sse_payload(payload: &[u8]) -> NonStreamSseInspection {
     let mut usage = UpstreamResponseUsage::default();
     let mut completed_response: Option<Value> = None;
     let mut responses_sse_synthesis = ResponsesSseSynthesis::default();
     let mut chat_completion_synthesis = ChatCompletionSseSynthesis::default();
     let mut frame_lines: Vec<String> = Vec::new();
+    let mut terminal_error: Option<String> = None;
+    let mut last_event_type: Option<String> = None;
 
     let mut reader = BufReader::new(Cursor::new(payload));
     let mut line = String::new();
@@ -551,6 +559,15 @@ pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
             let inspection = inspect_sse_frame(&frame);
             if let Some(parsed_usage) = inspection.usage {
                 merge_usage(&mut usage, parsed_usage);
+            }
+            if let Some(event_type) = inspection.last_event_type {
+                last_event_type = Some(event_type);
+            }
+            if let Some(SseTerminal::Err(message)) = inspection.terminal {
+                let message = message.trim();
+                if !message.is_empty() {
+                    terminal_error = Some(message.to_string());
+                }
             }
             if let Some(value) = parse_sse_frame_json(&frame) {
                 update_responses_sse_synthesis(&mut responses_sse_synthesis, &value);
@@ -575,6 +592,15 @@ pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
         if let Some(parsed_usage) = inspection.usage {
             merge_usage(&mut usage, parsed_usage);
         }
+        if let Some(event_type) = inspection.last_event_type {
+            last_event_type = Some(event_type);
+        }
+        if let Some(SseTerminal::Err(message)) = inspection.terminal {
+            let message = message.trim();
+            if !message.is_empty() {
+                terminal_error = Some(message.to_string());
+            }
+        }
         if let Some(value) = parse_sse_frame_json(&frame_lines) {
             update_responses_sse_synthesis(&mut responses_sse_synthesis, &value);
             update_chat_completion_sse_synthesis(&mut chat_completion_synthesis, &value);
@@ -595,7 +621,19 @@ pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
         .and_then(|value| serde_json::to_vec(&value).ok())
         .or_else(|| synthesize_response_body_from_sse(&responses_sse_synthesis))
         .or_else(|| synthesize_chat_completion_body(&chat_completion_synthesis));
-    (body, usage)
+    NonStreamSseInspection {
+        synthesized_body: body,
+        usage,
+        terminal_error,
+        last_event_type,
+    }
+}
+
+pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
+    payload: &[u8],
+) -> (Option<Vec<u8>>, UpstreamResponseUsage) {
+    let inspection = inspect_non_stream_sse_payload(payload);
+    (inspection.synthesized_body, inspection.usage)
 }
 
 pub(in super::super) fn looks_like_sse_payload(body: &[u8]) -> bool {

@@ -23,6 +23,12 @@ impl Storage {
             "CREATE INDEX IF NOT EXISTS idx_request_logs_key_id_created_at ON request_logs(key_id, created_at DESC)",
             [],
         )?;
+        if self.has_column("request_logs", "owner_key_id")? {
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_request_logs_owner_key_id_created_at ON request_logs(owner_key_id, created_at DESC)",
+                [],
+            )?;
+        }
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_logs_account_id_created_at ON request_logs(account_id, created_at DESC)",
             [],
@@ -41,13 +47,14 @@ impl Storage {
     pub fn insert_request_log(&self, log: &RequestLog) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO request_logs (
-                trace_id, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
+                trace_id, key_id, owner_key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
                 method, model, reasoning_effort, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 &log.trace_id,
                 &log.key_id,
+                &log.owner_key_id,
                 &log.account_id,
                 &log.initial_account_id,
                 &log.attempted_account_ids_json,
@@ -80,13 +87,14 @@ impl Storage {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO request_logs (
-                trace_id, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
+                trace_id, key_id, owner_key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
                 method, model, reasoning_effort, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, error, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 &log.trace_id,
                 &log.key_id,
+                &log.owner_key_id,
                 &log.account_id,
                 &log.initial_account_id,
                 &log.attempted_account_ids_json,
@@ -115,13 +123,14 @@ impl Storage {
         let token_stat_error = tx
             .execute(
                 "INSERT INTO request_token_stats (
-                    request_log_id, key_id, account_id, model,
+                    request_log_id, key_id, owner_key_id, account_id, model,
                     input_tokens, cached_input_tokens, output_tokens, total_tokens, reasoning_output_tokens,
                     estimated_cost_usd, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 (
                     request_log_id,
                     &stat.key_id,
+                    &stat.owner_key_id,
                     &stat.account_id,
                     &stat.model,
                     stat.input_tokens,
@@ -156,7 +165,7 @@ impl Storage {
         let filters = build_request_log_filters(query, status_filter);
         let sql = format!(
             "SELECT
-                r.trace_id, r.key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
+                r.trace_id, r.key_id, r.owner_key_id, r.account_id, r.initial_account_id, r.attempted_account_ids_json, r.initial_aggregate_api_id, r.attempted_aggregate_api_ids_json,
                 r.request_path, r.original_path, r.adapted_path,
                 r.method, r.model, r.reasoning_effort, r.response_adapter, r.upstream_url, r.aggregate_api_supplier_name, r.aggregate_api_url, r.status_code, r.duration_ms,
                 t.input_tokens, t.cached_input_tokens, t.output_tokens, t.total_tokens, t.reasoning_output_tokens, t.estimated_cost_usd,
@@ -259,6 +268,7 @@ impl Storage {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trace_id TEXT,
                 key_id TEXT,
+                owner_key_id TEXT,
                 account_id TEXT,
                 initial_account_id TEXT,
                 attempted_account_ids_json TEXT,
@@ -312,8 +322,18 @@ impl Storage {
         self.ensure_column("request_logs", "original_path", "TEXT")?;
         self.ensure_column("request_logs", "adapted_path", "TEXT")?;
         self.ensure_column("request_logs", "response_adapter", "TEXT")?;
+        self.ensure_column("request_logs", "owner_key_id", "TEXT")?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_request_logs_trace_id_created_at ON request_logs(trace_id, created_at DESC)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn ensure_request_log_owner_key_column(&self) -> Result<()> {
+        self.ensure_column("request_logs", "owner_key_id", "TEXT")?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_request_logs_owner_key_id_created_at ON request_logs(owner_key_id, created_at DESC)",
             [],
         )?;
         Ok(())
@@ -373,6 +393,7 @@ impl Storage {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 trace_id TEXT,
                 key_id TEXT,
+                owner_key_id TEXT,
                 account_id TEXT,
                 initial_account_id TEXT,
                 attempted_account_ids_json TEXT,
@@ -394,12 +415,12 @@ impl Storage {
                 created_at INTEGER NOT NULL
              );
              INSERT INTO request_logs (
-                id, trace_id, key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
+                id, trace_id, key_id, owner_key_id, account_id, initial_account_id, attempted_account_ids_json, initial_aggregate_api_id, attempted_aggregate_api_ids_json,
                 request_path, original_path, adapted_path,
                 method, model, reasoning_effort, response_adapter, upstream_url, aggregate_api_supplier_name, aggregate_api_url, status_code, duration_ms, error, created_at
              )
              SELECT
-                id, trace_id, key_id, account_id, NULL, NULL, NULL, NULL, request_path, original_path, adapted_path,
+                id, trace_id, key_id, NULL, account_id, NULL, NULL, NULL, NULL, request_path, original_path, adapted_path,
                 method, model, reasoning_effort, response_adapter, upstream_url, NULL, NULL, status_code, NULL, error, created_at
              FROM request_logs_legacy_028;
              DROP TABLE request_logs_legacy_028;",
@@ -415,31 +436,32 @@ fn map_request_log_row(row: &Row<'_>) -> Result<RequestLog> {
     Ok(RequestLog {
         trace_id: row.get(0)?,
         key_id: row.get(1)?,
-        account_id: row.get(2)?,
-        initial_account_id: row.get(3)?,
-        attempted_account_ids_json: row.get(4)?,
-        initial_aggregate_api_id: row.get(5)?,
-        attempted_aggregate_api_ids_json: row.get(6)?,
-        request_path: row.get(7)?,
-        original_path: row.get(8)?,
-        adapted_path: row.get(9)?,
-        method: row.get(10)?,
-        model: row.get(11)?,
-        reasoning_effort: row.get(12)?,
-        response_adapter: row.get(13)?,
-        upstream_url: row.get(14)?,
-        aggregate_api_supplier_name: row.get(15)?,
-        aggregate_api_url: row.get(16)?,
-        status_code: row.get(17)?,
-        duration_ms: row.get(18)?,
-        input_tokens: row.get(19)?,
-        cached_input_tokens: row.get(20)?,
-        output_tokens: row.get(21)?,
-        total_tokens: row.get(22)?,
-        reasoning_output_tokens: row.get(23)?,
-        estimated_cost_usd: row.get(24)?,
-        error: row.get(25)?,
-        created_at: row.get(26)?,
+        owner_key_id: row.get(2)?,
+        account_id: row.get(3)?,
+        initial_account_id: row.get(4)?,
+        attempted_account_ids_json: row.get(5)?,
+        initial_aggregate_api_id: row.get(6)?,
+        attempted_aggregate_api_ids_json: row.get(7)?,
+        request_path: row.get(8)?,
+        original_path: row.get(9)?,
+        adapted_path: row.get(10)?,
+        method: row.get(11)?,
+        model: row.get(12)?,
+        reasoning_effort: row.get(13)?,
+        response_adapter: row.get(14)?,
+        upstream_url: row.get(15)?,
+        aggregate_api_supplier_name: row.get(16)?,
+        aggregate_api_url: row.get(17)?,
+        status_code: row.get(18)?,
+        duration_ms: row.get(19)?,
+        input_tokens: row.get(20)?,
+        cached_input_tokens: row.get(21)?,
+        output_tokens: row.get(22)?,
+        total_tokens: row.get(23)?,
+        reasoning_output_tokens: row.get(24)?,
+        estimated_cost_usd: row.get(25)?,
+        error: row.get(26)?,
+        created_at: row.get(27)?,
     })
 }
 
@@ -522,6 +544,7 @@ fn append_request_log_query_clause(
                     OR IFNULL(r.response_adapter,'') LIKE ?
                     OR IFNULL(r.error,'') LIKE ?
                     OR IFNULL(r.key_id,'') LIKE ?
+                    OR IFNULL(r.owner_key_id,'') LIKE ?
                     OR IFNULL(r.trace_id,'') LIKE ?
                     OR IFNULL(r.upstream_url,'') LIKE ?
                     OR IFNULL(CAST(r.status_code AS TEXT),'') LIKE ?
@@ -533,7 +556,7 @@ fn append_request_log_query_clause(
                     OR IFNULL(CAST(t.estimated_cost_usd AS TEXT),'') LIKE ?)"
                     .to_string(),
             );
-            for _ in 0..25 {
+            for _ in 0..26 {
                 params.push(Value::Text(pattern.clone()));
             }
         }

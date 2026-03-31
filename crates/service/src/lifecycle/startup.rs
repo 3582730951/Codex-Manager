@@ -3,16 +3,37 @@ use std::thread;
 
 pub struct ServerHandle {
     pub addr: String,
-    join: thread::JoinHandle<()>,
+    join: Option<thread::JoinHandle<()>>,
+    shutdown_on_drop: bool,
 }
 
 impl ServerHandle {
-    pub fn join(self) {
-        let _ = self.join.join();
+    pub fn join(mut self) {
+        if self.shutdown_on_drop {
+            crate::request_shutdown(&self.addr);
+        }
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        crate::clear_shutdown_flag();
+    }
+}
+
+impl Drop for ServerHandle {
+    fn drop(&mut self) {
+        if !self.shutdown_on_drop {
+            return;
+        }
+        crate::request_shutdown(&self.addr);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        crate::clear_shutdown_flag();
     }
 }
 
 pub fn start_one_shot_server() -> std::io::Result<ServerHandle> {
+    crate::clear_shutdown_flag();
     crate::portable::bootstrap_current_process();
     crate::gateway::reload_runtime_config_from_env();
     if let Err(err) = crate::storage_helpers::initialize_storage() {
@@ -31,7 +52,27 @@ pub fn start_one_shot_server() -> std::io::Result<ServerHandle> {
             crate::http::backend_router::handle_backend_request(request);
         }
     });
-    Ok(ServerHandle { addr, join })
+    Ok(ServerHandle {
+        addr,
+        join: Some(join),
+        shutdown_on_drop: false,
+    })
+}
+
+pub fn start_test_server() -> std::io::Result<ServerHandle> {
+    crate::clear_shutdown_flag();
+    crate::portable::bootstrap_current_process();
+    crate::gateway::reload_runtime_config_from_env();
+    if let Err(err) = crate::storage_helpers::initialize_storage() {
+        log::warn!("storage startup init skipped: {}", err);
+    }
+    crate::sync_runtime_settings_from_storage();
+    let backend = crate::http::backend_runtime::start_backend_server()?;
+    Ok(ServerHandle {
+        addr: backend.addr,
+        join: Some(backend.join),
+        shutdown_on_drop: true,
+    })
 }
 
 pub fn start_server(addr: &str) -> std::io::Result<()> {

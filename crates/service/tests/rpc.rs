@@ -599,9 +599,7 @@ fn rpc_gateway_affinity_settings_roundtrip() {
     let storage = Storage::open(ctx.db_path()).expect("open db");
     assert_eq!(
         storage
-            .get_app_setting(
-                codexmanager_service::APP_SETTING_GATEWAY_AFFINITY_ROUTING_MODE_KEY
-            )
+            .get_app_setting(codexmanager_service::APP_SETTING_GATEWAY_AFFINITY_ROUTING_MODE_KEY)
             .expect("read affinity routing mode"),
         Some("observe".to_string())
     );
@@ -1298,6 +1296,7 @@ fn rpc_requestlog_list_and_summary_support_pagination() {
             .insert_request_token_stat(&RequestTokenStat {
                 request_log_id,
                 key_id: Some("gk-page".to_string()),
+                owner_key_id: None,
                 account_id: Some("acc-page".to_string()),
                 model: Some("gpt-5".to_string()),
                 input_tokens: Some(10),

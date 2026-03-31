@@ -51,6 +51,7 @@ pub(super) fn maybe_respond_local_count_tokens(
     request: tiny_http::Request,
     trace_id: &str,
     key_id: &str,
+    owner_key_id: Option<&str>,
     protocol_type: &str,
     original_path: &str,
     path: &str,
@@ -78,6 +79,7 @@ pub(super) fn maybe_respond_local_count_tokens(
                 storage,
                 super::request_log::RequestLogTraceContext {
                     trace_id: Some(trace_id),
+                    owner_key_id,
                     original_path: Some(original_path),
                     adapted_path: Some(path),
                     response_adapter: Some(response_adapter),
@@ -124,6 +126,7 @@ pub(super) fn maybe_respond_local_count_tokens(
                 storage,
                 super::request_log::RequestLogTraceContext {
                     trace_id: Some(trace_id),
+                    owner_key_id,
                     original_path: Some(original_path),
                     adapted_path: Some(path),
                     response_adapter: Some(response_adapter),

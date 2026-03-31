@@ -20,8 +20,7 @@ pub const APP_SETTING_GATEWAY_SSE_KEEPALIVE_INTERVAL_MS_KEY: &str =
     "gateway.sse_keepalive_interval_ms";
 pub const APP_SETTING_GATEWAY_BACKGROUND_TASKS_KEY: &str = "gateway.background_tasks";
 pub const APP_SETTING_GATEWAY_AFFINITY_ROUTING_MODE_KEY: &str = "gateway.affinity_routing_mode";
-pub const APP_SETTING_GATEWAY_CONTEXT_REPLAY_ENABLED_KEY: &str =
-    "gateway.context_replay_enabled";
+pub const APP_SETTING_GATEWAY_CONTEXT_REPLAY_ENABLED_KEY: &str = "gateway.context_replay_enabled";
 pub const APP_SETTING_GATEWAY_AFFINITY_SOFT_QUOTA_PERCENT_KEY: &str =
     "gateway.affinity_soft_quota_percent";
 pub const APP_SETTING_GATEWAY_REPLAY_MAX_TURNS_KEY: &str = "gateway.replay_max_turns";

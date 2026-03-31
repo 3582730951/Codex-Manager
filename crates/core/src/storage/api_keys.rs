@@ -72,9 +72,14 @@ impl Storage {
     }
 
     pub fn list_api_keys(&self) -> Result<Vec<ApiKey>> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("{API_KEY_SELECT_SQL} ORDER BY k.created_at DESC"))?;
+        let mut stmt = self.conn.prepare(&format!(
+            "{API_KEY_SELECT_SQL}
+             WHERE NOT EXISTS (
+                SELECT 1 FROM cli_child_keys child
+                WHERE child.child_key_id = k.id
+             )
+             ORDER BY k.created_at DESC"
+        ))?;
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
@@ -124,6 +129,22 @@ impl Storage {
             "UPDATE api_keys SET status = ?1 WHERE id = ?2",
             (status, key_id),
         )?;
+        self.update_cli_child_key_status_by_owner(key_id, status)?;
+        for child in self.list_cli_child_keys_for_owner(key_id)? {
+            self.conn.execute(
+                "UPDATE api_keys SET status = ?1 WHERE id = ?2",
+                (status, child.child_key_id.as_str()),
+            )?;
+            if status != "active" {
+                self.invalidate_cli_oauth_sessions_for_child_key(
+                    child.child_key_id.as_str(),
+                    "revoked",
+                )?;
+            }
+        }
+        if status != "active" {
+            self.invalidate_cli_oauth_sessions_for_owner(key_id, "revoked")?;
+        }
         Ok(())
     }
 
@@ -267,6 +288,13 @@ impl Storage {
     }
 
     pub fn delete_api_key(&self, key_id: &str) -> Result<()> {
+        self.delete_cli_oauth_sessions_for_child_key(key_id)?;
+        self.delete_cli_child_key(key_id)?;
+        let owned_children = self.list_cli_child_keys_for_owner(key_id)?;
+        for child in owned_children {
+            self.delete_api_key(child.child_key_id.as_str())?;
+        }
+        self.delete_cli_oauth_sessions_for_owner(key_id)?;
         self.conn
             .execute("DELETE FROM api_key_secrets WHERE key_id = ?1", [key_id])?;
         self.conn

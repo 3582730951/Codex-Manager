@@ -53,9 +53,7 @@ impl IncomingHeaderSnapshot {
                 }
                 continue;
             }
-            if snapshot.cli_affinity_id.is_none()
-                && header.field.equiv("x-codex-cli-affinity-id")
-            {
+            if snapshot.cli_affinity_id.is_none() && header.field.equiv("x-codex-cli-affinity-id") {
                 let value = header.value.as_str().trim();
                 if !value.is_empty() {
                     snapshot.cli_affinity_id = Some(value.to_string());
@@ -206,6 +204,17 @@ impl IncomingHeaderSnapshot {
 
     pub(crate) fn with_conversation_id_override(&self, conversation_id: Option<&str>) -> Self {
         self.with_thread_affinity_override(conversation_id, false)
+    }
+
+    pub(crate) fn with_cli_affinity_id_override(&self, cli_affinity_id: Option<&str>) -> Self {
+        let mut next = self.clone();
+        if let Some(cli_affinity_id) = cli_affinity_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            next.cli_affinity_id = Some(cli_affinity_id.to_string());
+        }
+        next
     }
 
     pub(crate) fn with_thread_affinity_override(

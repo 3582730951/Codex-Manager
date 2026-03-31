@@ -1,11 +1,12 @@
 use super::{
     apply_openai_stream_meta_defaults, collect_non_stream_json_from_sse_bytes,
-    extract_openai_completed_output_text, inspect_sse_frame, normalize_chat_chunk_delta_role,
-    parse_sse_frame_json, parse_usage_from_json, parse_usage_from_sse_frame,
-    should_skip_chat_live_text_event, should_skip_completion_live_text_event,
-    synthesize_chat_completion_sse_from_json, synthesize_completions_sse_from_json,
-    OpenAIChatCompletionsSseReader, OpenAICompletionsSseReader, OpenAIStreamMeta,
-    PassthroughSseCollector, PassthroughSseUsageReader, SseKeepAliveFrame,
+    extract_openai_completed_output_text, inspect_non_stream_sse_payload, inspect_sse_frame,
+    normalize_chat_chunk_delta_role, parse_sse_frame_json, parse_usage_from_json,
+    parse_usage_from_sse_frame, should_skip_chat_live_text_event,
+    should_skip_completion_live_text_event, synthesize_chat_completion_sse_from_json,
+    synthesize_completions_sse_from_json, OpenAIChatCompletionsSseReader,
+    OpenAICompletionsSseReader, OpenAIStreamMeta, PassthroughSseCollector,
+    PassthroughSseUsageReader, SseKeepAliveFrame,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -529,6 +530,49 @@ fn collect_non_stream_json_from_sse_bytes_supports_event_only_type_frames() {
     assert_eq!(usage.input_tokens, Some(3));
     assert_eq!(usage.output_tokens, Some(2));
     assert_eq!(usage.total_tokens, Some(5));
+}
+
+#[test]
+fn inspect_non_stream_sse_payload_preserves_response_failed_quota_error() {
+    let sse = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_fail_1\",\"created\":3,\"model\":\"gpt-5.3-codex\"}}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_fail_1\",\"status\":\"failed\",\"error\":{\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\",\"message\":\"You exceeded your current quota, please check your plan and billing details.\"}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let inspection = inspect_non_stream_sse_payload(sse.as_bytes());
+    assert!(inspection.synthesized_body.is_none());
+    let terminal_error = inspection.terminal_error.unwrap_or_default();
+    assert!(terminal_error.contains("insufficient_quota"));
+    assert!(terminal_error.contains("current quota"));
+    assert_eq!(inspection.last_event_type.as_deref(), Some("[DONE]"));
+}
+
+#[test]
+fn inspect_non_stream_sse_payload_keeps_completed_body_and_trailing_quota_error() {
+    let sse = concat!(
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"response_id\":\"resp_tail_1\",\"delta\":\"hello\"}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tail_1\",\"created\":3,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"usage_limit_reached\",\"code\":\"usage_limit_reached\",\"message\":\"You've hit your usage limit. To get more access now, send a request to your admin or try again at 12:51 PM.\"}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let inspection = inspect_non_stream_sse_payload(sse.as_bytes());
+    let body = inspection
+        .synthesized_body
+        .expect("synthesized completed body");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("parse synthesized body");
+    assert_eq!(value["id"], "resp_tail_1");
+    assert_eq!(value["output"][0]["content"][0]["text"], "hello");
+    assert!(value["output_text"]
+        .as_str()
+        .is_some_and(|text| text.contains("hello")));
+    let terminal_error = inspection.terminal_error.unwrap_or_default();
+    assert!(terminal_error.contains("usage_limit_reached"));
+    assert!(terminal_error.contains("usage limit"));
 }
 
 #[test]

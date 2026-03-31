@@ -8,11 +8,11 @@ use super::super::{
 };
 use super::{
     collect_non_stream_json_from_sse_bytes, extract_error_hint_from_body,
-    extract_error_message_from_json, looks_like_sse_payload, merge_usage, parse_usage_from_json,
-    push_trace_id_header, usage_has_signal, AnthropicSseReader, OpenAIChatCompletionsSseReader,
-    OpenAICompletionsSseReader, PassthroughSseCollector, PassthroughSseUsageReader,
-    DeliveryState, SseKeepAliveFrame, UpstreamCompletionState, UpstreamResponseBridgeResult,
-    UpstreamResponseUsage,
+    extract_error_message_from_json, inspect_non_stream_sse_payload, looks_like_sse_payload,
+    merge_usage, parse_usage_from_json, push_trace_id_header, usage_has_signal, AnthropicSseReader,
+    DeliveryState, OpenAIChatCompletionsSseReader, OpenAICompletionsSseReader,
+    PassthroughSseCollector, PassthroughSseUsageReader, SseKeepAliveFrame, UpstreamCompletionState,
+    UpstreamResponseBridgeResult, UpstreamResponseUsage,
 };
 
 const REQUEST_ID_HEADER_CANDIDATES: &[&str] = &["x-request-id", "x-oai-request-id"];
@@ -60,6 +60,8 @@ fn build_bridge_result(
         upstream_cf_ray: None,
         upstream_auth_error: None,
         upstream_identity_error_code: None,
+        upstream_retry_after: None,
+        upstream_date: None,
         upstream_content_type: None,
         last_sse_event_type: None,
         completed_response_body,
@@ -418,6 +420,8 @@ fn with_bridge_debug_meta(
     upstream_cf_ray: &Option<String>,
     upstream_auth_error: &Option<String>,
     upstream_identity_error_code: &Option<String>,
+    upstream_retry_after: &Option<String>,
+    upstream_date: &Option<String>,
     upstream_content_type: &Option<String>,
     last_sse_event_type: Option<String>,
 ) -> UpstreamResponseBridgeResult {
@@ -425,6 +429,8 @@ fn with_bridge_debug_meta(
     result.upstream_cf_ray = upstream_cf_ray.clone();
     result.upstream_auth_error = upstream_auth_error.clone();
     result.upstream_identity_error_code = upstream_identity_error_code.clone();
+    result.upstream_retry_after = upstream_retry_after.clone();
+    result.upstream_date = upstream_date.clone();
     result.upstream_content_type = upstream_content_type.clone();
     result.last_sse_event_type = last_sse_event_type;
     result
@@ -460,6 +466,8 @@ fn respond_invalid_compact_success_body(
         &cf_ray.map(str::to_string),
         &auth_error.map(str::to_string),
         &identity_error_code.map(str::to_string),
+        &None,
+        &None,
         &Some("application/json".to_string()),
         None,
     )
@@ -499,6 +507,8 @@ fn respond_invalid_compact_non_success_body(
         &cf_ray.map(str::to_string),
         &auth_error.map(str::to_string),
         &identity_error_code.map(str::to_string),
+        &None,
+        &None,
         &Some("application/json".to_string()),
         None,
     )
@@ -521,6 +531,10 @@ pub(crate) fn respond_with_upstream(
     let upstream_auth_error = first_upstream_header(upstream.headers(), &[AUTH_ERROR_HEADER_NAME]);
     let upstream_identity_error_code =
         crate::gateway::extract_identity_error_code_from_headers(upstream.headers());
+    let upstream_retry_after =
+        first_upstream_header(upstream.headers(), &[reqwest::header::RETRY_AFTER.as_str()]);
+    let upstream_date =
+        first_upstream_header(upstream.headers(), &[reqwest::header::DATE.as_str()]);
     let upstream_content_type = upstream
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -561,21 +575,64 @@ pub(crate) fn respond_with_upstream(
                     is_sse || (!is_json && looks_like_sse_payload(upstream_body.as_ref()));
                 let is_compact_request = is_compact_request_path(request_path);
                 if detected_sse {
-                    let (synthesized_body, mut usage) =
-                        collect_non_stream_json_from_sse_bytes(upstream_body.as_ref());
-                    let synthesized_response = synthesized_body.is_some();
-                    let body = synthesized_body.unwrap_or_else(|| upstream_body.to_vec());
+                    let inspection = inspect_non_stream_sse_payload(upstream_body.as_ref());
+                    let synthesized_response = inspection.synthesized_body.is_some();
+                    let mut usage = inspection.usage;
+                    let body = inspection
+                        .synthesized_body
+                        .unwrap_or_else(|| upstream_body.to_vec());
                     if let Ok(value) = serde_json::from_slice::<Value>(&body) {
                         merge_usage(&mut usage, parse_usage_from_json(&value));
                     }
                     let upstream_error_hint = with_upstream_debug_suffix(
-                        extract_error_hint_from_body(status.0, &body),
+                        inspection
+                            .terminal_error
+                            .clone()
+                            .or_else(|| extract_error_hint_from_body(status.0, &body)),
                         None,
                         upstream_request_id.as_deref(),
                         upstream_cf_ray.as_deref(),
                         upstream_auth_error.as_deref(),
                         upstream_identity_error_code.as_deref(),
                     );
+                    if status.0 < 400 {
+                        if let Some(error_hint) = upstream_error_hint.clone() {
+                            let error_status =
+                                if crate::gateway::affinity::is_hard_quota_error_message(
+                                    error_hint.as_str(),
+                                ) {
+                                    429
+                                } else {
+                                    502
+                                };
+                            let response = crate::gateway::error_response::terminal_text_response(
+                                error_status,
+                                error_hint.as_str(),
+                                trace_id,
+                            );
+                            let delivery_error =
+                                request.respond(response).err().map(|err| err.to_string());
+                            return Ok(with_bridge_debug_meta(
+                                build_bridge_result(
+                                    usage,
+                                    UpstreamCompletionState::NonStream,
+                                    None,
+                                    delivery_error,
+                                    Some(error_hint),
+                                    Some(error_status),
+                                    None,
+                                ),
+                                &upstream_request_id,
+                                &upstream_cf_ray,
+                                &upstream_auth_error,
+                                &upstream_identity_error_code,
+                                &upstream_retry_after,
+                                &upstream_date,
+                                &upstream_content_type,
+                                inspection.last_event_type,
+                            ));
+                        }
+                    }
                     if synthesized_response {
                         headers.retain(|header| {
                             !header
@@ -648,8 +705,10 @@ pub(crate) fn respond_with_upstream(
                         &upstream_cf_ray,
                         &upstream_auth_error,
                         &upstream_identity_error_code,
+                        &upstream_retry_after,
+                        &upstream_date,
                         &upstream_content_type,
-                        None,
+                        inspection.last_event_type,
                     ));
                 }
 
@@ -732,6 +791,8 @@ pub(crate) fn respond_with_upstream(
                     &upstream_cf_ray,
                     &upstream_auth_error,
                     &upstream_identity_error_code,
+                    &upstream_retry_after,
+                    &upstream_date,
                     &upstream_content_type,
                     None,
                 ));
@@ -779,6 +840,8 @@ pub(crate) fn respond_with_upstream(
                     &upstream_cf_ray,
                     &upstream_auth_error,
                     &upstream_identity_error_code,
+                    &upstream_retry_after,
+                    &upstream_date,
                     &upstream_content_type,
                     None,
                 ));
@@ -805,14 +868,14 @@ pub(crate) fn respond_with_upstream(
                 let upstream_completion_state = collector_completion_state(&collector);
                 let completed_response_body =
                     if upstream_completion_state == UpstreamCompletionState::TerminalOk {
-                    let (body, _) =
-                        collect_non_stream_json_from_sse_bytes(&collector.raw_sse_bytes);
-                    body.and_then(|bytes| {
-                        capture_completed_response_body(request_path, bytes.as_slice())
-                    })
-                } else {
-                    None
-                };
+                        let (body, _) =
+                            collect_non_stream_json_from_sse_bytes(&collector.raw_sse_bytes);
+                        body.and_then(|bytes| {
+                            capture_completed_response_body(request_path, bytes.as_slice())
+                        })
+                    } else {
+                        None
+                    };
                 return Ok(with_bridge_debug_meta(
                     build_bridge_result(
                         collector.usage,
@@ -834,6 +897,8 @@ pub(crate) fn respond_with_upstream(
                     &upstream_cf_ray,
                     &upstream_auth_error,
                     &upstream_identity_error_code,
+                    &upstream_retry_after,
+                    &upstream_date,
                     &upstream_content_type,
                     last_sse_event_type,
                 ));
@@ -855,6 +920,8 @@ pub(crate) fn respond_with_upstream(
                 &upstream_cf_ray,
                 &upstream_auth_error,
                 &upstream_identity_error_code,
+                &upstream_retry_after,
+                &upstream_date,
                 &upstream_content_type,
                 None,
             ))
@@ -967,6 +1034,8 @@ pub(crate) fn respond_with_upstream(
                     &upstream_cf_ray,
                     &upstream_auth_error,
                     &upstream_identity_error_code,
+                    &upstream_retry_after,
+                    &upstream_date,
                     &upstream_content_type,
                     last_sse_event_type,
                 ));
@@ -1060,6 +1129,8 @@ pub(crate) fn respond_with_upstream(
                 &upstream_cf_ray,
                 &upstream_auth_error,
                 &upstream_identity_error_code,
+                &upstream_retry_after,
+                &upstream_date,
                 &upstream_content_type,
                 None,
             ))
@@ -1122,6 +1193,8 @@ pub(crate) fn respond_with_upstream(
                     &upstream_cf_ray,
                     &upstream_auth_error,
                     &upstream_identity_error_code,
+                    &upstream_retry_after,
+                    &upstream_date,
                     &upstream_content_type,
                     None,
                 ));
@@ -1177,6 +1250,8 @@ pub(crate) fn respond_with_upstream(
                 &upstream_cf_ray,
                 &upstream_auth_error,
                 &upstream_identity_error_code,
+                &upstream_retry_after,
+                &upstream_date,
                 &upstream_content_type,
                 None,
             ))

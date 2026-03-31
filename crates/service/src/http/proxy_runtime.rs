@@ -32,7 +32,10 @@ fn build_backend_base_url(backend_addr: &str) -> String {
 }
 
 fn build_local_backend_client() -> Result<Client, reqwest::Error> {
-    Client::builder().no_proxy().build()
+    Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
 }
 
 async fn proxy_handler(
@@ -72,7 +75,11 @@ async fn proxy_handler_with_peer(
     let injected_headers = match build_internal_entity_headers(
         &parts.headers,
         parts.method.as_str(),
-        parts.uri.path_and_query().map(|value| value.as_str()).unwrap_or("/"),
+        parts
+            .uri
+            .path_and_query()
+            .map(|value| value.as_str())
+            .unwrap_or("/"),
         remote_addr.ip(),
     ) {
         Ok(headers) => headers,

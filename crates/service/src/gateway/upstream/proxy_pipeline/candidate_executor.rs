@@ -14,7 +14,8 @@ use super::candidate_state::CandidateExecutionState;
 use super::execution_context::GatewayUpstreamExecutionContext;
 use super::request_setup::UpstreamRequestSetup;
 use super::response_finalize::{
-    finalize_terminal_candidate, finalize_upstream_response, respond_total_timeout,
+    finalize_terminal_candidate, finalize_upstream_response, respond_terminal,
+    respond_total_timeout,
 };
 
 fn extract_prompt_cache_key_for_trace(body: &[u8]) -> Option<String> {
@@ -125,31 +126,67 @@ pub(in super::super) fn execute_candidate_sequence(
                     setup.legacy_conversation_routing(),
                     account,
                 );
-            let (attempt_thread_anchor, reset_session_affinity) = setup
-                .persistent_affinity_resolution()
-                .map(|resolution| {
+            let (attempt_thread_anchor, reset_session_affinity, persistent_body_override) =
+                if let Some(resolution) = setup.persistent_affinity_resolution() {
+                    let (_, thread_anchor, reset_session_affinity) =
+                        super::super::super::affinity::resolve_attempt_thread_assignment(
+                            resolution,
+                            context.platform_key_hash(),
+                            account.id.as_str(),
+                        );
+                    let persistent_body_override =
+                        match super::super::super::affinity::build_attempt_replay_body(
+                            storage,
+                            resolution,
+                            path,
+                            body.as_ref(),
+                            context.platform_key_hash(),
+                            account.id.as_str(),
+                        ) {
+                            Ok(body_override) => body_override,
+                            Err(err) => {
+                                let request = request.take().expect(
+                                    "request should be available before replay failure response",
+                                );
+                                context.log_final_result_with_model(
+                                    Some(account.id.as_str()),
+                                    None,
+                                    model_for_log,
+                                    409,
+                                    super::super::super::request_log::RequestLogUsage::default(),
+                                    Some(err.as_str()),
+                                    started_at.elapsed().as_millis(),
+                                    Some(attempted_account_ids.as_slice()),
+                                );
+                                respond_terminal(request, 409, err, Some(trace_id))?;
+                                return Ok(CandidateExecutionResult::Handled);
+                            }
+                        };
                     (
-                        Some(resolution.thread_anchor.as_str()),
-                        resolution.reset_session_affinity,
+                        Some(thread_anchor),
+                        reset_session_affinity,
+                        persistent_body_override,
                     )
-                })
-                .or_else(|| {
-                    legacy_attempt_thread.as_ref().map(|thread| {
-                        (
-                            Some(thread.thread_anchor.as_str()),
-                            thread.reset_session_affinity,
-                        )
-                    })
-                })
-                .unwrap_or((None, false));
+                } else {
+                    legacy_attempt_thread
+                        .as_ref()
+                        .map(|thread| {
+                            (
+                                Some(thread.thread_anchor.clone()),
+                                thread.reset_session_affinity,
+                                None,
+                            )
+                        })
+                        .unwrap_or((None, false, None))
+                };
             let strip_session_affinity = state.strip_session_affinity(
                 account,
                 idx,
                 setup.anthropic_has_prompt_cache_key || attempt_thread_anchor.is_some(),
             );
-            let attempt_headers = if attempt_thread_anchor.is_some() {
+            let attempt_headers = if let Some(thread_anchor) = attempt_thread_anchor.as_deref() {
                 incoming_headers
-                    .with_thread_affinity_override(attempt_thread_anchor, reset_session_affinity)
+                    .with_thread_affinity_override(Some(thread_anchor), reset_session_affinity)
             } else {
                 incoming_headers.clone()
             };
@@ -160,8 +197,9 @@ pub(in super::super) fn execute_candidate_sequence(
                 body,
                 strip_session_affinity,
                 setup,
+                persistent_body_override.as_ref(),
                 attempt_model_override.as_deref(),
-                attempt_thread_anchor,
+                attempt_thread_anchor.as_deref(),
             );
             context.log_candidate_start(&account.id, idx, strip_session_affinity);
             if let Some(skip_reason) = context.should_skip_candidate(&account.id, idx) {
@@ -213,6 +251,7 @@ pub(in super::super) fn execute_candidate_sequence(
                 request_ctx,
                 incoming_headers: &attempt_headers,
                 body: &body_for_attempt,
+                client_is_stream,
                 upstream_is_stream,
                 path,
                 request_deadline,
@@ -280,8 +319,9 @@ pub(in super::super) fn execute_candidate_sequence(
                             path,
                             body,
                             setup,
+                            persistent_body_override.as_ref(),
                             attempt_model_override.as_deref(),
-                            attempt_thread_anchor,
+                            attempt_thread_anchor.as_deref(),
                         );
                         let retry_decision = run_candidate_attempt(CandidateAttemptParams {
                             storage,
@@ -289,6 +329,7 @@ pub(in super::super) fn execute_candidate_sequence(
                             request_ctx,
                             incoming_headers: &attempt_headers,
                             body: &retry_body,
+                            client_is_stream,
                             upstream_is_stream,
                             path,
                             request_deadline,

@@ -50,7 +50,9 @@ services:
         ipv4_address: ${AFFINITY_TEST_WEB_IP}
 
   mock-upstream:
-    image: python:3.12-slim
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.test-python
     working_dir: /workspace
     command:
       - python
@@ -64,7 +66,9 @@ services:
         ipv4_address: ${AFFINITY_TEST_MOCK_UPSTREAM_IP}
 
   probe-a:
-    image: python:3.12-slim
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.test-python
     command:
       - python
       - -c
@@ -76,7 +80,9 @@ services:
         ipv4_address: ${AFFINITY_TEST_PROBE_A_IP}
 
   probe-b:
-    image: python:3.12-slim
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.test-python
     command:
       - python
       - -c

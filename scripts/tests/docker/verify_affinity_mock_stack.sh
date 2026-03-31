@@ -23,6 +23,8 @@ PROBE_A_IP="172.29.0.21"
 PROBE_B_IP="172.29.0.22"
 MOCK_UPSTREAM_IP="172.29.0.30"
 TRUSTED_PEERS="${PROBE_A_IP}/32,${PROBE_B_IP}/32"
+DESKTOP_BUILDER_IMAGE=""
+TEST_PYTHON_IMAGE=""
 
 log() { printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 die() { printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
@@ -87,10 +89,26 @@ if [[ -z "${WEB_PORT}" ]]; then
 fi
 
 run_desktop_build() {
+  DESKTOP_BUILDER_IMAGE="${TEST_PROJECT}-desktop-builder"
+  docker build \
+    -f "${ROOT_DIR}/docker/Dockerfile.desktop-test" \
+    -t "${DESKTOP_BUILDER_IMAGE}" \
+    "${ROOT_DIR}" >/dev/null
   docker run --rm \
     -v "${ROOT_DIR}/apps:/src:ro" \
-    node:22-bookworm-slim \
+    "${DESKTOP_BUILDER_IMAGE}" \
     bash -lc "set -euo pipefail && corepack enable >/dev/null 2>&1 && corepack prepare pnpm@10.30.3 --activate >/dev/null 2>&1 && mkdir -p /tmp/apps && cp -a /src/. /tmp/apps/ && rm -rf /tmp/apps/node_modules /tmp/apps/.next /tmp/apps/out && cd /tmp/apps && export NEXT_TELEMETRY_DISABLED=1 CI=true && pnpm install --frozen-lockfile && pnpm run build:desktop"
+}
+
+ensure_test_python_image() {
+  if [[ -n "${TEST_PYTHON_IMAGE}" ]]; then
+    return 0
+  fi
+  TEST_PYTHON_IMAGE="${TEST_PROJECT}-test-python"
+  docker build \
+    -f "${ROOT_DIR}/docker/Dockerfile.test-python" \
+    -t "${TEST_PYTHON_IMAGE}" \
+    "${ROOT_DIR}" >/dev/null
 }
 
 set_env_file_value() {
@@ -177,7 +195,8 @@ wait_seed_success() {
 }
 
 db_python() {
-  docker run --rm -i -v "${DATA_VOLUME}:/data" python:3.12-slim python -
+  ensure_test_python_image
+  docker run --rm -i -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python -
 }
 
 clear_affinity_state() {
@@ -192,6 +211,7 @@ for table in [
     "conversation_context_events",
     "context_snapshots",
     "conversation_bindings",
+    "account_quota_exhaustion",
 ]:
     cur.execute(f"DELETE FROM {table}")
 conn.commit()
@@ -201,7 +221,8 @@ PY
 
 apply_usage_map() {
   local usage_json="$1"
-  docker run --rm -i -e USAGE_JSON="${usage_json}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  ensure_test_python_image
+  docker run --rm -i -e USAGE_JSON="${usage_json}" -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python - <<'PY'
 import json
 import os
 import sqlite3
@@ -256,11 +277,12 @@ PY
 set_mock_token() {
   local account_id="$1"
   local token_value="$2"
+  ensure_test_python_image
   docker run --rm -i \
     -e ACCOUNT_ID="${account_id}" \
     -e TOKEN_VALUE="${token_value}" \
     -v "${DATA_VOLUME}:/data" \
-    python:3.12-slim python - <<'PY'
+    "${TEST_PYTHON_IMAGE}" python - <<'PY'
 import os
 import sqlite3
 
@@ -317,6 +339,7 @@ tables = [
     "conversation_context_state",
     "conversation_context_events",
     "context_snapshots",
+    "account_quota_exhaustion",
 ]
 for table in tables:
     count = cur.execute(f"SELECT COUNT(1) FROM {table}").fetchone()[0]
@@ -324,7 +347,7 @@ for table in tables:
 conn.close()
 PY
 )"
-  local expected=$'client_bindings=0\nconversation_bindings=0\nconversation_threads=0\nconversation_context_state=0\nconversation_context_events=0\ncontext_snapshots=0'
+  local expected=$'client_bindings=0\nconversation_bindings=0\nconversation_threads=0\nconversation_context_state=0\nconversation_context_events=0\ncontext_snapshots=0\naccount_quota_exhaustion=0'
   if [[ "${actual}" != "${expected}" ]]; then
     printf '\nExpected zero persistence:\n%s\n\nActual persistence:\n%s\n' "${expected}" "${actual}" >&2
     die "affinity persistence expected to remain empty"
@@ -336,7 +359,8 @@ assert_affinity_bound_to() {
   local affinity_id="$2"
   local expected_account="$3"
   local actual
-  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  ensure_test_python_image
+  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python - <<'PY'
 import os
 import sqlite3
 
@@ -359,7 +383,8 @@ assert_affinity_unbound() {
   local affinity_prefix="$1"
   local affinity_id="$2"
   local actual
-  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  ensure_test_python_image
+  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python - <<'PY'
 import os
 import sqlite3
 
@@ -383,7 +408,8 @@ assert_context_events_at_least() {
   local affinity_id="$2"
   local min_count="$3"
   local actual
-  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  ensure_test_python_image
+  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python - <<'PY'
 import os
 import sqlite3
 
@@ -407,7 +433,8 @@ assert_context_events_exact() {
   local affinity_id="$2"
   local expected_count="$3"
   local actual
-  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" python:3.12-slim python - <<'PY'
+  ensure_test_python_image
+  actual="$(docker run --rm -i -e AFFINITY_PREFIX="${affinity_prefix}" -e AFFINITY_ID="${affinity_id}" -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python - <<'PY'
 import os
 import sqlite3
 
@@ -424,6 +451,80 @@ conn.close()
 PY
 )"
   [[ "${actual}" == "${expected_count}" ]] || die "affinity ${affinity_prefix}:${affinity_id} expected exactly ${expected_count} context events, got ${actual}"
+}
+
+latest_child_key_details() {
+  local owner_key_id="$1"
+  ensure_test_python_image
+  docker run --rm -i -e OWNER_KEY_ID="${owner_key_id}" -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python - <<'PY'
+import os
+import sqlite3
+
+owner_key_id = os.environ["OWNER_KEY_ID"]
+conn = sqlite3.connect("/data/codexmanager.db", timeout=5)
+cur = conn.cursor()
+row = cur.execute(
+    """
+    SELECT child_key_id, cli_instance_uuid
+    FROM cli_child_keys
+    WHERE owner_key_id = ?
+    ORDER BY created_at DESC, child_key_id DESC
+    LIMIT 1
+    """,
+    (owner_key_id,),
+).fetchone()
+print("" if row is None else f"{row[0]}|{row[1]}")
+conn.close()
+PY
+}
+
+assert_latest_response_log_identity() {
+  local expected_owner_key_id="$1"
+  local expected_key_id="$2"
+  local actual
+  ensure_test_python_image
+  actual="$(docker run --rm -i -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python - <<'PY'
+import sqlite3
+
+conn = sqlite3.connect("/data/codexmanager.db", timeout=5)
+cur = conn.cursor()
+row = cur.execute(
+    """
+    SELECT COALESCE(owner_key_id, ''), COALESCE(key_id, '')
+    FROM request_logs
+    WHERE request_path = '/v1/responses'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+    """
+).fetchone()
+print("" if row is None else f"{row[0]}|{row[1]}")
+conn.close()
+PY
+)"
+  local expected="${expected_owner_key_id}|${expected_key_id}"
+  [[ "${actual}" == "${expected}" ]] || die "latest /v1/responses log expected ${expected}, got ${actual}"
+}
+
+assert_account_quota_exhausted() {
+  local account_id="$1"
+  local actual
+  ensure_test_python_image
+  actual="$(docker run --rm -i -e ACCOUNT_ID="${account_id}" -v "${DATA_VOLUME}:/data" "${TEST_PYTHON_IMAGE}" python - <<'PY'
+import os
+import sqlite3
+
+account_id = os.environ["ACCOUNT_ID"]
+conn = sqlite3.connect("/data/codexmanager.db", timeout=5)
+cur = conn.cursor()
+row = cur.execute(
+    "SELECT exhausted_until FROM account_quota_exhaustion WHERE account_id = ? LIMIT 1",
+    (account_id,),
+).fetchone()
+print("" if row is None else row[0])
+conn.close()
+PY
+)"
+  [[ -n "${actual}" ]] || die "expected hard quota exhaustion for ${account_id}"
 }
 
 restart_service() {
@@ -509,6 +610,243 @@ except urllib.error.HTTPError as error:
 PY
 }
 
+send_turn_raw_auth_via() {
+  local probe_container="$1"
+  local base_url="$2"
+  local auth_token="$3"
+  local affinity_id="$4"
+  local text="$5"
+  local affinity_mode="${6:-cli}"
+  docker exec -i "${probe_container}" python - "${auth_token}" "${base_url}" "${affinity_id}" "${text}" "${affinity_mode}" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+auth_token = sys.argv[1]
+base_url = sys.argv[2]
+affinity_id = sys.argv[3]
+text = sys.argv[4]
+affinity_mode = sys.argv[5]
+headers = {
+    "Authorization": f"Bearer {auth_token}",
+    "Content-Type": "application/json",
+}
+if affinity_mode == "cli":
+    headers["x-codex-cli-affinity-id"] = affinity_id
+elif affinity_mode == "session":
+    headers["session_id"] = affinity_id
+elif affinity_mode == "conversation":
+    headers["conversation_id"] = affinity_id
+elif affinity_mode == "none":
+    pass
+else:
+    raise SystemExit(f"unsupported affinity mode: {affinity_mode}")
+request = urllib.request.Request(
+    f"{base_url}/v1/responses",
+    data=json.dumps(
+        {
+            "model": "gpt-5.4",
+            "stream": False,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                }
+            ],
+        }
+    ).encode("utf-8"),
+    headers=headers,
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        body = response.read().decode("utf-8")
+        assistant_text = body
+        try:
+            parsed = json.loads(body)
+            for item in parsed.get("output") or []:
+                if not isinstance(item, dict):
+                    continue
+                for content in item.get("content") or []:
+                    if not isinstance(content, dict):
+                        continue
+                    text_value = content.get("text")
+                    if isinstance(text_value, str) and text_value:
+                        assistant_text = text_value
+                        raise StopIteration
+        except StopIteration:
+            pass
+        except Exception:
+            assistant_text = body
+        print(assistant_text)
+        print(response.status)
+except urllib.error.HTTPError as error:
+    body = error.read().decode("utf-8")
+    print(body)
+    print(error.code)
+PY
+}
+
+send_turn_stream_raw_auth_via() {
+  local probe_container="$1"
+  local base_url="$2"
+  local auth_token="$3"
+  local affinity_id="$4"
+  local text="$5"
+  local affinity_mode="${6:-cli}"
+  docker exec -i "${probe_container}" python - "${auth_token}" "${base_url}" "${affinity_id}" "${text}" "${affinity_mode}" <<'PY'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+auth_token = sys.argv[1]
+base_url = sys.argv[2]
+affinity_id = sys.argv[3]
+text = sys.argv[4]
+affinity_mode = sys.argv[5]
+headers = {
+    "Authorization": f"Bearer {auth_token}",
+    "Content-Type": "application/json",
+}
+if affinity_mode == "cli":
+    headers["x-codex-cli-affinity-id"] = affinity_id
+elif affinity_mode == "session":
+    headers["session_id"] = affinity_id
+elif affinity_mode == "conversation":
+    headers["conversation_id"] = affinity_id
+elif affinity_mode == "none":
+    pass
+else:
+    raise SystemExit(f"unsupported affinity mode: {affinity_mode}")
+request = urllib.request.Request(
+    f"{base_url}/v1/responses",
+    data=json.dumps(
+        {
+            "model": "gpt-5.4",
+            "stream": True,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                }
+            ],
+        }
+    ).encode("utf-8"),
+    headers=headers,
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        body = response.read().decode("utf-8")
+        print(body)
+        print(response.status)
+except urllib.error.HTTPError as error:
+    body = error.read().decode("utf-8")
+    print(body)
+    print(error.code)
+PY
+}
+
+mint_cli_child_key_via_oauth() {
+  local probe_container="$1"
+  local base_url="$2"
+  local employee_key="$3"
+  local client_id="${4:-cli-child-test}"
+  local redirect_uri="${5:-http://127.0.0.1:1455/callback}"
+  local verifier="${6:-cli-child-verifier}"
+  docker exec -i "${probe_container}" python - "${base_url}" "${employee_key}" "${client_id}" "${redirect_uri}" "${verifier}" <<'PY'
+import base64
+import hashlib
+import json
+import sys
+import urllib.parse
+import urllib.request
+
+base_url, employee_key, client_id, redirect_uri, verifier = sys.argv[1:6]
+challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("utf-8")).digest()).decode("ascii").rstrip("=")
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+    http_error_301 = http_error_302 = http_error_303 = http_error_307 = http_error_308 = (
+        lambda self, req, fp, code, msg, headers: fp
+    )
+
+opener = urllib.request.build_opener(NoRedirect)
+auth_body = urllib.parse.urlencode(
+    {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": "cli-child-state",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "employee_api_key": employee_key,
+    }
+).encode("utf-8")
+auth_request = urllib.request.Request(
+    f"{base_url}/oauth/authorize/approve",
+    data=auth_body,
+    headers={"Content-Type": "application/x-www-form-urlencoded"},
+    method="POST",
+)
+auth_response = opener.open(auth_request, timeout=30)
+location = auth_response.headers.get("Location")
+if not location:
+    raise SystemExit("missing authorize redirect")
+query = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+code = query.get("code", [None])[0]
+if not code:
+    raise SystemExit("missing authorize code")
+
+token_body = urllib.parse.urlencode(
+    {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+        "code_verifier": verifier,
+    }
+).encode("utf-8")
+token_request = urllib.request.Request(
+    f"{base_url}/oauth/token",
+    data=token_body,
+    headers={"Content-Type": "application/x-www-form-urlencoded"},
+    method="POST",
+)
+with urllib.request.urlopen(token_request, timeout=30) as token_response:
+    token_payload = json.loads(token_response.read().decode("utf-8"))
+id_token = token_payload.get("id_token")
+if not id_token:
+    raise SystemExit("missing id_token")
+
+exchange_body = urllib.parse.urlencode(
+    {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "client_id": client_id,
+        "requested_token": "openai-api-key",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
+        "subject_token": id_token,
+    }
+).encode("utf-8")
+exchange_request = urllib.request.Request(
+    f"{base_url}/oauth/token",
+    data=exchange_body,
+    headers={"Content-Type": "application/x-www-form-urlencoded"},
+    method="POST",
+)
+with urllib.request.urlopen(exchange_request, timeout=30) as exchange_response:
+    exchange_payload = json.loads(exchange_response.read().decode("utf-8"))
+access_token = exchange_payload.get("access_token")
+if not access_token:
+    raise SystemExit("missing child access token")
+print(access_token)
+PY
+}
+
 send_turn_raw() {
   local affinity_id="$1"
   local text="$2"
@@ -540,6 +878,20 @@ assert_response_account() {
   [[ "${output_text}" == "mock:${expected_token}:"* ]] || die "expected response from ${expected_token}, got ${output_text}"
 }
 
+assert_response_contains() {
+  local response="$1"
+  local expected="$2"
+  local output_text="${response%$'\n'*}"
+  [[ "${output_text}" == *"${expected}"* ]] || die "response did not contain ${expected}: ${output_text}"
+}
+
+assert_response_not_contains() {
+  local response="$1"
+  local unexpected="$2"
+  local output_text="${response%$'\n'*}"
+  [[ "${output_text}" != *"${unexpected}"* ]] || die "response unexpectedly contained ${unexpected}: ${output_text}"
+}
+
 run_turn_batch() {
   local prefix="$1"
   local count="$2"
@@ -557,6 +909,8 @@ cleanup() {
     log "keeping mock stack ${TEST_PROJECT}"
     return
   fi
+  [[ -n "${DESKTOP_BUILDER_IMAGE}" ]] && docker image rm "${DESKTOP_BUILDER_IMAGE}" >/dev/null 2>&1 || true
+  [[ -n "${TEST_PYTHON_IMAGE}" ]] && docker image rm "${TEST_PYTHON_IMAGE}" >/dev/null 2>&1 || true
   docker compose -p "${TEST_PROJECT}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down -v --remove-orphans >/dev/null 2>&1 || true
   [[ -n "${NETWORK_NAME}" ]] && docker network rm "${NETWORK_NAME}" >/dev/null 2>&1 || true
   [[ -n "${DATA_VOLUME}" ]] && docker volume rm "${DATA_VOLUME}" >/dev/null 2>&1 || true
@@ -661,12 +1015,94 @@ assert_binding_counts $'aff-acc-1=1\naff-acc-2=1\naff-acc-3=1'
 log "scenario D: hard quota on top candidate falls back before downstream sees quota"
 clear_affinity_state
 restore_mock_tokens
-set_mock_token "aff-acc-1" "mock-account-1-quota"
+set_mock_token "aff-acc-1" "mock-account-1-quota-http-json"
 apply_usage_map '{"aff-acc-1":10,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
 restart_service
-send_turn "case-d-cli-1" "quota-failover"
+response="$(send_turn_raw "case-d-cli-1" "quota-failover")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_response_not_contains "${response}" "usage limit"
+assert_response_not_contains "${response}" "insufficient_quota"
 assert_binding_counts 'aff-acc-2=1'
 assert_affinity_bound_to "cli" "case-d-cli-1" "aff-acc-2"
+assert_account_quota_exhausted "aff-acc-1"
+set_mock_token "aff-acc-1" "mock-account-1"
+response="$(send_turn_raw "case-d-cli-2" "quota-persisted-skip")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_affinity_bound_to "cli" "case-d-cli-2" "aff-acc-2"
+
+log "scenario D2: OAuth child key hits /v1/responses with cli UUID affinity and SSE quota failover"
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+child_token="$(mint_cli_child_key_via_oauth "${PROBE_CONTAINER}" "http://service-test:48760" "${PLATFORM_KEY}" "cli-child-test")"
+child_meta="$(latest_child_key_details "aff-key-1")"
+[[ -n "${child_meta}" ]] || die "expected cli child key metadata"
+child_key_id="${child_meta%%|*}"
+child_cli_uuid="${child_meta##*|}"
+response="$(send_turn_raw_auth_via "${PROBE_CONTAINER}" "http://service-test:48760" "${child_token}" "child-key-no-header-1" "oauth-child-initial" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-1"
+assert_affinity_bound_to "cli" "${child_cli_uuid}" "aff-acc-1"
+assert_latest_response_log_identity "aff-key-1" "${child_key_id}"
+set_mock_token "aff-acc-1" "mock-account-1-quota-sse-failed"
+response="$(send_turn_raw_auth_via "${PROBE_CONTAINER}" "http://service-test:48760" "${child_token}" "child-key-no-header-2" "oauth-child-failover" "none")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_response_not_contains "${response}" "usage limit"
+assert_response_not_contains "${response}" "insufficient_quota"
+assert_affinity_bound_to "cli" "${child_cli_uuid}" "aff-acc-2"
+assert_context_events_at_least "cli" "${child_cli_uuid}" 4
+assert_account_quota_exhausted "aff-acc-1"
+assert_latest_response_log_identity "aff-key-1" "${child_key_id}"
+
+log "scenario D3: SSE response.failed insufficient_quota falls back before downstream sees quota"
+clear_affinity_state
+restore_mock_tokens
+set_mock_token "aff-acc-1" "mock-account-1-quota-sse-failed"
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+response="$(send_turn_raw "case-d3-cli-1" "quota-sse-failed-failover")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_response_not_contains "${response}" "usage limit"
+assert_response_not_contains "${response}" "insufficient_quota"
+assert_affinity_bound_to "cli" "case-d3-cli-1" "aff-acc-2"
+assert_account_quota_exhausted "aff-acc-1"
+
+log "scenario D4: completed SSE followed by extra usage_limit error still falls back"
+clear_affinity_state
+restore_mock_tokens
+set_mock_token "aff-acc-1" "mock-account-1-quota-sse-extra"
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+response="$(send_turn_raw "case-d4-cli-1" "quota-sse-extra-failover")"
+assert_response_status "${response}" "200"
+assert_response_account "${response}" "mock-account-2"
+assert_response_not_contains "${response}" "usage limit"
+assert_response_not_contains "${response}" "insufficient_quota"
+assert_affinity_bound_to "cli" "case-d4-cli-1" "aff-acc-2"
+assert_account_quota_exhausted "aff-acc-1"
+
+log "scenario D5: OAuth child key streaming SSE quota failover stays invisible downstream"
+clear_affinity_state
+restore_mock_tokens
+apply_usage_map '{"aff-acc-1":10,"aff-acc-2":40,"aff-acc-3":100,"aff-acc-4":100,"aff-acc-5":100}'
+restart_service
+child_token="$(mint_cli_child_key_via_oauth "${PROBE_CONTAINER}" "http://service-test:48760" "${PLATFORM_KEY}" "cli-child-stream-test")"
+child_meta="$(latest_child_key_details "aff-key-1")"
+[[ -n "${child_meta}" ]] || die "expected cli child key metadata for streaming case"
+child_cli_uuid="${child_meta##*|}"
+set_mock_token "aff-acc-1" "mock-account-1-quota-sse-extra"
+response="$(send_turn_stream_raw_auth_via "${PROBE_CONTAINER}" "http://service-test:48760" "${child_token}" "child-key-stream-1" "oauth-child-stream-failover" "none")"
+assert_response_status "${response}" "200"
+assert_response_contains "${response}" "mock-account-2"
+assert_response_not_contains "${response}" "usage limit"
+assert_response_not_contains "${response}" "insufficient_quota"
+assert_affinity_bound_to "cli" "${child_cli_uuid}" "aff-acc-2"
+assert_account_quota_exhausted "aff-acc-1"
 
 log "scenario E: challenge response on top candidate falls back to next account"
 clear_affinity_state

@@ -268,41 +268,41 @@ pub(in super::super) fn send_upstream_request(
         builder
     };
 
-    let result = if is_gateway_account_proxy_request(target_url, request_ctx.request_path, is_stream)
-    {
-        if let Some(proxy_client) = super::super::super::gateway_account_proxy_client() {
-            match build_request(&proxy_client).send() {
-                Ok(resp) => Ok(resp),
-                Err(proxy_err) if is_gateway_account_proxy_connect_error(&proxy_err) => {
-                    log::warn!(
+    let result =
+        if is_gateway_account_proxy_request(target_url, request_ctx.request_path, is_stream) {
+            if let Some(proxy_client) = super::super::super::gateway_account_proxy_client() {
+                match build_request(&proxy_client).send() {
+                    Ok(resp) => Ok(resp),
+                    Err(proxy_err) if is_gateway_account_proxy_connect_error(&proxy_err) => {
+                        log::warn!(
                         "event=gateway_account_proxy_fallback_direct path={} account_id={} err={}",
                         request_ctx.request_path,
                         account.id,
                         proxy_err
                     );
-                    let direct = super::super::super::fresh_direct_upstream_client();
-                    build_request(&direct).send()
+                        let direct = super::super::super::fresh_direct_upstream_client();
+                        build_request(&direct).send()
+                    }
+                    Err(proxy_err) => Err(proxy_err),
                 }
-                Err(proxy_err) => Err(proxy_err),
+            } else {
+                build_request(client).send()
             }
         } else {
-            build_request(client).send()
-        }
-    } else {
-        match build_request(client).send() {
-            Ok(resp) => Ok(resp),
-            Err(first_err) => {
-                // 中文注释：进程启动后才开启系统代理时，旧单例 client 可能仍走旧网络路径；
-                // 这里用 fresh client 立刻重试一次，避免必须手动重连服务。
-                let fresh =
-                    super::super::super::fresh_upstream_client_for_account(account.id.as_str());
-                match build_request(&fresh).send() {
-                    Ok(resp) => Ok(resp),
-                    Err(_) => Err(first_err),
+            match build_request(client).send() {
+                Ok(resp) => Ok(resp),
+                Err(first_err) => {
+                    // 中文注释：进程启动后才开启系统代理时，旧单例 client 可能仍走旧网络路径；
+                    // 这里用 fresh client 立刻重试一次，避免必须手动重连服务。
+                    let fresh =
+                        super::super::super::fresh_upstream_client_for_account(account.id.as_str());
+                    match build_request(&fresh).send() {
+                        Ok(resp) => Ok(resp),
+                        Err(_) => Err(first_err),
+                    }
                 }
             }
-        }
-    };
+        };
     let duration_ms = super::super::super::duration_to_millis(attempt_started_at.elapsed());
     super::super::super::metrics::record_gateway_upstream_attempt(duration_ms, result.is_err());
     result

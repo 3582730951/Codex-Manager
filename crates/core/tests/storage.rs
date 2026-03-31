@@ -793,6 +793,7 @@ fn request_log_today_summary_reads_from_token_stats_table() {
         .insert_request_token_stat(&RequestTokenStat {
             request_log_id,
             key_id: Some("key-summary".to_string()),
+            owner_key_id: None,
             account_id: Some("acc-summary".to_string()),
             model: Some("gpt-5.3-codex".to_string()),
             input_tokens: Some(120),
@@ -854,6 +855,7 @@ fn insert_request_log_with_token_stat_writes_both_tables_in_one_call() {
             &RequestTokenStat {
                 request_log_id: 0,
                 key_id: Some("key-atomic".to_string()),
+                owner_key_id: None,
                 account_id: Some("acc-atomic".to_string()),
                 model: Some("gpt-5.3-codex".to_string()),
                 input_tokens: Some(10),
@@ -925,6 +927,7 @@ fn clear_request_logs_keeps_token_stats_for_usage_summary() {
         .insert_request_token_stat(&RequestTokenStat {
             request_log_id,
             key_id: Some("key-clear".to_string()),
+            owner_key_id: None,
             account_id: Some("acc-clear".to_string()),
             model: Some("gpt-5.3-codex".to_string()),
             input_tokens: Some(100),
@@ -979,6 +982,7 @@ fn request_token_stats_can_summarize_total_tokens_by_key() {
                 } else {
                     Some(key_id.to_string())
                 },
+                owner_key_id: None,
                 account_id: Some("acc-summary".to_string()),
                 model: Some("gpt-5.3-codex".to_string()),
                 input_tokens,

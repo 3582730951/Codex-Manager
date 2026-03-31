@@ -409,8 +409,13 @@ pub(crate) fn account_runtime_snapshot(
     let snapshot = state.usage_cache.by_account.get(account_id).cloned();
     let runtime = state.accounts.entry(account_id.to_string()).or_default();
     let route_health = runtime.route_health_score;
-    let dynamic_limit =
-        dynamic_limit_for_candidate(token, snapshot.as_ref(), route_health, runtime, static_limit);
+    let dynamic_limit = dynamic_limit_for_candidate(
+        token,
+        snapshot.as_ref(),
+        route_health,
+        runtime,
+        static_limit,
+    );
     runtime.dynamic_limit = dynamic_limit;
     SchedulerAccountSnapshot {
         remaining_quota_percent: remaining_quota_percent(snapshot.as_ref()),

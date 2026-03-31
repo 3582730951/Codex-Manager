@@ -2,6 +2,8 @@
 pub mod callback_endpoint;
 pub mod gateway_endpoint;
 #[cfg_attr(not(test), allow(dead_code))]
+pub mod oauth_endpoint;
+#[cfg_attr(not(test), allow(dead_code))]
 pub mod rpc_endpoint;
 pub mod server;
 

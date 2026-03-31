@@ -116,7 +116,9 @@ use cooldown::{
 pub(super) use failover::should_failover_after_refresh;
 use failover::should_failover_from_cached_snapshot;
 use http_bridge::respond_with_upstream;
-pub(crate) use http_bridge::summarize_upstream_error_hint_from_body;
+pub(crate) use http_bridge::{
+    inspect_non_stream_sse_payload, summarize_upstream_error_hint_from_body,
+};
 pub(crate) fn extract_identity_error_code_from_headers(
     headers: &reqwest::header::HeaderMap,
 ) -> Option<String> {

@@ -12,6 +12,7 @@ pub(super) struct RequestLogUsage {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct RequestLogTraceContext<'a> {
     pub trace_id: Option<&'a str>,
+    pub owner_key_id: Option<&'a str>,
     pub original_path: Option<&'a str>,
     pub adapted_path: Option<&'a str>,
     pub response_adapter: Option<super::ResponseAdapter>,
@@ -240,6 +241,7 @@ pub(super) fn write_request_log_with_attempts(
         &RequestLog {
             trace_id: trace_context.trace_id.map(|v| v.to_string()),
             key_id: key_id.map(|v| v.to_string()),
+            owner_key_id: trace_context.owner_key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
             initial_account_id: initial_account_id.map(str::to_string),
             attempted_account_ids_json,
@@ -274,6 +276,7 @@ pub(super) fn write_request_log_with_attempts(
         &RequestTokenStat {
             request_log_id: 0,
             key_id: key_id.map(|v| v.to_string()),
+            owner_key_id: trace_context.owner_key_id.map(|v| v.to_string()),
             account_id: account_id.map(|v| v.to_string()),
             model: model.map(|v| v.to_string()),
             input_tokens,

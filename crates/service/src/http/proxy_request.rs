@@ -18,7 +18,11 @@ pub(crate) fn filter_request_headers(
 ) -> HeaderMap {
     let mut outbound_headers = HeaderMap::new();
     for (name, value) in headers.iter() {
-        if strip_cli_affinity_id && name.as_str().eq_ignore_ascii_case("x-codex-cli-affinity-id") {
+        if strip_cli_affinity_id
+            && name
+                .as_str()
+                .eq_ignore_ascii_case("x-codex-cli-affinity-id")
+        {
             continue;
         }
         if should_skip_request_header(name, value) {

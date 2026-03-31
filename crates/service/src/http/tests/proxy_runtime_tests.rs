@@ -129,7 +129,10 @@ fn build_internal_entity_headers_uses_peer_runtime_mode() {
     .expect("internal peer headers");
 
     assert_eq!(headers.len(), 3);
-    assert_eq!(headers[0].0, crate::gateway::affinity::INTERNAL_CLIENT_ENTITY_HEADER);
+    assert_eq!(
+        headers[0].0,
+        crate::gateway::affinity::INTERNAL_CLIENT_ENTITY_HEADER
+    );
     assert_eq!(headers[0].1, "peerip:172.18.0.8");
 }
 
@@ -140,7 +143,10 @@ fn build_internal_entity_headers_skips_peer_runtime_when_forwarded_headers_exist
     crate::gateway::reload_runtime_config_from_env();
 
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert("x-forwarded-for", "203.0.113.10".parse().expect("header value"));
+    headers.insert(
+        "x-forwarded-for",
+        "203.0.113.10".parse().expect("header value"),
+    );
     let actual = build_internal_entity_headers(
         &headers,
         "POST",

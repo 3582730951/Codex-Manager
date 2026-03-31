@@ -100,18 +100,17 @@ static PEER_RUNTIME_STATE: OnceLock<Mutex<PeerRuntimeState>> = OnceLock::new();
 static INTERNAL_HOP_SECRET: OnceLock<String> = OnceLock::new();
 
 pub(crate) fn reload_from_env() {
-    let requested_mode = match parse_client_entity_mode(
-        std::env::var(ENV_CLIENT_ENTITY_MODE).ok().as_deref(),
-    ) {
-        Ok(mode) => mode,
-        Err(()) => {
-            log::warn!(
-                "event=client_entity_mode_invalid env={} fallback=off",
-                ENV_CLIENT_ENTITY_MODE
-            );
-            Some(ClientEntityMode::Off)
-        }
-    };
+    let requested_mode =
+        match parse_client_entity_mode(std::env::var(ENV_CLIENT_ENTITY_MODE).ok().as_deref()) {
+            Ok(mode) => mode,
+            Err(()) => {
+                log::warn!(
+                    "event=client_entity_mode_invalid env={} fallback=off",
+                    ENV_CLIENT_ENTITY_MODE
+                );
+                Some(ClientEntityMode::Off)
+            }
+        };
     let edge_trusted_cidrs = parse_cidr_list(std::env::var(ENV_EDGE_ENTITY_TRUSTED_CIDRS).ok());
     let edge_hmac_secret = std::env::var(ENV_EDGE_ENTITY_HMAC_SECRET)
         .ok()
@@ -236,7 +235,9 @@ pub(crate) fn prepare_request_preflight(
     }
 }
 
-pub(crate) fn resolve_peer_runtime_hint(runtime_key: Option<&str>) -> Option<PeerRuntimeRoutingHint> {
+pub(crate) fn resolve_peer_runtime_hint(
+    runtime_key: Option<&str>,
+) -> Option<PeerRuntimeRoutingHint> {
     let runtime_key = runtime_key
         .map(str::trim)
         .filter(|value| !value.is_empty())?
@@ -394,7 +395,10 @@ fn prune_peer_runtime_pins(state: &mut PeerRuntimeState, now: i64, ttl_secs: i64
         .retain(|_, entry| now.saturating_sub(entry.updated_at) <= ttl_secs);
 }
 
-fn exact_one_optional_header(headers: &HeaderMap, name: &'static str) -> Result<Option<String>, String> {
+fn exact_one_optional_header(
+    headers: &HeaderMap,
+    name: &'static str,
+) -> Result<Option<String>, String> {
     let values = headers.get_all(name).iter().collect::<Vec<_>>();
     if values.is_empty() {
         return Ok(None);
@@ -413,7 +417,12 @@ fn exact_one_optional_header(headers: &HeaderMap, name: &'static str) -> Result<
 }
 
 fn parse_client_entity_mode(raw: Option<&str>) -> Result<Option<ClientEntityMode>, ()> {
-    match raw.map(str::trim).unwrap_or_default().to_ascii_lowercase().as_str() {
+    match raw
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "" => Ok(Some(ClientEntityMode::Off)),
         "auto" => Ok(None),
         "off" | "disabled" => Ok(Some(ClientEntityMode::Off)),
@@ -466,7 +475,9 @@ fn resolve_peer_runtime_networks(
         );
     }
     match requested_mode {
-        Some(ClientEntityMode::Off) | Some(ClientEntityMode::EdgeEnforced) => (Vec::new(), Vec::new()),
+        Some(ClientEntityMode::Off) | Some(ClientEntityMode::EdgeEnforced) => {
+            (Vec::new(), Vec::new())
+        }
         Some(ClientEntityMode::DockerPeerRuntime) | None => auto_detect_peer_runtime_networks(),
     }
 }
@@ -635,7 +646,11 @@ fn constant_time_eq_hex(left: &str, right: &str) -> bool {
 
 fn normalize_path_for_signature(path: &str) -> &str {
     let trimmed = path.trim();
-    if trimmed.is_empty() { "/" } else { trimmed }
+    if trimmed.is_empty() {
+        "/"
+    } else {
+        trimmed
+    }
 }
 
 fn parse_entity_parts(raw: &str) -> Option<(String, String)> {
@@ -687,14 +702,22 @@ impl IpCidr {
                 let expected = u32::from(expected);
                 let candidate = u32::from(candidate);
                 let shift = 32_u32.saturating_sub(u32::from(self.prefix_len));
-                let mask = if self.prefix_len == 0 { 0 } else { u32::MAX << shift };
+                let mask = if self.prefix_len == 0 {
+                    0
+                } else {
+                    u32::MAX << shift
+                };
                 (expected & mask) == (candidate & mask)
             }
             (IpAddr::V6(expected), IpAddr::V6(candidate)) => {
                 let expected = u128::from(expected);
                 let candidate = u128::from(candidate);
                 let shift = 128_u32.saturating_sub(u32::from(self.prefix_len));
-                let mask = if self.prefix_len == 0 { 0 } else { u128::MAX << shift };
+                let mask = if self.prefix_len == 0 {
+                    0
+                } else {
+                    u128::MAX << shift
+                };
                 (expected & mask) == (candidate & mask)
             }
             _ => false,
@@ -756,9 +779,15 @@ mod tests {
             parse_client_entity_mode(Some("docker-peer-runtime")),
             Ok(Some(ClientEntityMode::DockerPeerRuntime))
         );
-        assert_eq!(parse_client_entity_mode(None), Ok(Some(ClientEntityMode::Off)));
+        assert_eq!(
+            parse_client_entity_mode(None),
+            Ok(Some(ClientEntityMode::Off))
+        );
         assert_eq!(parse_client_entity_mode(Some("auto")), Ok(None));
-        assert_eq!(parse_client_entity_mode(Some("off")), Ok(Some(ClientEntityMode::Off)));
+        assert_eq!(
+            parse_client_entity_mode(Some("off")),
+            Ok(Some(ClientEntityMode::Off))
+        );
         assert!(parse_client_entity_mode(Some("bad-mode")).is_err());
     }
 
@@ -847,8 +876,9 @@ mod tests {
             HeaderValue::from_str(sig.as_str()).expect("sig"),
         );
 
-        let actual = filter_and_validate_edge_entity_headers(&headers, "POST", "/v1/responses", peer_ip)
-            .expect("validation result");
+        let actual =
+            filter_and_validate_edge_entity_headers(&headers, "POST", "/v1/responses", peer_ip)
+                .expect("validation result");
         assert_eq!(actual.as_deref(), Some("mtlsfp:client-a"));
     }
 

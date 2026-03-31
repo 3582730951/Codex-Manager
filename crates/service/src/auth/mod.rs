@@ -2,6 +2,8 @@
 pub(crate) mod account;
 #[path = "auth_callback.rs"]
 pub(crate) mod callback;
+#[path = "auth_cli_oauth.rs"]
+pub(crate) mod cli_oauth;
 #[path = "auth_login.rs"]
 pub(crate) mod login;
 pub(crate) mod rpc;

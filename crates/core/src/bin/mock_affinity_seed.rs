@@ -1,6 +1,4 @@
-use codexmanager_core::storage::{
-    now_ts, Account, ApiKey, Storage, Token, UsageSnapshotRecord,
-};
+use codexmanager_core::storage::{now_ts, Account, ApiKey, Storage, Token, UsageSnapshotRecord};
 use sha2::{Digest, Sha256};
 
 fn env(name: &str, default: &str) -> String {

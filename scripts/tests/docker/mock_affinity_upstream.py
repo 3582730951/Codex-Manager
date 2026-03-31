@@ -6,6 +6,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 PORT = int(os.getenv("MOCK_UPSTREAM_PORT", "18080"))
+QUOTA_MESSAGE = (
+    "You've hit your usage limit. To get more access now, "
+    "send a request to your admin or try again at 12:51 PM."
+)
+QUOTA_DATE = "Tue, 31 Mar 2026 04:30:00 GMT"
 
 
 def extract_token(headers):
@@ -58,6 +63,47 @@ def build_completed_response(token, payload):
     }
 
 
+def build_usage_limit_http_error():
+    return {
+        "error": {
+            "type": "usage_limit_reached",
+            "code": "usage_limit_reached",
+            "message": QUOTA_MESSAGE,
+            "plan_type": "pro",
+            "resets_at": 1774961460,
+        }
+    }
+
+
+def build_quota_failed_event(response_id):
+    return {
+        "type": "response.failed",
+        "response": {
+            "id": response_id,
+            "status": "failed",
+            "error": {
+                "type": "insufficient_quota",
+                "code": "insufficient_quota",
+                "message": "You exceeded your current quota, please check your plan and billing details.",
+            },
+        },
+    }
+
+
+def build_usage_limit_sse_error():
+    return {
+        "type": "error",
+        "status": 429,
+        "error": {
+            "type": "usage_limit_reached",
+            "code": "usage_limit_reached",
+            "message": QUOTA_MESSAGE,
+            "plan_type": "pro",
+            "resets_at": 1774961460,
+        },
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "affinity-mock/1.0"
 
@@ -68,6 +114,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Date", QUOTA_DATE)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -104,6 +151,17 @@ class Handler(BaseHTTPRequestHandler):
         if token.endswith("-unauthorized"):
             self._write_json(401, {"error": {"message": "mock unauthorized"}})
             return
+        if token.endswith("-quota-http-json"):
+            body = json.dumps(build_usage_limit_http_error()).encode("utf-8")
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Retry-After", "1800")
+            self.send_header("Date", QUOTA_DATE)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            return
         if token.endswith("-quota"):
             self._write_json(
                 429,
@@ -118,8 +176,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         completed = build_completed_response(token or "anon", payload)
+        created_at = int(time.time())
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Date", QUOTA_DATE)
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
@@ -128,8 +188,28 @@ class Handler(BaseHTTPRequestHandler):
             "type": "response.output_text.delta",
             "delta": completed["output"][0]["content"][0]["text"],
         }
-        frames = [("response.output_text.delta", delta)]
-        if not token.endswith("-incomplete"):
+        frames = [
+            (
+                "response.created",
+                {
+                    "type": "response.created",
+                    "response": {
+                        "id": completed["id"],
+                        "model": completed["model"],
+                        "created": created_at,
+                    },
+                },
+            ),
+            ("response.output_text.delta", delta),
+        ]
+        if token.endswith("-quota-sse-failed"):
+            frames.append(("response.failed", build_quota_failed_event(completed["id"])))
+        elif token.endswith("-quota-sse-extra"):
+            frames.append(
+                ("response.completed", {"type": "response.completed", "response": completed})
+            )
+            frames.append(("error", build_usage_limit_sse_error()))
+        elif not token.endswith("-incomplete"):
             frames.append(
                 ("response.completed", {"type": "response.completed", "response": completed})
             )

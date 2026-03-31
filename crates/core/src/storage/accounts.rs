@@ -251,7 +251,10 @@ impl Storage {
              )",
             [account_id],
         )?;
-        tx.execute("DELETE FROM client_bindings WHERE account_id = ?1", [account_id])?;
+        tx.execute(
+            "DELETE FROM client_bindings WHERE account_id = ?1",
+            [account_id],
+        )?;
         tx.execute(
             "DELETE FROM conversation_threads WHERE account_id = ?1",
             [account_id],

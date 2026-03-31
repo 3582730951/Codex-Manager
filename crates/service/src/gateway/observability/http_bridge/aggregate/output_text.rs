@@ -50,6 +50,8 @@ pub(crate) struct UpstreamResponseBridgeResult {
     pub upstream_cf_ray: Option<String>,
     pub upstream_auth_error: Option<String>,
     pub upstream_identity_error_code: Option<String>,
+    pub upstream_retry_after: Option<String>,
+    pub upstream_date: Option<String>,
     pub upstream_content_type: Option<String>,
     pub last_sse_event_type: Option<String>,
     pub completed_response_body: Option<Vec<u8>>,
