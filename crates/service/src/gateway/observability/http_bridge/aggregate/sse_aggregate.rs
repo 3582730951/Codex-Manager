@@ -528,6 +528,7 @@ fn synthesize_chat_completion_body(synthesis: &ChatCompletionSseSynthesis) -> Op
 pub(crate) struct NonStreamSseInspection {
     pub synthesized_body: Option<Vec<u8>>,
     pub usage: UpstreamResponseUsage,
+    pub saw_terminal: bool,
     pub terminal_error: Option<String>,
     pub last_event_type: Option<String>,
 }
@@ -538,6 +539,7 @@ pub(crate) fn inspect_non_stream_sse_payload(payload: &[u8]) -> NonStreamSseInsp
     let mut responses_sse_synthesis = ResponsesSseSynthesis::default();
     let mut chat_completion_synthesis = ChatCompletionSseSynthesis::default();
     let mut frame_lines: Vec<String> = Vec::new();
+    let mut saw_terminal = false;
     let mut terminal_error: Option<String> = None;
     let mut last_event_type: Option<String> = None;
 
@@ -563,10 +565,13 @@ pub(crate) fn inspect_non_stream_sse_payload(payload: &[u8]) -> NonStreamSseInsp
             if let Some(event_type) = inspection.last_event_type {
                 last_event_type = Some(event_type);
             }
-            if let Some(SseTerminal::Err(message)) = inspection.terminal {
-                let message = message.trim();
-                if !message.is_empty() {
-                    terminal_error = Some(message.to_string());
+            if let Some(terminal) = inspection.terminal {
+                saw_terminal = true;
+                if let SseTerminal::Err(message) = terminal {
+                    let message = message.trim();
+                    if !message.is_empty() {
+                        terminal_error = Some(message.to_string());
+                    }
                 }
             }
             if let Some(value) = parse_sse_frame_json(&frame) {
@@ -595,10 +600,13 @@ pub(crate) fn inspect_non_stream_sse_payload(payload: &[u8]) -> NonStreamSseInsp
         if let Some(event_type) = inspection.last_event_type {
             last_event_type = Some(event_type);
         }
-        if let Some(SseTerminal::Err(message)) = inspection.terminal {
-            let message = message.trim();
-            if !message.is_empty() {
-                terminal_error = Some(message.to_string());
+        if let Some(terminal) = inspection.terminal {
+            saw_terminal = true;
+            if let SseTerminal::Err(message) = terminal {
+                let message = message.trim();
+                if !message.is_empty() {
+                    terminal_error = Some(message.to_string());
+                }
             }
         }
         if let Some(value) = parse_sse_frame_json(&frame_lines) {
@@ -624,6 +632,7 @@ pub(crate) fn inspect_non_stream_sse_payload(payload: &[u8]) -> NonStreamSseInsp
     NonStreamSseInspection {
         synthesized_body: body,
         usage,
+        saw_terminal,
         terminal_error,
         last_event_type,
     }

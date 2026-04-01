@@ -129,6 +129,63 @@ fn retry_upstream_server_error_once(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn retry_incomplete_sse_stream_once(
+    client: &reqwest::blocking::Client,
+    method: &reqwest::Method,
+    url: &str,
+    request_deadline: Option<Instant>,
+    request_ctx: UpstreamRequestContext<'_>,
+    incoming_headers: &super::super::super::IncomingHeaderSnapshot,
+    body: &Bytes,
+    is_stream: bool,
+    auth_token: &str,
+    account: &Account,
+    strip_session_affinity: bool,
+    debug: bool,
+) -> Result<Option<reqwest::blocking::Response>, ()> {
+    if debug {
+        log::warn!(
+            "event=gateway_upstream_incomplete_stream_retry path={} account_id={}",
+            request_ctx.request_path,
+            account.id
+        );
+    }
+    if !backoff::sleep_with_exponential_jitter(
+        std::time::Duration::from_millis(120),
+        std::time::Duration::from_millis(900),
+        1,
+        request_deadline,
+    ) {
+        return Err(());
+    }
+
+    match super::transport::send_upstream_request(
+        client,
+        method,
+        url,
+        request_deadline,
+        request_ctx,
+        incoming_headers,
+        body,
+        is_stream,
+        auth_token,
+        account,
+        strip_session_affinity,
+    ) {
+        Ok(resp) => Ok(Some(resp)),
+        Err(err) => {
+            log::warn!(
+                "event=gateway_upstream_incomplete_stream_retry_error path={} status=502 account_id={} err={}",
+                request_ctx.request_path,
+                account.id,
+                err
+            );
+            Ok(None)
+        }
+    }
+}
+
 pub(super) enum PostRetryFlowDecision {
     Failover,
     Terminal { status_code: u16, message: String },
@@ -369,9 +426,14 @@ where
         }
     }
 
-    if status.is_success()
-        && is_sse_content_type(upstream.headers().get(reqwest::header::CONTENT_TYPE))
-    {
+    let mut incomplete_stream_retry_used = false;
+    loop {
+        if !(status.is_success()
+            && is_sse_content_type(upstream.headers().get(reqwest::header::CONTENT_TYPE)))
+        {
+            break;
+        }
+
         let response_status = upstream.status();
         let response_version = upstream.version();
         let response_headers = upstream.headers().clone();
@@ -385,6 +447,55 @@ where
             }
         };
         let inspection = crate::gateway::inspect_non_stream_sse_payload(response_body.as_ref());
+
+        if !inspection.saw_terminal {
+            let message = "上游流中途中断（未正常结束）".to_string();
+            if !incomplete_stream_retry_used {
+                incomplete_stream_retry_used = true;
+                match retry_incomplete_sse_stream_once(
+                    client,
+                    method,
+                    url,
+                    request_deadline,
+                    request_ctx,
+                    incoming_headers,
+                    body,
+                    upstream_is_stream,
+                    current_auth_token.as_str(),
+                    account,
+                    strip_session_affinity,
+                    debug,
+                ) {
+                    Ok(Some(resp)) => {
+                        upstream = resp;
+                        status = upstream.status();
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(()) => {
+                        return PostRetryFlowDecision::Terminal {
+                            status_code: 504,
+                            message: "upstream total timeout exceeded".to_string(),
+                        };
+                    }
+                }
+            }
+            super::super::super::mark_account_cooldown(
+                &account.id,
+                super::super::super::CooldownReason::Network,
+            );
+            super::super::super::record_route_quality(&account.id, 502);
+            log_gateway_result(Some(url), 502, Some(message.as_str()));
+            return if has_more_candidates {
+                PostRetryFlowDecision::Failover
+            } else {
+                PostRetryFlowDecision::Terminal {
+                    status_code: 502,
+                    message,
+                }
+            };
+        }
+
         if let Some(terminal_error) = inspection
             .terminal_error
             .as_deref()
@@ -424,6 +535,7 @@ where
             }
         };
         status = upstream.status();
+        break;
     }
 
     if status.as_u16() == 429 && has_more_candidates {
@@ -923,6 +1035,194 @@ mod tests {
         );
 
         join.join().expect("join server");
+        assert!(matches!(decision, PostRetryFlowDecision::Failover));
+    }
+
+    #[test]
+    fn streaming_incomplete_sse_retries_once_and_recovers_before_delivery() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-stream-incomplete-retry", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let server = Server::http("127.0.0.1:0").expect("start server");
+        let addr = format!("http://{}", server.server_addr());
+        let hit_count = Arc::new(AtomicUsize::new(0));
+        let hit_count_thread = Arc::clone(&hit_count);
+        let join = thread::spawn(move || {
+            for index in 0..2 {
+                let request = server
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("receive upstream request")
+                    .expect("request present");
+                hit_count_thread.fetch_add(1, Ordering::SeqCst);
+                let body = if index == 0 {
+                    concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_retry_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n"
+                    )
+                } else {
+                    concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_retry_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n",
+                        "event: response.completed\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_retry_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n",
+                        "data: [DONE]\n\n"
+                    )
+                };
+                let response = Response::from_string(body)
+                    .with_status_code(StatusCode(200))
+                    .with_header(
+                        tiny_http::Header::from_bytes(
+                            b"Content-Type".as_slice(),
+                            b"text/event-stream".as_slice(),
+                        )
+                        .expect("content-type header"),
+                    );
+                request.respond(response).expect("respond");
+            }
+        });
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body =
+            Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            true,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
+        assert_eq!(hit_count.load(Ordering::SeqCst), 2);
+        match decision {
+            PostRetryFlowDecision::RespondUpstream(resp) => assert_eq!(resp.status(), 200),
+            _ => panic!("unexpected decision"),
+        }
+    }
+
+    #[test]
+    fn streaming_incomplete_sse_fails_over_after_retry_when_candidates_remain() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-stream-incomplete-failover", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let server = Server::http("127.0.0.1:0").expect("start server");
+        let addr = format!("http://{}", server.server_addr());
+        let hit_count = Arc::new(AtomicUsize::new(0));
+        let hit_count_thread = Arc::clone(&hit_count);
+        let join = thread::spawn(move || {
+            for _ in 0..2 {
+                let request = server
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("receive upstream request")
+                    .expect("request present");
+                hit_count_thread.fetch_add(1, Ordering::SeqCst);
+                let response = Response::from_string(concat!(
+                    "event: response.created\n",
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_failover_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n"
+                ))
+                .with_status_code(StatusCode(200))
+                .with_header(
+                    tiny_http::Header::from_bytes(
+                        b"Content-Type".as_slice(),
+                        b"text/event-stream".as_slice(),
+                    )
+                    .expect("content-type header"),
+                );
+                request.respond(response).expect("respond");
+            }
+        });
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body =
+            Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            true,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            true,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
+        assert_eq!(hit_count.load(Ordering::SeqCst), 2);
         assert!(matches!(decision, PostRetryFlowDecision::Failover));
     }
 }
