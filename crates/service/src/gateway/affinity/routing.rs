@@ -46,6 +46,7 @@ pub(crate) struct AffinityRoutingResolution {
     #[allow(dead_code)]
     pub(crate) reset_session_affinity: bool,
     pub(crate) requires_replay: bool,
+    pub(crate) replay_unavailable_session_reset: bool,
     pub(crate) current_turn_index: i64,
     pub(crate) primary_scope_id_for_commit: Option<String>,
     pub(crate) scope_promotion: Option<AffinityScopePromotion>,
@@ -454,14 +455,15 @@ pub(crate) fn resolve_enforced_routing(
         requested_conversation_id.as_deref(),
         chosen.as_str(),
     );
-    let current_turn_index = next_turn_index(
+    let mut current_turn_index = next_turn_index(
         storage,
         platform_key_hash,
         resolved_affinity_key.as_str(),
         conversation_scope_id.as_str(),
     )?;
+    let mut replay_unavailable_session_reset = false;
     let request_body_override = if requires_replay {
-        Some(build_replay_request_body_with_initial_fallback(
+        match build_replay_request_body_with_initial_fallback(
             storage,
             path,
             body.as_ref(),
@@ -469,10 +471,31 @@ pub(crate) fn resolve_enforced_routing(
             resolved_affinity_key.as_str(),
             conversation_scope_id.as_str(),
             current_turn_index,
-        )?)
+        ) {
+            Ok(bytes) => Some(bytes),
+            Err(err) if err == "affinity_migration_context_unavailable" => {
+                replay_unavailable_session_reset = true;
+                current_turn_index = 1;
+                log::warn!(
+                    "event=gateway_affinity_replay_session_reset platform_key_hash={} affinity_key={} scope_id={} previous_account={} chosen_account={} reason={}",
+                    platform_key_hash,
+                    resolved_affinity_key,
+                    conversation_scope_id,
+                    thread
+                        .as_ref()
+                        .map(|item| item.account_id.as_str())
+                        .unwrap_or("-"),
+                    chosen,
+                    err,
+                );
+                None
+            }
+            Err(err) => return Err(err),
+        }
     } else {
         None
     };
+    let requires_replay = requires_replay && !replay_unavailable_session_reset;
 
     Ok(Some(AffinityRoutingResolution {
         affinity_key: resolved_affinity_key,
@@ -491,6 +514,7 @@ pub(crate) fn resolve_enforced_routing(
         thread_anchor,
         reset_session_affinity,
         requires_replay,
+        replay_unavailable_session_reset,
         current_turn_index,
         primary_scope_id_for_commit,
         scope_promotion,
@@ -535,6 +559,9 @@ pub(crate) fn build_attempt_replay_body(
     if let Some(prebuilt) = resolution.request_body_override.as_ref() {
         return Ok(Some(prebuilt.clone()));
     }
+    if resolution.replay_unavailable_session_reset {
+        return Ok(None);
+    }
     Ok(Some(build_replay_request_body_with_initial_fallback(
         storage,
         path,
@@ -567,10 +594,12 @@ pub(crate) fn finalize_affinity_success(
     let parsed_response = completed_response_body
         .and_then(parse_canonical_response_output_items)
         .ok_or_else(|| "missing canonical completed response for affinity context".to_string())?;
-    if let Some(existing_state) =
-        load_existing_context_state_for_commit(storage, platform_key_hash, resolution)?
-    {
-        fill_missing_request_context_from_state(&mut parsed_request, &existing_state);
+    if !resolution.replay_unavailable_session_reset {
+        if let Some(existing_state) =
+            load_existing_context_state_for_commit(storage, platform_key_hash, resolution)?
+        {
+            fill_missing_request_context_from_state(&mut parsed_request, &existing_state);
+        }
     }
     let now = now_ts();
     let switch_reason = if resolution.chosen_account_id == account_id {
@@ -711,6 +740,7 @@ pub(crate) fn finalize_affinity_success(
                 &context_state,
                 resolution.current_turn_index,
                 events.as_slice(),
+                resolution.replay_unavailable_session_reset,
             )
             .map_err(|err| format!("commit affinity turn success failed: {err}"))
     };
@@ -1451,9 +1481,7 @@ fn build_replay_request_body_with_initial_fallback(
         conversation_scope_id,
     ) {
         Ok(bytes) => Ok(Bytes::from(bytes)),
-        Err(err)
-            if err == "affinity_migration_context_unavailable" && current_turn_index <= 1 =>
-        {
+        Err(err) if err == "affinity_migration_context_unavailable" && current_turn_index <= 1 => {
             // First-turn failover can safely reuse the original request payload because
             // the caller has not yet committed any persisted turn state for this affinity key.
             Ok(Bytes::copy_from_slice(body))
@@ -2158,6 +2186,7 @@ mod tests {
             thread_anchor: "thread-1".to_string(),
             reset_session_affinity: false,
             requires_replay: false,
+            replay_unavailable_session_reset: false,
             current_turn_index: 1,
             primary_scope_id_for_commit: Some("scope".to_string()),
             scope_promotion: None,
@@ -2185,6 +2214,68 @@ mod tests {
 
         crate::gateway::affinity::set_context_replay_enabled(previous_context_replay);
         assert_eq!(replay.as_ref(), original.as_ref());
+    }
+
+    #[test]
+    fn build_attempt_replay_body_skips_replay_when_session_reset_recovery_is_enabled() {
+        let storage = Storage::open_in_memory().expect("open in memory");
+        storage.init().expect("init schema");
+        let original =
+            Bytes::from_static(br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"fresh"}]}]}"#);
+        let resolution = super::AffinityRoutingResolution {
+            affinity_key: "sid:reset".to_string(),
+            canonical_affinity_key: "sid:reset".to_string(),
+            compat_affinity_key: None,
+            affinity_source: "session_id",
+            conversation_scope_id: "scope".to_string(),
+            committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
+            binding: None,
+            thread: Some(ConversationThread {
+                platform_key_hash: "pk".to_string(),
+                affinity_key: "sid:reset".to_string(),
+                conversation_scope_id: "scope".to_string(),
+                account_id: "acc-primary".to_string(),
+                thread_epoch: 1,
+                thread_anchor: "thread-1".to_string(),
+                thread_version: 1,
+                created_at: 1,
+                updated_at: 1,
+                last_seen_at: 1,
+            }),
+            chosen_account_id: "acc-fallback".to_string(),
+            candidate_account_ids: vec!["acc-primary".to_string(), "acc-fallback".to_string()],
+            request_body_override: None,
+            thread_epoch: 2,
+            thread_anchor: "thread-2".to_string(),
+            reset_session_affinity: true,
+            requires_replay: false,
+            replay_unavailable_session_reset: true,
+            current_turn_index: 1,
+            primary_scope_id_for_commit: Some("scope".to_string()),
+            scope_promotion: None,
+            current_turn_input_items: vec![serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "fresh"}]
+            })],
+            selected_supply_score: Some(0.8),
+            selected_pressure_score: Some(0.9),
+            selected_final_score: Some(0.8),
+            switch_reason: Some("session_reset".to_string()),
+        };
+
+        let replay = super::build_attempt_replay_body(
+            &storage,
+            &resolution,
+            "/v1/responses",
+            original.as_ref(),
+            "pk",
+            "acc-fallback",
+        )
+        .expect("build attempt replay succeeds");
+
+        assert!(replay.is_none(), "session reset should skip replay body");
     }
 
     #[test]
@@ -2234,6 +2325,7 @@ mod tests {
             thread_anchor: "thread-1".to_string(),
             reset_session_affinity: false,
             requires_replay: false,
+            replay_unavailable_session_reset: false,
             current_turn_index: 1,
             primary_scope_id_for_commit: Some("scope".to_string()),
             scope_promotion: None,
@@ -2328,6 +2420,7 @@ mod tests {
             thread_anchor: "thread-1".to_string(),
             reset_session_affinity: false,
             requires_replay: false,
+            replay_unavailable_session_reset: false,
             current_turn_index: 1,
             primary_scope_id_for_commit: Some("conv-real".to_string()),
             scope_promotion: Some(AffinityScopePromotion {
@@ -2563,6 +2656,7 @@ mod tests {
             thread_anchor: "thread-1".to_string(),
             reset_session_affinity: false,
             requires_replay: false,
+            replay_unavailable_session_reset: false,
             current_turn_index: 0,
             primary_scope_id_for_commit: Some("affinity::synthetic".to_string()),
             scope_promotion: None,
@@ -2697,6 +2791,7 @@ mod tests {
             thread_anchor: "thread-1".to_string(),
             reset_session_affinity: false,
             requires_replay: false,
+            replay_unavailable_session_reset: false,
             current_turn_index: 2,
             primary_scope_id_for_commit: Some("scope".to_string()),
             scope_promotion: None,
@@ -2838,6 +2933,7 @@ mod tests {
             thread_anchor: "thread-legacy".to_string(),
             reset_session_affinity: false,
             requires_replay: false,
+            replay_unavailable_session_reset: false,
             current_turn_index: 1,
             primary_scope_id_for_commit: Some("scope".to_string()),
             scope_promotion: None,
@@ -3015,6 +3111,7 @@ mod tests {
             thread_anchor: "thread-legacy".to_string(),
             reset_session_affinity: false,
             requires_replay: false,
+            replay_unavailable_session_reset: false,
             current_turn_index: 1,
             primary_scope_id_for_commit: Some("scope".to_string()),
             scope_promotion: None,
@@ -3111,6 +3208,7 @@ mod tests {
             thread_anchor: "thread-1".to_string(),
             reset_session_affinity: false,
             requires_replay: true,
+            replay_unavailable_session_reset: false,
             current_turn_index: 1,
             primary_scope_id_for_commit: Some("scope".to_string()),
             scope_promotion: None,
@@ -3152,6 +3250,164 @@ mod tests {
             .expect("load state")
             .expect("state exists");
         assert_eq!(state.instructions_text.as_deref(), Some("carry over"));
+
+        crate::gateway::affinity::set_mode(previous_mode.as_str()).expect("restore mode");
+    }
+
+    #[test]
+    fn finalize_affinity_success_resets_existing_context_when_replay_recovery_is_enabled() {
+        let _guard = affinity_runtime_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_mode = crate::gateway::affinity::current_mode();
+        crate::gateway::affinity::set_mode("enforce").expect("set enforce mode");
+
+        let storage = Storage::open_in_memory().expect("open in memory");
+        storage.init().expect("init schema");
+        let now = now_ts();
+        let existing_binding = ClientBinding {
+            platform_key_hash: "pk".to_string(),
+            affinity_key: "sid:reset".to_string(),
+            account_id: "acc-primary".to_string(),
+            primary_scope_id: Some("scope".to_string()),
+            binding_version: 3,
+            status: "active".to_string(),
+            last_supply_score: Some(0.8),
+            last_pressure_score: Some(0.5),
+            last_final_score: Some(0.7),
+            last_switch_reason: Some("old_binding".to_string()),
+            created_at: now - 20,
+            updated_at: now - 20,
+            last_seen_at: now - 20,
+        };
+        storage
+            .save_client_binding(&existing_binding, None)
+            .expect("seed binding");
+        let existing_thread = ConversationThread {
+            platform_key_hash: "pk".to_string(),
+            affinity_key: "sid:reset".to_string(),
+            conversation_scope_id: "scope".to_string(),
+            account_id: "acc-primary".to_string(),
+            thread_epoch: 1,
+            thread_anchor: "thread-1".to_string(),
+            thread_version: 4,
+            created_at: now - 20,
+            updated_at: now - 20,
+            last_seen_at: now - 20,
+        };
+        storage
+            .save_conversation_thread(&existing_thread, None)
+            .expect("seed thread");
+        storage
+            .save_conversation_context_state(&ConversationContextState {
+                platform_key_hash: "pk".to_string(),
+                affinity_key: "sid:reset".to_string(),
+                conversation_scope_id: "scope".to_string(),
+                model: Some("gpt-5.4".to_string()),
+                instructions_text: Some("legacy instructions".to_string()),
+                tools_json: None,
+                tool_choice_json: None,
+                parallel_tool_calls: Some(true),
+                reasoning_json: None,
+                text_format_json: None,
+                service_tier: None,
+                metadata_json: Some("{\"legacy\":true}".to_string()),
+                encrypted_content: None,
+                protocol_type: Some("openai_compat".to_string()),
+                response_adapter: Some("Passthrough".to_string()),
+                updated_at: now - 20,
+            })
+            .expect("seed context state");
+        storage
+            .replace_conversation_context_turn(
+                "pk",
+                "sid:reset",
+                "scope",
+                0,
+                &[ConversationContextEvent {
+                    platform_key_hash: "pk".to_string(),
+                    affinity_key: "sid:reset".to_string(),
+                    conversation_scope_id: "scope".to_string(),
+                    turn_index: 0,
+                    item_seq: 0,
+                    role: Some("assistant".to_string()),
+                    pair_group_id: None,
+                    capture_complete: true,
+                    item_json: "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"legacy\"}]}".to_string(),
+                    created_at: now - 20,
+                }],
+            )
+            .expect("seed context events");
+
+        let resolution = super::AffinityRoutingResolution {
+            affinity_key: "sid:reset".to_string(),
+            canonical_affinity_key: "sid:reset".to_string(),
+            compat_affinity_key: None,
+            affinity_source: "session_id",
+            conversation_scope_id: "scope".to_string(),
+            committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
+            binding: Some(existing_binding),
+            thread: Some(existing_thread),
+            chosen_account_id: "acc-fallback".to_string(),
+            candidate_account_ids: vec!["acc-primary".to_string(), "acc-fallback".to_string()],
+            request_body_override: None,
+            thread_epoch: 2,
+            thread_anchor: "thread-2".to_string(),
+            reset_session_affinity: true,
+            requires_replay: false,
+            replay_unavailable_session_reset: true,
+            current_turn_index: 1,
+            primary_scope_id_for_commit: Some("scope".to_string()),
+            scope_promotion: None,
+            current_turn_input_items: vec![serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "fresh"}]
+            })],
+            selected_supply_score: Some(0.91),
+            selected_pressure_score: Some(0.4),
+            selected_final_score: Some(0.89),
+            switch_reason: Some("session_reset".to_string()),
+        };
+
+        super::finalize_affinity_success(
+            &storage,
+            &resolution,
+            "pk",
+            "acc-fallback",
+            br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"fresh"}]}]}"#,
+            Some(
+                br#"{"response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}}"#,
+            ),
+            "Passthrough",
+            "openai_compat",
+            None,
+        )
+        .expect("finalize success");
+
+        let thread = storage
+            .get_conversation_thread("pk", "sid:reset", "scope")
+            .expect("load thread")
+            .expect("thread exists");
+        assert_eq!(thread.account_id, "acc-fallback");
+        assert_eq!(thread.thread_epoch, 2);
+
+        let state = storage
+            .get_conversation_context_state("pk", "sid:reset", "scope")
+            .expect("load state")
+            .expect("state exists");
+        assert_eq!(state.instructions_text, None);
+        assert_eq!(state.metadata_json, None);
+
+        let events = storage
+            .list_conversation_context_events("pk", "sid:reset", "scope")
+            .expect("load events");
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.turn_index == 1));
+        assert!(events
+            .iter()
+            .all(|event| !event.item_json.contains("legacy")));
 
         crate::gateway::affinity::set_mode(previous_mode.as_str()).expect("restore mode");
     }

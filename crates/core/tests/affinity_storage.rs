@@ -386,6 +386,7 @@ fn commit_affinity_turn_success_rolls_back_on_cas_miss() {
                     .to_string(),
                 created_at: now + 1,
             }],
+            false,
         )
         .expect("commit result");
     assert_eq!(

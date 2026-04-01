@@ -736,6 +736,7 @@ impl Storage {
         context_state: &ConversationContextState,
         turn_index: i64,
         events: &[ConversationContextEvent],
+        reset_existing_context: bool,
     ) -> Result<AffinityTurnCommitOutcome> {
         let tx = self.conn.unchecked_transaction()?;
 
@@ -1009,6 +1010,42 @@ impl Storage {
         if !thread_saved {
             tx.rollback()?;
             return Ok(AffinityTurnCommitOutcome::Conflict);
+        }
+
+        if reset_existing_context {
+            tx.execute(
+                "DELETE FROM context_snapshots
+                 WHERE platform_key_hash = ?1
+                   AND affinity_key = ?2
+                   AND conversation_scope_id = ?3",
+                params![
+                    &thread.platform_key_hash,
+                    &thread.affinity_key,
+                    &thread.conversation_scope_id,
+                ],
+            )?;
+            tx.execute(
+                "DELETE FROM conversation_context_events
+                 WHERE platform_key_hash = ?1
+                   AND affinity_key = ?2
+                   AND conversation_scope_id = ?3",
+                params![
+                    &thread.platform_key_hash,
+                    &thread.affinity_key,
+                    &thread.conversation_scope_id,
+                ],
+            )?;
+            tx.execute(
+                "DELETE FROM conversation_context_state
+                 WHERE platform_key_hash = ?1
+                   AND affinity_key = ?2
+                   AND conversation_scope_id = ?3",
+                params![
+                    &thread.platform_key_hash,
+                    &thread.affinity_key,
+                    &thread.conversation_scope_id,
+                ],
+            )?;
         }
 
         tx.execute(

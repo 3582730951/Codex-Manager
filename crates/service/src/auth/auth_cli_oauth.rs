@@ -110,8 +110,12 @@ pub(crate) fn handle_authorize_approve_request(mut request: Request) -> Result<(
     let binding = match resolve_parent_key_binding(&storage, employee_api_key) {
         Ok(binding) => binding,
         Err(err) => {
-            let body =
-                build_authorize_page(&params, issuer_base.as_deref(), password_required, Some(&err));
+            let body = build_authorize_page(
+                &params,
+                issuer_base.as_deref(),
+                password_required,
+                Some(&err),
+            );
             let _ = request.respond(html_response(400, body));
             return Ok(());
         }

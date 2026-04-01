@@ -667,6 +667,12 @@ codexmanager_network_is_selected() {
   return 1
 }
 
+require_active_local_codexmanager_network_or_die() {
+  local target_network="$1"
+  [[ -n "${target_network}" ]] || die "local 模式下必须选择一个正在运行的 CodexManager 网络。"
+  codexmanager_network_is_selected "${target_network}" || die "local 模式下只能选择正在运行的 CodexManager 网络：${target_network}"
+}
+
 suggest_api_base_for_target() {
   local access_mode="$1" network_name="$2" remote_base="$3" fallback="$4"
   access_mode="$(normalize_codexmanager_access_mode "${access_mode}")"
@@ -938,6 +944,7 @@ collect_runtime_inputs() {
   case "${codexmanager_access_mode}" in
     local)
       network_name="$(prompt_local_codexmanager_network "$(get_env_value "${RUNTIME_ENV_FILE}" NETWORK_NAME "$(active_codexmanager_network_name || printf '')")")"
+      require_active_local_codexmanager_network_or_die "${network_name}"
       codexmanager_remote_base_url=""
       ;;
     remote)
@@ -1092,10 +1099,11 @@ install_optional_ollvm_in_container() {
 remove_image_interactive() {
   need_cmd docker
   ensure_runtime_env_defaults
-  local compose_project_name image_name network_name suffix volume_name
+  local compose_project_name image_name network_name suffix volume_name codexmanager_access_mode
   compose_project_name="$(codex_compose_project_name)"
   image_name="$(get_env_value "${RUNTIME_ENV_FILE}" IMAGE_NAME "${DEFAULT_IMAGE_NAME}")"
   network_name="$(get_env_value "${RUNTIME_ENV_FILE}" NETWORK_NAME "${DEFAULT_NETWORK_NAME}")"
+  codexmanager_access_mode="$(normalize_codexmanager_access_mode "$(get_env_value "${RUNTIME_ENV_FILE}" CODEXMANAGER_ACCESS_MODE "${DEFAULT_CODEXMANAGER_ACCESS_MODE}")")"
 
   if [[ -f "${CODEX_COMPOSE_FILE}" ]]; then
     docker compose -p "${compose_project_name}" --env-file "${RUNTIME_ENV_FILE}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -1107,7 +1115,11 @@ remove_image_interactive() {
     docker volume inspect "${volume_name}" >/dev/null 2>&1 && docker volume rm -f "${volume_name}" >/dev/null 2>&1 || true
   done
 
-  docker network inspect "${network_name}" >/dev/null 2>&1 && docker network rm "${network_name}" >/dev/null 2>&1 || true
+  if [[ "${codexmanager_access_mode}" == "local" ]] && codexmanager_network_is_selected "${network_name}"; then
+    log "检测到 ${network_name} 是正在使用的 CodexManager 共享网络，已跳过网络删除。"
+  else
+    docker network inspect "${network_name}" >/dev/null 2>&1 && docker network rm "${network_name}" >/dev/null 2>&1 || true
+  fi
   log "已清理 Codex 镜像、容器、关联网络和卷。"
 }
 
@@ -1292,6 +1304,27 @@ wait_for_codexmanager_remote_stack_ready() {
   wait_for_http_ready "Remote Nginx Web" "http://127.0.0.1:${http_port}/" 45 || return 1
   wait_for_http_ready "Remote Nginx OAuth" "http://127.0.0.1:${http_port}/oauth/authorize?response_type=code&client_id=codex-cli&redirect_uri=http%3A%2F%2F127.0.0.1%3A1455%2Fcallback&state=probe&code_challenge=codexmanagerprobechallengecodexmanager123&code_challenge_method=S256" 45 || return 1
   wait_for_http_ready "Remote Nginx Gateway" "http://127.0.0.1:${http_port}/health" 45 || return 1
+}
+
+host_port_is_published_by_other_container() {
+  local port="$1" expected_project="$2" ports_field published_project
+  while IFS='|' read -r ports_field published_project; do
+    [[ -n "${ports_field}" ]] || continue
+    [[ "${ports_field}" == *":${port}->"* ]] || continue
+    [[ -n "${expected_project}" && "${published_project}" == "${expected_project}" ]] && continue
+    return 0
+  done < <(docker ps --format '{{.Ports}}|{{.Label "com.docker.compose.project"}}')
+  return 1
+}
+
+ensure_local_codexmanager_ports_available_or_owned_by_project() {
+  local compose_project_name="$1" branch_label="${2:-CodexManager 部署}"
+  if host_port_is_published_by_other_container "${DEFAULT_CODEXMANAGER_SERVICE_PORT}" "${compose_project_name}"; then
+    die "宿主机端口 ${DEFAULT_CODEXMANAGER_SERVICE_PORT} 已被其他容器占用，${branch_label} 无法继续部署。"
+  fi
+  if host_port_is_published_by_other_container "${DEFAULT_CODEXMANAGER_WEB_PORT}" "${compose_project_name}"; then
+    die "宿主机端口 ${DEFAULT_CODEXMANAGER_WEB_PORT} 已被其他容器占用，${branch_label} 无法继续部署。"
+  fi
 }
 
 verify_codex_runtime_against_codexmanager_or_die() {
@@ -1483,6 +1516,7 @@ run_codexmanager_deploy_option() {
   source_path="$(normalize_path "$(get_env_value "${file}" CODEXMANAGER_SOURCE_PATH "${default_source_path}")")"
   compose_project_name="$(get_env_value "${file}" CODEXMANAGER_COMPOSE_PROJECT_NAME "${default_project_name}")"
   compose_file="$(resolve_codexmanager_compose_file "${source_path}")" || die "未找到 docker/docker-compose.yml 或 crates/docker/docker-compose.yml"
+  ensure_local_codexmanager_ports_available_or_owned_by_project "${compose_project_name}" "${branch_label}"
 
   show_codexmanager_access_info_before "${branch_label}" "${file}" "${compose_file}"
   (
