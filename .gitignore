@@ -37,6 +37,7 @@ codex resume*.txt
 .tmp_stage_ps/
 .tmp_stage_sh/
 /.runtime.env
+/.codex-runtime/
 /.codexmanager.runtime.env
 /.codexmanager.qxcnm.runtime.env
 /.cache/

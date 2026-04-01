@@ -3,6 +3,9 @@ set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_ENV_FILE="${PROJECT_DIR}/.runtime.env"
+CODEX_RUNTIME_STATE_DIR="${PROJECT_DIR}/.codex-runtime"
+CODEX_RUNTIME_INSTANCES_DIR="${CODEX_RUNTIME_STATE_DIR}/instances"
+CODEX_RUNTIME_ACTIVE_INSTANCE_FILE="${CODEX_RUNTIME_STATE_DIR}/active-instance"
 CODEXMANAGER_RUNTIME_ENV_FILE="${PROJECT_DIR}/.codexmanager.runtime.env"
 CODEXMANAGER_QXCNM_RUNTIME_ENV_FILE="${PROJECT_DIR}/.codexmanager.qxcnm.runtime.env"
 CODEXMANAGER_REMOTE_RUNTIME_ENV_FILE="${PROJECT_DIR}/.codexmanager.remote.runtime.env"
@@ -21,12 +24,13 @@ CODEX_EMBEDDED_SUPPORT_MARKER="__CODEX_SUPPORT_BUNDLE__"
 CODEX_SUPPORT_BUNDLE_STAMP_FILE="${CODEX_IMAGE_SUPPORT_DIR}/.embedded-bundle.sha256"
 
 DEFAULT_IMAGE_NAME="codex:latest"
-DEFAULT_CONTAINER_NAME="codex-e"
+DEFAULT_CONTAINER_NAME="codex-1"
 DEFAULT_NETWORK_NAME="docker_default"
 DEFAULT_API_BASE_URL="https://api.openai.com/v1"
 DEFAULT_COMPOSE_PROJECT_NAME="codex"
 DEFAULT_CODEX_AUTH_MODE="apikey"
 DEFAULT_CODEX_AUTH_MODE_FOR_CODEXMANAGER="oauth"
+DEFAULT_CODEXMANAGER_ACCESS_MODE="local"
 DEFAULT_PORT_3000="3000"
 DEFAULT_PORT_5173="5173"
 DEFAULT_PORT_8080="8080"
@@ -308,6 +312,207 @@ upsert_env_value() {
   fi
 }
 
+normalize_container_name() {
+  local value="${1:-}"
+  value="$(strip_terminal_control_sequences "${value}")"
+  value="${value//$'\r'/}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+validate_container_name_or_die() {
+  local value
+  value="$(normalize_container_name "${1:-}")"
+  [[ -n "${value}" ]] || die "容器名不能为空。"
+  [[ "${value}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "容器名只能包含字母、数字、点、下划线和连字符，且必须以字母或数字开头。"
+  printf '%s' "${value}"
+}
+
+compose_project_name_for_container() {
+  local container_name sanitized
+  container_name="$(validate_container_name_or_die "${1:-}")"
+  sanitized="${container_name,,}"
+  sanitized="$(printf '%s' "${sanitized}" | sed -E 's/[^a-z0-9_-]+/-/g; s/^[^a-z0-9]+//; s/[^a-z0-9]+$//')"
+  [[ -n "${sanitized}" ]] || sanitized="${DEFAULT_COMPOSE_PROJECT_NAME}"
+  printf '%s' "${sanitized}"
+}
+
+normalize_runtime_instance_key() {
+  local container_name key
+  container_name="$(validate_container_name_or_die "${1:-}")"
+  key="${container_name,,}"
+  key="$(printf '%s' "${key}" | sed -E 's/[^a-z0-9_.-]+/-/g; s/^[^a-z0-9]+//; s/[^a-z0-9]+$//')"
+  [[ -n "${key}" ]] || key="codex-instance"
+  printf '%s' "${key}"
+}
+
+runtime_env_file_for_container() {
+  local key
+  key="$(normalize_runtime_instance_key "${1:-}")"
+  printf '%s/%s.env' "${CODEX_RUNTIME_INSTANCES_DIR}" "${key}"
+}
+
+restore_active_runtime_env_if_needed() {
+  local container_name instance_file
+  [[ -f "${RUNTIME_ENV_FILE}" ]] && return 0
+  [[ -f "${CODEX_RUNTIME_ACTIVE_INSTANCE_FILE}" ]] || return 0
+
+  container_name="$(tr -d '\r\n' < "${CODEX_RUNTIME_ACTIVE_INSTANCE_FILE}")"
+  [[ -n "${container_name}" ]] || return 0
+  instance_file="$(runtime_env_file_for_container "${container_name}")"
+  [[ -f "${instance_file}" ]] || return 0
+
+  mkdir -p "$(dirname "${RUNTIME_ENV_FILE}")"
+  cp "${instance_file}" "${RUNTIME_ENV_FILE}"
+  chmod 600 "${RUNTIME_ENV_FILE}"
+}
+
+save_runtime_env_snapshot() {
+  local container_name instance_file
+  container_name="$(validate_container_name_or_die "${1:-}")"
+  [[ -f "${RUNTIME_ENV_FILE}" ]] || return 0
+
+  instance_file="$(runtime_env_file_for_container "${container_name}")"
+  mkdir -p "${CODEX_RUNTIME_INSTANCES_DIR}"
+  cp "${RUNTIME_ENV_FILE}" "${instance_file}"
+  chmod 600 "${instance_file}"
+  mkdir -p "${CODEX_RUNTIME_STATE_DIR}"
+  printf '%s\n' "${container_name}" > "${CODEX_RUNTIME_ACTIVE_INSTANCE_FILE}"
+}
+
+list_runtime_env_files() {
+  local file
+  declare -A seen_files=()
+
+  for file in "${RUNTIME_ENV_FILE}" "${CODEX_RUNTIME_INSTANCES_DIR}"/*.env; do
+    [[ -f "${file}" ]] || continue
+    [[ -z "${seen_files[${file}]+x}" ]] || continue
+    seen_files["${file}"]=1
+    printf '%s\n' "${file}"
+  done
+}
+
+list_known_codex_container_names() {
+  local file container_name
+  declare -A seen_names=()
+
+  while IFS= read -r file; do
+    [[ -f "${file}" ]] || continue
+    container_name="$(get_env_value "${file}" CONTAINER_NAME "")"
+    [[ -n "${container_name}" ]] || continue
+    [[ -z "${seen_names[${container_name}]+x}" ]] || continue
+    seen_names["${container_name}"]=1
+    printf '%s\n' "${container_name}"
+  done < <(list_runtime_env_files)
+
+  if command -v docker >/dev/null 2>&1; then
+    while IFS= read -r container_name; do
+      [[ -n "${container_name}" ]] || continue
+      [[ -z "${seen_names[${container_name}]+x}" ]] || continue
+      seen_names["${container_name}"]=1
+      printf '%s\n' "${container_name}"
+    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null || true)
+  fi
+}
+
+suggest_next_codex_container_name() {
+  local container_name max_index=0
+  while IFS= read -r container_name; do
+    [[ "${container_name}" =~ ^codex-([0-9]+)$ ]] || continue
+    (( BASH_REMATCH[1] > max_index )) && max_index="${BASH_REMATCH[1]}"
+  done < <(list_known_codex_container_names)
+
+  if (( max_index == 0 )); then
+    printf '%s' "${DEFAULT_CONTAINER_NAME}"
+  else
+    printf 'codex-%s' "$((max_index + 1))"
+  fi
+}
+
+suggest_next_host_port_default() {
+  local key="$1" fallback="$2" file candidate max_port=0
+  while IFS= read -r file; do
+    candidate="$(get_env_value "${file}" "${key}" "")"
+    [[ "${candidate}" =~ ^[0-9]+$ ]] || continue
+    (( candidate > max_port )) && max_port="${candidate}"
+  done < <(list_runtime_env_files)
+
+  if (( max_port > 0 )); then
+    printf '%s' "$((max_port + 1))"
+  else
+    printf '%s' "${fallback}"
+  fi
+}
+
+prepare_runtime_env_for_container() {
+  local container_name="$1" instance_file compose_project_name
+  container_name="$(validate_container_name_or_die "${container_name}")"
+  instance_file="$(runtime_env_file_for_container "${container_name}")"
+
+  if [[ -f "${instance_file}" ]]; then
+    mkdir -p "$(dirname "${RUNTIME_ENV_FILE}")"
+    cp "${instance_file}" "${RUNTIME_ENV_FILE}"
+    chmod 600 "${RUNTIME_ENV_FILE}"
+    return 0
+  fi
+
+  ensure_runtime_env_defaults
+  compose_project_name="$(compose_project_name_for_container "${container_name}")"
+  upsert_env_value "${RUNTIME_ENV_FILE}" CONTAINER_NAME "${container_name}"
+  upsert_env_value "${RUNTIME_ENV_FILE}" COMPOSE_PROJECT_NAME "${compose_project_name}"
+  upsert_env_value "${RUNTIME_ENV_FILE}" PORT_3000 "$(suggest_next_host_port_default PORT_3000 "${DEFAULT_PORT_3000}")"
+  upsert_env_value "${RUNTIME_ENV_FILE}" PORT_5173 "$(suggest_next_host_port_default PORT_5173 "${DEFAULT_PORT_5173}")"
+  upsert_env_value "${RUNTIME_ENV_FILE}" PORT_8080 "$(suggest_next_host_port_default PORT_8080 "${DEFAULT_PORT_8080}")"
+  upsert_env_value "${RUNTIME_ENV_FILE}" PORT_1455 "$(suggest_next_host_port_default PORT_1455 "${DEFAULT_PORT_1455}")"
+}
+
+normalize_codexmanager_access_mode() {
+  local value="${1:-}"
+  value="$(strip_terminal_control_sequences "${value}")"
+  value="${value,,}"
+  case "${value}" in
+    local|remote|none) printf '%s' "${value}" ;;
+    *) printf '' ;;
+  esac
+}
+
+codexmanager_access_uses_codexmanager() {
+  local value
+  value="$(normalize_codexmanager_access_mode "${1:-}")"
+  [[ "${value}" == "local" || "${value}" == "remote" ]]
+}
+
+default_codex_auth_mode_for_access_mode() {
+  local access_mode
+  access_mode="$(normalize_codexmanager_access_mode "${1:-}")"
+  if codexmanager_access_uses_codexmanager "${access_mode}"; then
+    printf '%s' "${DEFAULT_CODEX_AUTH_MODE_FOR_CODEXMANAGER}"
+  else
+    printf '%s' "${DEFAULT_CODEX_AUTH_MODE}"
+  fi
+}
+
+normalize_base_url() {
+  local value="${1:-}"
+  value="$(strip_terminal_control_sequences "${value}")"
+  value="${value//$'\r'/}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  while [[ "${value}" == */ ]]; do
+    value="${value%/}"
+  done
+  printf '%s' "${value}"
+}
+
+validate_base_url_or_die() {
+  local value
+  value="$(normalize_base_url "${1:-}")"
+  [[ -n "${value}" ]] || die "基础地址不能为空。"
+  [[ "${value}" =~ ^https?://[^[:space:]]+$ ]] || die "基础地址必须是完整的 http/https URL。"
+  printf '%s' "${value}"
+}
+
 translate_windows_path_to_wsl() {
   local input_path="$1"
   if [[ "${input_path}" =~ ^([A-Za-z]):\\(.*)$ ]]; then
@@ -366,12 +571,37 @@ codex_oauth_callback_public_url() {
   printf 'http://localhost:%s/callback' "${host_port}"
 }
 
+codexmanager_remote_api_base() {
+  local remote_base
+  remote_base="$(validate_base_url_or_die "${1:-}")"
+  printf '%s/v1' "${remote_base}"
+}
+
 codexmanager_oauth_probe_url() {
   printf 'http://127.0.0.1:%s/oauth/authorize?response_type=code&client_id=codex-cli&redirect_uri=http%%3A%%2F%%2F127.0.0.1%%3A1455%%2Fcallback&state=probe&code_challenge=codexmanagerprobechallengecodexmanager123&code_challenge_method=S256' "${DEFAULT_CODEXMANAGER_SERVICE_PORT}"
 }
 
 codexmanager_web_rpc_url() {
   printf 'http://127.0.0.1:%s/api/rpc' "${DEFAULT_CODEXMANAGER_WEB_PORT}"
+}
+
+default_codexmanager_remote_base_url() {
+  local runtime_value server_name http_port
+  runtime_value="$(normalize_base_url "$(get_env_value "${RUNTIME_ENV_FILE}" CODEXMANAGER_REMOTE_BASE_URL "")")"
+  if [[ -n "${runtime_value}" ]]; then
+    printf '%s' "${runtime_value}"
+    return 0
+  fi
+
+  [[ -f "${CODEXMANAGER_REMOTE_RUNTIME_ENV_FILE}" ]] || return 0
+  server_name="$(get_env_value "${CODEXMANAGER_REMOTE_RUNTIME_ENV_FILE}" CODEXMANAGER_REMOTE_SERVER_NAME "")"
+  http_port="$(get_env_value "${CODEXMANAGER_REMOTE_RUNTIME_ENV_FILE}" CODEXMANAGER_REMOTE_HTTP_PORT "${DEFAULT_CODEXMANAGER_REMOTE_HTTP_PORT}")"
+  [[ -n "${server_name}" && "${server_name}" != "_" ]] || return 0
+  if [[ "${http_port}" == "80" ]]; then
+    printf 'http://%s' "${server_name}"
+  else
+    printf 'http://%s:%s' "${server_name}" "${http_port}"
+  fi
 }
 
 configured_codexmanager_network_name_from_file() {
@@ -437,42 +667,87 @@ codexmanager_network_is_selected() {
   return 1
 }
 
-suggest_api_base_for_network() {
-  local network_name="$1" fallback="$2"
-  if codexmanager_network_is_selected "${network_name}"; then
-    codexmanager_service_api_base
-  else
-    printf '%s' "${fallback}"
-  fi
+suggest_api_base_for_target() {
+  local access_mode="$1" network_name="$2" remote_base="$3" fallback="$4"
+  access_mode="$(normalize_codexmanager_access_mode "${access_mode}")"
+  remote_base="$(normalize_base_url "${remote_base}")"
+  case "${access_mode}" in
+    local)
+      if codexmanager_network_is_selected "${network_name}"; then
+        codexmanager_service_api_base
+      else
+        printf '%s' "${fallback}"
+      fi
+      ;;
+    remote)
+      if [[ -n "${remote_base}" ]]; then
+        codexmanager_remote_api_base "${remote_base}"
+      else
+        printf '%s' "${fallback}"
+      fi
+      ;;
+    *)
+      printf '%s' "${fallback}"
+      ;;
+  esac
 }
 
-default_codex_auth_mode_for_network() {
-  local network_name="$1"
-  if codexmanager_network_is_selected "${network_name}"; then
-    printf '%s' "${DEFAULT_CODEX_AUTH_MODE_FOR_CODEXMANAGER}"
-  else
-    printf '%s' "${DEFAULT_CODEX_AUTH_MODE}"
-  fi
+prompt_codexmanager_access_mode() {
+  local default_value="$1" selected
+  default_value="$(normalize_codexmanager_access_mode "${default_value}")"
+  [[ -n "${default_value}" ]] || default_value="${DEFAULT_CODEXMANAGER_ACCESS_MODE}"
+
+  printf '\n请选择 CodexManager 接入方案\n' >&2
+  printf '  1) local （默认，接入本地 Docker 里的 CodexManager）\n' >&2
+  printf '  2) remote （接入方案10部署出来的远端服务器）\n' >&2
+  printf '  3) none （不接入 CodexManager，手动填写 openai_base_url）\n' >&2
+
+  selected="$(read_prompt_input "请选择 [默认: ${default_value}]: ")"
+  case "$(normalize_codexmanager_access_mode "${selected}")" in
+    local|remote|none)
+      normalize_codexmanager_access_mode "${selected}"
+      return 0
+      ;;
+  esac
+
+  case "${selected}" in
+    "")
+      printf '%s' "${default_value}"
+      ;;
+    1)
+      printf 'local'
+      ;;
+    2)
+      printf 'remote'
+      ;;
+    3)
+      printf 'none'
+      ;;
+    *)
+      warn "未识别的接入方案输入，已回退到默认值 ${default_value}。"
+      printf '%s' "${default_value}"
+      ;;
+  esac
 }
 
 prompt_codex_auth_mode() {
-  local default_value="$1" network_name="$2" selected recommended mode_one mode_two
-
+  local default_value="$1" access_mode="$2" selected recommended mode_one mode_two
+  access_mode="$(normalize_codexmanager_access_mode "${access_mode}")"
   default_value="$(normalize_auth_mode "${default_value}")"
-  recommended="$(default_codex_auth_mode_for_network "${network_name}")"
+  recommended="$(default_codex_auth_mode_for_access_mode "${access_mode}")"
   [[ -n "${default_value}" ]] || default_value="${recommended}"
 
   printf '\n请选择 Codex 登录方式\n' >&2
-  if codexmanager_network_is_selected "${network_name}"; then
+  if codexmanager_access_uses_codexmanager "${access_mode}"; then
     mode_one="oauth"
     mode_two="apikey"
-    printf '  1) oauth （推荐，走账号登录/OAuth，支持实例识别与自动切号）\n' >&2
-    printf '  2) apikey （旧模式，直接预置 API Key，不走实例 OAuth）\n' >&2
+    printf '  1) oauth （推荐，重定向到当前选择的 CodexManager 认证系统）\n' >&2
+    printf '  2) apikey （直接预置平台 API Key，不走浏览器 OAuth）\n' >&2
   else
     mode_one="apikey"
     mode_two="oauth"
     printf '  1) apikey （推荐，直连 API Key）\n' >&2
-    printf '  2) oauth （不预置 auth.json，后续自行完成账号登录）\n' >&2
+    printf '  2) oauth （不预置 auth.json，后续自行完成官方账号登录）\n' >&2
   fi
 
   selected="$(read_prompt_input "请选择 [默认: ${default_value}]: ")"
@@ -500,26 +775,36 @@ prompt_codex_auth_mode() {
   esac
 }
 
-prompt_network_with_codexmanager_option() {
+prompt_generic_network_name() {
+  local default_value="$1"
+  prompt_default "请输入 Codex 要加入的网络名" "${default_value}"
+}
+
+prompt_local_codexmanager_network() {
   local default_value="$1" selected next_index network_name
   local options=()
 
-  printf '\n请选择 Codex 要加入的网络\n' >&2
-  options+=("${DEFAULT_NETWORK_NAME}")
-  printf '  1) %s\n' "${DEFAULT_NETWORK_NAME}" >&2
-
-  next_index=2
   while IFS= read -r network_name; do
     [[ -n "${network_name}" ]] || continue
     options+=("${network_name}")
-    printf '  %s) %s （CodexManager 已部署网络）\n' "${next_index}" "${network_name}" >&2
-    printf '     - 容器内 API: %s\n' "$(codexmanager_service_api_base)" >&2
-    next_index=$((next_index + 1))
   done < <(list_active_codexmanager_networks)
 
-  printf '  %s) 自定义网络名\n' "${next_index}" >&2
-  selected="$(read_prompt_input "请选择 [默认: ${default_value}]: ")"
+  (( ${#options[@]} > 0 )) || die "未检测到本地 CodexManager 网络，请先执行分支 8 或 9，再回到分支 2 选择 local。"
 
+  if ! codexmanager_network_is_selected "${default_value}"; then
+    default_value="${options[0]}"
+  fi
+
+  printf '\n请选择本地 CodexManager 网络\n' >&2
+  next_index=1
+  for network_name in "${options[@]}"; do
+    printf '  %s) %s\n' "${next_index}" "${network_name}" >&2
+    printf '     - 容器内 API: %s\n' "$(codexmanager_service_api_base)" >&2
+    next_index=$((next_index + 1))
+  done
+  printf '  %s) 自定义网络名\n' "${next_index}" >&2
+
+  selected="$(read_prompt_input "请选择 [默认: ${default_value}]: ")"
   if [[ -z "${selected}" ]]; then
     printf '%s' "${default_value}"
     return 0
@@ -540,20 +825,36 @@ prompt_network_with_codexmanager_option() {
 }
 
 write_runtime_env() {
-  local workspace_path="$1" auth_mode="$2" api_key="$3" image_name="$4" container_name="$5" network_name="$6" api_base_url="$7" port_3000="$8" port_5173="$9" port_8080="${10}" port_1455="${11}"
+  local workspace_path="$1" auth_mode="$2" api_key="$3" image_name="$4" container_name="$5" compose_project_name="$6" network_name="$7" codexmanager_access_mode="$8" codexmanager_remote_base_url="$9" api_base_url="${10}" port_3000="${11}" port_5173="${12}" port_8080="${13}" port_1455="${14}"
   local oauth_browser_base="" oauth_token_base="" oauth_client_id="" oauth_callback_public_url=""
+  container_name="$(validate_container_name_or_die "${container_name}")"
+  compose_project_name="${compose_project_name:-$(compose_project_name_for_container "${container_name}")}"
   auth_mode="$(normalize_auth_mode "${auth_mode}")"
-  [[ -n "${auth_mode}" ]] || auth_mode="$(default_codex_auth_mode_for_network "${network_name}")"
+  codexmanager_access_mode="$(normalize_codexmanager_access_mode "${codexmanager_access_mode}")"
+  [[ -n "${codexmanager_access_mode}" ]] || codexmanager_access_mode="${DEFAULT_CODEXMANAGER_ACCESS_MODE}"
+  codexmanager_remote_base_url="$(normalize_base_url "${codexmanager_remote_base_url}")"
+  [[ -n "${auth_mode}" ]] || auth_mode="$(default_codex_auth_mode_for_access_mode "${codexmanager_access_mode}")"
   if [[ "${auth_mode}" == "oauth" ]]; then
     api_key=""
   elif [[ -n "${api_key}" ]]; then
     api_key="$(validate_api_key_or_die "${api_key}")"
   fi
-  if codexmanager_network_is_selected "${network_name}" && [[ "${auth_mode}" == "oauth" ]]; then
-    oauth_browser_base="$(codexmanager_browser_oauth_base)"
-    oauth_token_base="$(codexmanager_container_oauth_base)"
-    oauth_client_id="codex-cli"
-    oauth_callback_public_url="$(codex_oauth_callback_public_url "${port_1455}")"
+  if [[ "${auth_mode}" == "oauth" ]]; then
+    case "${codexmanager_access_mode}" in
+      local)
+        oauth_browser_base="$(codexmanager_browser_oauth_base)"
+        oauth_token_base="$(codexmanager_container_oauth_base)"
+        oauth_client_id="codex-cli"
+        oauth_callback_public_url="$(codex_oauth_callback_public_url "${port_1455}")"
+        ;;
+      remote)
+        [[ -n "${codexmanager_remote_base_url}" ]] || die "remote 模式下必须提供远端 CodexManager 基础地址。"
+        oauth_browser_base="${codexmanager_remote_base_url}"
+        oauth_token_base="${codexmanager_remote_base_url}"
+        oauth_client_id="codex-cli"
+        oauth_callback_public_url="$(codex_oauth_callback_public_url "${port_1455}")"
+        ;;
+    esac
   fi
   mkdir -p "$(dirname "${RUNTIME_ENV_FILE}")"
   cat > "${RUNTIME_ENV_FILE}" <<EOF_RUNTIME
@@ -561,7 +862,9 @@ IMAGE_NAME=${image_name}
 CONTAINER_NAME=${container_name}
 NETWORK_NAME=${network_name}
 WORKSPACE_PATH=${workspace_path}
-COMPOSE_PROJECT_NAME=${DEFAULT_COMPOSE_PROJECT_NAME}
+COMPOSE_PROJECT_NAME=${compose_project_name}
+CODEXMANAGER_ACCESS_MODE=${codexmanager_access_mode}
+CODEXMANAGER_REMOTE_BASE_URL=${codexmanager_remote_base_url}
 CODEX_AUTH_MODE=${auth_mode}
 OPENAI_API_KEY=${api_key}
 OPENAI_API_BASE=${api_base_url}
@@ -583,56 +886,89 @@ EOF_RUNTIME
 }
 
 ensure_runtime_env_defaults() {
-  local workspace_path api_key auth_mode image_name container_name network_name api_base_url port_3000 port_5173 port_8080 port_1455
+  local workspace_path api_key auth_mode image_name container_name compose_project_name network_name codexmanager_access_mode codexmanager_remote_base_url api_base_url port_3000 port_5173 port_8080 port_1455
+  restore_active_runtime_env_if_needed
   workspace_path="$(normalize_path "$(get_env_value "${RUNTIME_ENV_FILE}" WORKSPACE_PATH "${DEFAULT_WORKSPACE_PATH}")")"
   image_name="$(get_env_value "${RUNTIME_ENV_FILE}" IMAGE_NAME "${DEFAULT_IMAGE_NAME}")"
-  container_name="$(get_env_value "${RUNTIME_ENV_FILE}" CONTAINER_NAME "${DEFAULT_CONTAINER_NAME}")"
+  container_name="$(validate_container_name_or_die "$(get_env_value "${RUNTIME_ENV_FILE}" CONTAINER_NAME "${DEFAULT_CONTAINER_NAME}")")"
+  compose_project_name="$(get_env_value "${RUNTIME_ENV_FILE}" COMPOSE_PROJECT_NAME "$(compose_project_name_for_container "${container_name}")")"
   network_name="$(get_env_value "${RUNTIME_ENV_FILE}" NETWORK_NAME "${DEFAULT_NETWORK_NAME}")"
-  auth_mode="$(normalize_auth_mode "$(get_env_value "${RUNTIME_ENV_FILE}" CODEX_AUTH_MODE "$(default_codex_auth_mode_for_network "${network_name}")")")"
-  [[ -n "${auth_mode}" ]] || auth_mode="$(default_codex_auth_mode_for_network "${network_name}")"
+  codexmanager_access_mode="$(normalize_codexmanager_access_mode "$(get_env_value "${RUNTIME_ENV_FILE}" CODEXMANAGER_ACCESS_MODE "${DEFAULT_CODEXMANAGER_ACCESS_MODE}")")"
+  [[ -n "${codexmanager_access_mode}" ]] || codexmanager_access_mode="${DEFAULT_CODEXMANAGER_ACCESS_MODE}"
+  codexmanager_remote_base_url="$(normalize_base_url "$(get_env_value "${RUNTIME_ENV_FILE}" CODEXMANAGER_REMOTE_BASE_URL "$(default_codexmanager_remote_base_url)")")"
+  auth_mode="$(normalize_auth_mode "$(get_env_value "${RUNTIME_ENV_FILE}" CODEX_AUTH_MODE "$(default_codex_auth_mode_for_access_mode "${codexmanager_access_mode}")")")"
+  [[ -n "${auth_mode}" ]] || auth_mode="$(default_codex_auth_mode_for_access_mode "${codexmanager_access_mode}")"
   if [[ "${auth_mode}" == "oauth" ]]; then
     api_key=""
   else
     api_key="$(normalize_api_key_value "$(get_env_value "${RUNTIME_ENV_FILE}" OPENAI_API_KEY "")")"
   fi
-  api_base_url="$(get_env_value "${RUNTIME_ENV_FILE}" OPENAI_API_BASE "${DEFAULT_API_BASE_URL}")"
+  api_base_url="$(get_env_value "${RUNTIME_ENV_FILE}" OPENAI_API_BASE "$(suggest_api_base_for_target "${codexmanager_access_mode}" "${network_name}" "${codexmanager_remote_base_url}" "${DEFAULT_API_BASE_URL}")")"
   port_3000="$(get_env_value "${RUNTIME_ENV_FILE}" PORT_3000 "${DEFAULT_PORT_3000}")"
   port_5173="$(get_env_value "${RUNTIME_ENV_FILE}" PORT_5173 "${DEFAULT_PORT_5173}")"
   port_8080="$(get_env_value "${RUNTIME_ENV_FILE}" PORT_8080 "${DEFAULT_PORT_8080}")"
   port_1455="$(get_env_value "${RUNTIME_ENV_FILE}" PORT_1455 "${DEFAULT_PORT_1455}")"
-  write_runtime_env "${workspace_path}" "${auth_mode}" "${api_key}" "${image_name}" "${container_name}" "${network_name}" "${api_base_url}" "${port_3000}" "${port_5173}" "${port_8080}" "${port_1455}"
+  write_runtime_env "${workspace_path}" "${auth_mode}" "${api_key}" "${image_name}" "${container_name}" "${compose_project_name}" "${network_name}" "${codexmanager_access_mode}" "${codexmanager_remote_base_url}" "${api_base_url}" "${port_3000}" "${port_5173}" "${port_8080}" "${port_1455}"
 }
 
 collect_build_inputs() {
   ensure_runtime_env_defaults
-  local image_name
+  local image_name container_name
   image_name="$(prompt_default "请输入镜像名" "$(get_env_value "${RUNTIME_ENV_FILE}" IMAGE_NAME "${DEFAULT_IMAGE_NAME}")")"
   upsert_env_value "${RUNTIME_ENV_FILE}" IMAGE_NAME "${image_name}"
-  upsert_env_value "${RUNTIME_ENV_FILE}" COMPOSE_PROJECT_NAME "${DEFAULT_COMPOSE_PROJECT_NAME}"
+  container_name="$(get_env_value "${RUNTIME_ENV_FILE}" CONTAINER_NAME "")"
+  if [[ -n "${container_name}" ]]; then
+    save_runtime_env_snapshot "${container_name}"
+  fi
 }
 
 collect_runtime_inputs() {
   ensure_runtime_env_defaults
-  local workspace_path api_key auth_mode image_name container_name network_name api_base_url port_3000 port_5173 port_8080 port_1455 last_api_base
+  local workspace_path api_key auth_mode image_name container_name compose_project_name network_name codexmanager_access_mode codexmanager_remote_base_url api_base_url port_3000 port_5173 port_8080 port_1455 last_api_base
+
+  container_name="$(validate_container_name_or_die "$(prompt_default "请输入容器名" "$(suggest_next_codex_container_name)")")"
+  prepare_runtime_env_for_container "${container_name}"
+  ensure_runtime_env_defaults
+  compose_project_name="$(compose_project_name_for_container "${container_name}")"
 
   workspace_path="$(prompt_default "请输入工作区路径（支持 Windows 或 WSL 路径）" "$(get_env_value "${RUNTIME_ENV_FILE}" WORKSPACE_PATH "${DEFAULT_WORKSPACE_PATH}")")"
   workspace_path="$(normalize_path "${workspace_path}")"
   image_name="$(prompt_default "请输入镜像名" "$(get_env_value "${RUNTIME_ENV_FILE}" IMAGE_NAME "${DEFAULT_IMAGE_NAME}")")"
-  container_name="$(prompt_default "请输入容器名" "$(get_env_value "${RUNTIME_ENV_FILE}" CONTAINER_NAME "${DEFAULT_CONTAINER_NAME}")")"
-  network_name="$(prompt_network_with_codexmanager_option "$(get_env_value "${RUNTIME_ENV_FILE}" NETWORK_NAME "${DEFAULT_NETWORK_NAME}")")"
-  auth_mode="$(prompt_codex_auth_mode "$(get_env_value "${RUNTIME_ENV_FILE}" CODEX_AUTH_MODE "$(default_codex_auth_mode_for_network "${network_name}")")" "${network_name}")"
+  codexmanager_access_mode="$(prompt_codexmanager_access_mode "$(get_env_value "${RUNTIME_ENV_FILE}" CODEXMANAGER_ACCESS_MODE "${DEFAULT_CODEXMANAGER_ACCESS_MODE}")")"
+  case "${codexmanager_access_mode}" in
+    local)
+      network_name="$(prompt_local_codexmanager_network "$(get_env_value "${RUNTIME_ENV_FILE}" NETWORK_NAME "$(active_codexmanager_network_name || printf '')")")"
+      codexmanager_remote_base_url=""
+      ;;
+    remote)
+      network_name="$(prompt_generic_network_name "$(get_env_value "${RUNTIME_ENV_FILE}" NETWORK_NAME "${DEFAULT_NETWORK_NAME}")")"
+      codexmanager_remote_base_url="$(validate_base_url_or_die "$(prompt_default "请输入远端 CodexManager 基础地址" "$(get_env_value "${RUNTIME_ENV_FILE}" CODEXMANAGER_REMOTE_BASE_URL "$(default_codexmanager_remote_base_url)")")")"
+      ;;
+    *)
+      network_name="$(prompt_generic_network_name "$(get_env_value "${RUNTIME_ENV_FILE}" NETWORK_NAME "${DEFAULT_NETWORK_NAME}")")"
+      codexmanager_remote_base_url=""
+      ;;
+  esac
+
+  auth_mode="$(prompt_codex_auth_mode "$(get_env_value "${RUNTIME_ENV_FILE}" CODEX_AUTH_MODE "$(default_codex_auth_mode_for_access_mode "${codexmanager_access_mode}")")" "${codexmanager_access_mode}")"
   if [[ "${auth_mode}" == "apikey" ]]; then
     api_key="$(validate_api_key_or_die "$(prompt_secret_default "请输入 OPENAI_API_KEY" "$(normalize_api_key_value "$(get_env_value "${RUNTIME_ENV_FILE}" OPENAI_API_KEY "")")")")"
   else
     api_key=""
   fi
   last_api_base="$(get_env_value "${RUNTIME_ENV_FILE}" OPENAI_API_BASE "${DEFAULT_API_BASE_URL}")"
-  api_base_url="$(suggest_api_base_for_network "${network_name}" "${last_api_base}")"
-  if codexmanager_network_is_selected "${network_name}"; then
-    log "已自动将 Codex API 地址切换到 CodexManager 网络内服务：${api_base_url}"
-  else
-    api_base_url="$(prompt_default "请输入 openai_base_url" "${api_base_url}")"
-  fi
+  api_base_url="$(suggest_api_base_for_target "${codexmanager_access_mode}" "${network_name}" "${codexmanager_remote_base_url}" "${last_api_base}")"
+  case "${codexmanager_access_mode}" in
+    local)
+      log "已自动将 Codex API 地址切换到本地 CodexManager：${api_base_url}"
+      ;;
+    remote)
+      log "已自动将 Codex API 地址切换到远端 CodexManager：${api_base_url}"
+      ;;
+    *)
+      api_base_url="$(validate_base_url_or_die "$(prompt_default "请输入 openai_base_url" "${api_base_url}")")"
+      ;;
+  esac
   port_3000="$(validate_host_port_or_die "$(prompt_default "请输入宿主机 3000 对外端口" "$(get_env_value "${RUNTIME_ENV_FILE}" PORT_3000 "${DEFAULT_PORT_3000}")")" "PORT_3000")"
   port_5173="$(validate_host_port_or_die "$(prompt_default "请输入宿主机 5173 对外端口" "$(get_env_value "${RUNTIME_ENV_FILE}" PORT_5173 "${DEFAULT_PORT_5173}")")" "PORT_5173")"
   port_8080="$(validate_host_port_or_die "$(prompt_default "请输入宿主机 8080 对外端口" "$(get_env_value "${RUNTIME_ENV_FILE}" PORT_8080 "${DEFAULT_PORT_8080}")")" "PORT_8080")"
@@ -640,22 +976,35 @@ collect_runtime_inputs() {
   ensure_distinct_host_ports_or_die "${port_3000}" "${port_5173}" "${port_8080}" "${port_1455}"
 
   mkdir -p "${workspace_path}"
-  write_runtime_env "${workspace_path}" "${auth_mode}" "${api_key}" "${image_name}" "${container_name}" "${network_name}" "${api_base_url}" "${port_3000}" "${port_5173}" "${port_8080}" "${port_1455}"
+  write_runtime_env "${workspace_path}" "${auth_mode}" "${api_key}" "${image_name}" "${container_name}" "${compose_project_name}" "${network_name}" "${codexmanager_access_mode}" "${codexmanager_remote_base_url}" "${api_base_url}" "${port_3000}" "${port_5173}" "${port_8080}" "${port_1455}"
+  save_runtime_env_snapshot "${container_name}"
   log "已写入 ${RUNTIME_ENV_FILE}"
+  log "当前实例: ${container_name} （compose project: ${compose_project_name}）"
   log "当前 Codex 登录模式: ${auth_mode}"
   if [[ "${auth_mode}" == "apikey" ]]; then
     log "当前 OPENAI_API_KEY: ${api_key}"
   else
     log "OAuth 模式下不会预置 auth.json，后续请在容器内完成账号登录。"
-    if codexmanager_network_is_selected "${network_name}"; then
-      log "当前容器内 codex login 将改走 CodexManager OAuth 兼容层。"
-      log "浏览器 OAuth 入口: $(codexmanager_browser_oauth_base)/oauth/authorize"
-      log "容器内 token issuer: $(codexmanager_container_oauth_base)"
-      log "浏览器回调地址: $(codex_oauth_callback_public_url "${port_1455}")"
-    fi
+    case "${codexmanager_access_mode}" in
+      local)
+        log "当前容器内 codex login 将改走本地 CodexManager OAuth 兼容层。"
+        log "浏览器 OAuth 入口: $(codexmanager_browser_oauth_base)/oauth/authorize"
+        log "容器内 token issuer: $(codexmanager_container_oauth_base)"
+        log "浏览器回调地址: $(codex_oauth_callback_public_url "${port_1455}")"
+        ;;
+      remote)
+        log "当前容器内 codex login 将改走远端 CodexManager OAuth 兼容层。"
+        log "浏览器 OAuth 入口: ${codexmanager_remote_base_url}/oauth/authorize"
+        log "容器内 token issuer: ${codexmanager_remote_base_url}"
+        log "浏览器回调地址: $(codex_oauth_callback_public_url "${port_1455}")"
+        ;;
+      *)
+        log "当前未接入 CodexManager，容器内 codex login 将保持官方 OAuth 行为。"
+        ;;
+    esac
   fi
-  if codexmanager_network_is_selected "${network_name}" && [[ "${auth_mode}" == "apikey" ]]; then
-    warn "当前已接入 CodexManager 网络，但仍选择了 apikey 模式；这不会走实例 OAuth 识别链路。"
+  if codexmanager_access_uses_codexmanager "${codexmanager_access_mode}" && [[ "${auth_mode}" == "apikey" ]]; then
+    warn "当前已接入 CodexManager，但仍选择了 apikey 模式；这不会走实例 OAuth 识别链路。"
   fi
 }
 
@@ -676,10 +1025,14 @@ generate_files() {
 }
 
 codex_compose_project_name() {
-  get_env_value "${RUNTIME_ENV_FILE}" COMPOSE_PROJECT_NAME "${DEFAULT_COMPOSE_PROJECT_NAME}"
+  local container_name
+  restore_active_runtime_env_if_needed
+  container_name="$(get_env_value "${RUNTIME_ENV_FILE}" CONTAINER_NAME "${DEFAULT_CONTAINER_NAME}")"
+  get_env_value "${RUNTIME_ENV_FILE}" COMPOSE_PROJECT_NAME "$(compose_project_name_for_container "${container_name}")"
 }
 
 ensure_runtime_env_exists() {
+  restore_active_runtime_env_if_needed
   [[ -f "${RUNTIME_ENV_FILE}" ]] || die "未找到 ${RUNTIME_ENV_FILE}，请先执行菜单 1 或 2。"
 }
 
@@ -942,7 +1295,9 @@ wait_for_codexmanager_remote_stack_ready() {
 }
 
 verify_codex_runtime_against_codexmanager_or_die() {
-  local network_name="$1" auth_mode="$2" container_name
+  local codexmanager_access_mode="$1" network_name="$2" auth_mode="$3" codexmanager_remote_base_url="$4" container_name remote_health_url
+  codexmanager_access_mode="$(normalize_codexmanager_access_mode "${codexmanager_access_mode}")"
+  codexmanager_remote_base_url="$(normalize_base_url "${codexmanager_remote_base_url}")"
   container_name="$(get_env_value "${RUNTIME_ENV_FILE}" CONTAINER_NAME "${DEFAULT_CONTAINER_NAME}")"
 
   if [[ "${auth_mode}" == "oauth" ]]; then
@@ -953,12 +1308,26 @@ verify_codex_runtime_against_codexmanager_or_die() {
     fi
   fi
 
-  if codexmanager_network_is_selected "${network_name}"; then
-    if ! docker exec "${container_name}" bash -lc "curl -fsS http://${DEFAULT_CODEXMANAGER_SERVICE_NAME}:${DEFAULT_CODEXMANAGER_SERVICE_PORT}/health >/dev/null" >/dev/null 2>&1; then
-      docker rm -f "${container_name}" >/dev/null 2>&1 || true
-      die "当前容器无法通过网络 ${network_name} 访问 CodexManager 服务，请先执行分支 8 或检查所选网络。"
-    fi
-    log "已确认当前 Codex 容器可访问 CodexManager：$(codexmanager_service_api_base)"
+  case "${codexmanager_access_mode}" in
+    local)
+      if ! docker exec "${container_name}" bash -lc "curl -fsS http://${DEFAULT_CODEXMANAGER_SERVICE_NAME}:${DEFAULT_CODEXMANAGER_SERVICE_PORT}/health >/dev/null" >/dev/null 2>&1; then
+        docker rm -f "${container_name}" >/dev/null 2>&1 || true
+        die "当前容器无法通过网络 ${network_name} 访问本地 CodexManager 服务，请先执行分支 8/9 或检查所选网络。"
+      fi
+      log "已确认当前 Codex 容器可访问本地 CodexManager：$(codexmanager_service_api_base)"
+      ;;
+    remote)
+      remote_health_url="$(printf '%q' "${codexmanager_remote_base_url}/health")"
+      if ! docker exec "${container_name}" bash -lc "curl -fsS ${remote_health_url} >/dev/null" >/dev/null 2>&1; then
+        docker rm -f "${container_name}" >/dev/null 2>&1 || true
+        die "当前容器无法访问远端 CodexManager：${codexmanager_remote_base_url}/health，请检查公网地址、TLS 或防火墙。"
+      fi
+      log "已确认当前 Codex 容器可访问远端 CodexManager：${codexmanager_remote_base_url}"
+      ;;
+  esac
+
+  if [[ "${auth_mode}" == "apikey" && "${codexmanager_access_mode}" == "remote" ]]; then
+    log "远端模式下 API Key 登录会直接通过 ${codexmanager_remote_base_url}/v1 访问平台。"
   fi
 }
 
@@ -1162,14 +1531,16 @@ option_1() {
 }
 
 option_2() {
-  local network_name auth_mode go_in
+  local codexmanager_access_mode network_name auth_mode codexmanager_remote_base_url go_in
   generate_files
   collect_runtime_inputs
   build_image
   start_container
+  codexmanager_access_mode="$(get_env_value "${RUNTIME_ENV_FILE}" CODEXMANAGER_ACCESS_MODE "${DEFAULT_CODEXMANAGER_ACCESS_MODE}")"
   network_name="$(get_env_value "${RUNTIME_ENV_FILE}" NETWORK_NAME "${DEFAULT_NETWORK_NAME}")"
-  auth_mode="$(get_env_value "${RUNTIME_ENV_FILE}" CODEX_AUTH_MODE "$(default_codex_auth_mode_for_network "${network_name}")")"
-  verify_codex_runtime_against_codexmanager_or_die "${network_name}" "${auth_mode}"
+  auth_mode="$(get_env_value "${RUNTIME_ENV_FILE}" CODEX_AUTH_MODE "$(default_codex_auth_mode_for_access_mode "${codexmanager_access_mode}")")"
+  codexmanager_remote_base_url="$(get_env_value "${RUNTIME_ENV_FILE}" CODEXMANAGER_REMOTE_BASE_URL "")"
+  verify_codex_runtime_against_codexmanager_or_die "${codexmanager_access_mode}" "${network_name}" "${auth_mode}" "${codexmanager_remote_base_url}"
   go_in="$(read_prompt_input "是否现在直接进入容器？[Y/n]: ")"
   if [[ -z "${go_in}" || "${go_in}" =~ ^[Yy]$ ]]; then
     enter_container
@@ -1230,7 +1601,7 @@ show_menu() {
  Codex Docker 管理脚本
 ==============================
 1) 构建 Codex 基础镜像（不部署 CodexManager / 不启用 OAuth 实例识别）
-2) 启动新 Codex 容器（支持 OAuth 或 API Key 模式）
+2) 启动新 Codex 容器（多实例隔离，支持本地/远端 CodexManager 与 OAuth/API Key）
 3) 从失败位置继续构建 Codex 基础镜像
 4) 进入当前 Codex 容器
 5) 停止并删除当前 Codex 容器

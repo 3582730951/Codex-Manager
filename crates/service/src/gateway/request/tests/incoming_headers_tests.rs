@@ -22,6 +22,17 @@ fn case_insensitive_bearer_parsing_matches_sticky_derivation_behavior() {
 }
 
 #[test]
+fn platform_key_accepts_case_insensitive_bearer_scheme() {
+    let snapshot = IncomingHeaderSnapshot {
+        authorization_present: true,
+        authorization_bearer_case_insensitive: Some("abc123".to_string()),
+        ..IncomingHeaderSnapshot::default()
+    };
+
+    assert_eq!(snapshot.platform_key(), Some("abc123"));
+}
+
+#[test]
 fn cli_affinity_override_preserves_existing_value_when_override_is_none() {
     let snapshot = IncomingHeaderSnapshot {
         cli_affinity_id: Some("cli-original".to_string()),

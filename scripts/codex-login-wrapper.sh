@@ -8,6 +8,39 @@ REAL_CODEX_BIN="${REAL_CODEX_BIN:-/usr/local/bin/codex-real}"
 CODEXMANAGER_OAUTH_META_FILE="${CODEX_HOME}/codexmanager-oauth.json"
 CODEXMANAGER_OAUTH_LOGIN_HELPER="${CODEXMANAGER_OAUTH_LOGIN_HELPER:-/usr/local/bin/codex-oauth-proxy-login}"
 
+sync_openai_api_key_from_auth_file() {
+  [[ -z "${OPENAI_API_KEY:-}" ]] || return 0
+
+  local loaded_key=""
+  loaded_key="$(
+    python3 - <<'EOF_AUTH_ENV'
+import json
+import os
+from pathlib import Path
+
+auth_path = Path(os.environ.get("CODEX_HOME", "/root/.codex")) / "auth.json"
+if not auth_path.exists():
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(auth_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+if payload.get("auth_mode") != "apikey":
+    raise SystemExit(0)
+
+api_key = str(payload.get("OPENAI_API_KEY", "")).strip()
+if api_key:
+    print(api_key)
+EOF_AUTH_ENV
+  )"
+
+  if [[ -n "${loaded_key}" ]]; then
+    export OPENAI_API_KEY="${loaded_key}"
+  fi
+}
+
 proxy_login_enabled() {
   [[ "${CODEX_AUTH_MODE:-}" == "oauth" ]] || return 1
   [[ -n "${CODEX_OAUTH_BROWSER_ISSUER_BASE_URL:-}" ]] || return 1
@@ -61,5 +94,7 @@ fi
 if [[ $# -gt 0 && "$1" == "logout" ]]; then
   rm -f "${CODEXMANAGER_OAUTH_META_FILE}" || true
 fi
+
+sync_openai_api_key_from_auth_file
 
 exec "${REAL_CODEX_BIN}" "$@"

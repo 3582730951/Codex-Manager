@@ -454,24 +454,25 @@ pub(crate) fn resolve_enforced_routing(
         requested_conversation_id.as_deref(),
         chosen.as_str(),
     );
-    let request_body_override = if requires_replay {
-        Some(Bytes::from(build_replay_request_body(
-            storage,
-            path,
-            body.as_ref(),
-            platform_key_hash,
-            resolved_affinity_key.as_str(),
-            conversation_scope_id.as_str(),
-        )?))
-    } else {
-        None
-    };
     let current_turn_index = next_turn_index(
         storage,
         platform_key_hash,
         resolved_affinity_key.as_str(),
         conversation_scope_id.as_str(),
     )?;
+    let request_body_override = if requires_replay {
+        Some(build_replay_request_body_with_initial_fallback(
+            storage,
+            path,
+            body.as_ref(),
+            platform_key_hash,
+            resolved_affinity_key.as_str(),
+            conversation_scope_id.as_str(),
+            current_turn_index,
+        )?)
+    } else {
+        None
+    };
 
     Ok(Some(AffinityRoutingResolution {
         affinity_key: resolved_affinity_key,
@@ -534,14 +535,15 @@ pub(crate) fn build_attempt_replay_body(
     if let Some(prebuilt) = resolution.request_body_override.as_ref() {
         return Ok(Some(prebuilt.clone()));
     }
-    Ok(Some(Bytes::from(build_replay_request_body(
+    Ok(Some(build_replay_request_body_with_initial_fallback(
         storage,
         path,
         body,
         platform_key_hash,
         resolution.affinity_key.as_str(),
         resolution.conversation_scope_id.as_str(),
-    )?)))
+        resolution.current_turn_index,
+    )?))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1431,6 +1433,35 @@ fn build_replay_request_body(
     Err("affinity_migration_context_unavailable".to_string())
 }
 
+fn build_replay_request_body_with_initial_fallback(
+    storage: &Storage,
+    path: &str,
+    body: &[u8],
+    platform_key_hash: &str,
+    affinity_key: &str,
+    conversation_scope_id: &str,
+    current_turn_index: i64,
+) -> Result<Bytes, String> {
+    match build_replay_request_body(
+        storage,
+        path,
+        body,
+        platform_key_hash,
+        affinity_key,
+        conversation_scope_id,
+    ) {
+        Ok(bytes) => Ok(Bytes::from(bytes)),
+        Err(err)
+            if err == "affinity_migration_context_unavailable" && current_turn_index <= 1 =>
+        {
+            // First-turn failover can safely reuse the original request payload because
+            // the caller has not yet committed any persisted turn state for this affinity key.
+            Ok(Bytes::copy_from_slice(body))
+        }
+        Err(err) => Err(err),
+    }
+}
+
 fn trim_replay_items(events: Vec<ConversationContextEvent>) -> Result<Vec<Value>, String> {
     let replay_max_turns = current_replay_max_turns() as usize;
     let mut by_turn = BTreeMap::<i64, Vec<ConversationContextEvent>>::new();
@@ -2057,6 +2088,103 @@ mod tests {
             input[1].get("role").and_then(serde_json::Value::as_str),
             Some("user")
         );
+    }
+
+    #[test]
+    fn build_replay_request_body_with_initial_fallback_reuses_original_body_on_first_turn() {
+        let _guard = affinity_runtime_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_context_replay = crate::gateway::affinity::context_replay_enabled();
+        crate::gateway::affinity::set_context_replay_enabled(true);
+
+        let storage = Storage::open_in_memory().expect("open in memory");
+        storage.init().expect("init schema");
+        let original =
+            br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}"#;
+
+        let replay = super::build_replay_request_body_with_initial_fallback(
+            &storage,
+            "/v1/responses",
+            original,
+            "pk",
+            "sid:test",
+            "scope",
+            1,
+        )
+        .expect("fallback should reuse original body");
+
+        crate::gateway::affinity::set_context_replay_enabled(previous_context_replay);
+        assert_eq!(replay.as_ref(), original);
+    }
+
+    #[test]
+    fn build_attempt_replay_body_reuses_original_body_when_first_turn_has_no_persisted_context() {
+        let _guard = affinity_runtime_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_context_replay = crate::gateway::affinity::context_replay_enabled();
+        crate::gateway::affinity::set_context_replay_enabled(true);
+
+        let storage = Storage::open_in_memory().expect("open in memory");
+        storage.init().expect("init schema");
+        let original =
+            Bytes::from_static(br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}"#);
+        let resolution = super::AffinityRoutingResolution {
+            affinity_key: "sid:test".to_string(),
+            canonical_affinity_key: "sid:test".to_string(),
+            compat_affinity_key: None,
+            affinity_source: "session_id",
+            conversation_scope_id: "scope".to_string(),
+            committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
+            binding: None,
+            thread: Some(ConversationThread {
+                platform_key_hash: "pk".to_string(),
+                affinity_key: "sid:test".to_string(),
+                conversation_scope_id: "scope".to_string(),
+                account_id: "acc-primary".to_string(),
+                thread_epoch: 1,
+                thread_anchor: "thread-1".to_string(),
+                thread_version: 1,
+                created_at: 1,
+                updated_at: 1,
+                last_seen_at: 1,
+            }),
+            chosen_account_id: "acc-primary".to_string(),
+            candidate_account_ids: vec!["acc-primary".to_string(), "acc-fallback".to_string()],
+            request_body_override: None,
+            thread_epoch: 1,
+            thread_anchor: "thread-1".to_string(),
+            reset_session_affinity: false,
+            requires_replay: false,
+            current_turn_index: 1,
+            primary_scope_id_for_commit: Some("scope".to_string()),
+            scope_promotion: None,
+            current_turn_input_items: vec![serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "next"}]
+            })],
+            selected_supply_score: Some(0.9),
+            selected_pressure_score: Some(1.0),
+            selected_final_score: Some(0.9),
+            switch_reason: None,
+        };
+
+        let replay = super::build_attempt_replay_body(
+            &storage,
+            &resolution,
+            "/v1/responses",
+            original.as_ref(),
+            "pk",
+            "acc-fallback",
+        )
+        .expect("fallback body should be built")
+        .expect("body override should exist");
+
+        crate::gateway::affinity::set_context_replay_enabled(previous_context_replay);
+        assert_eq!(replay.as_ref(), original.as_ref());
     }
 
     #[test]
