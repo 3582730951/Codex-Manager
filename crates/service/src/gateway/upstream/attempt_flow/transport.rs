@@ -9,6 +9,28 @@ enum RequestCompression {
     Zstd,
 }
 
+#[derive(Debug, Clone)]
+enum PreparedRequestBody {
+    Empty,
+    Memory(Bytes),
+    Payload(crate::gateway::RequestPayload),
+}
+
+#[derive(Debug)]
+enum UpstreamSendError {
+    Build(String),
+    Transport(reqwest::Error),
+}
+
+impl std::fmt::Display for UpstreamSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Build(err) => write!(f, "{err}"),
+            Self::Transport(err) => write!(f, "{err}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(in super::super) struct UpstreamRequestContext<'a> {
     pub(in super::super) request_path: &'a str,
@@ -40,13 +62,11 @@ fn force_connection_close(headers: &mut Vec<(String, String)>) {
     }
 }
 
-fn extract_prompt_cache_key(body: &[u8]) -> Option<String> {
+fn extract_prompt_cache_key(body: &crate::gateway::RequestPayload) -> Option<String> {
     if body.is_empty() || body.len() > 64 * 1024 {
         return None;
     }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return None;
-    };
+    let value = body.read_json_value().ok()?;
     value
         .get("prompt_cache_key")
         .and_then(serde_json::Value::as_str)
@@ -131,24 +151,41 @@ fn resolve_request_compression(
 
 fn encode_request_body(
     request_path: &str,
-    body: &Bytes,
+    body: &crate::gateway::RequestPayload,
     compression: RequestCompression,
     headers: &mut Vec<(String, String)>,
-) -> Bytes {
+) -> Result<PreparedRequestBody, String> {
     if body.is_empty() || compression == RequestCompression::None {
-        return body.clone();
+        return Ok(if body.is_empty() {
+            PreparedRequestBody::Empty
+        } else {
+            PreparedRequestBody::Payload(body.clone())
+        });
     }
     if has_header(headers, "Content-Encoding") {
         log::warn!(
             "event=gateway_request_compression_skipped reason=content_encoding_exists path={}",
             request_path
         );
-        return body.clone();
+        return Ok(PreparedRequestBody::Payload(body.clone()));
     }
+    if body.is_file_backed() {
+        log::info!(
+            "event=gateway_request_compression_skipped reason=file_backed_payload path={} bytes={}",
+            request_path,
+            body.len()
+        );
+        return Ok(PreparedRequestBody::Payload(body.clone()));
+    }
+    let compression_min_bytes = super::super::super::request_compression_min_bytes();
+    if body.len() < compression_min_bytes {
+        return Ok(PreparedRequestBody::Payload(body.clone()));
+    }
+    let body_bytes = body.read_all_bytes()?;
     match compression {
-        RequestCompression::None => body.clone(),
+        RequestCompression::None => Ok(PreparedRequestBody::Payload(body.clone())),
         RequestCompression::Zstd => {
-            match zstd::stream::encode_all(std::io::Cursor::new(body.as_ref()), 3) {
+            match zstd::stream::encode_all(std::io::Cursor::new(body_bytes.as_ref()), 3) {
                 Ok(compressed) => {
                     let post_bytes = compressed.len();
                     headers.push(("Content-Encoding".to_string(), "zstd".to_string()));
@@ -158,7 +195,7 @@ fn encode_request_body(
                     body.len(),
                     post_bytes
                 );
-                    Bytes::from(compressed)
+                    Ok(PreparedRequestBody::Memory(Bytes::from(compressed)))
                 }
                 Err(err) => {
                     log::warn!(
@@ -166,11 +203,51 @@ fn encode_request_body(
                         request_path,
                         err
                     );
-                    body.clone()
+                    Ok(PreparedRequestBody::Payload(body.clone()))
                 }
             }
         }
     }
+}
+
+fn apply_prepared_body(
+    builder: reqwest::blocking::RequestBuilder,
+    body: &PreparedRequestBody,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    match body {
+        PreparedRequestBody::Empty => Ok(builder),
+        PreparedRequestBody::Memory(bytes) => Ok(builder.body(bytes.clone())),
+        PreparedRequestBody::Payload(payload) => {
+            if payload.is_file_backed() {
+                let reader = payload.open_blocking_reader()?;
+                Ok(builder.body(reqwest::blocking::Body::sized(reader, payload.len() as u64)))
+            } else {
+                Ok(builder.body(payload.read_all_bytes()?))
+            }
+        }
+    }
+}
+
+fn send_built_request(
+    http: &reqwest::blocking::Client,
+    method: &reqwest::Method,
+    target_url: &str,
+    request_deadline: Option<Instant>,
+    is_stream: bool,
+    headers: &[(String, String)],
+    body: &PreparedRequestBody,
+) -> Result<reqwest::blocking::Response, UpstreamSendError> {
+    let mut builder = http.request(method.clone(), target_url);
+    if let Some(timeout) =
+        super::super::support::deadline::send_timeout(request_deadline, is_stream)
+    {
+        builder = builder.timeout(timeout);
+    }
+    for (name, value) in headers.iter() {
+        builder = builder.header(name, value);
+    }
+    let builder = apply_prepared_body(builder, body).map_err(UpstreamSendError::Build)?;
+    builder.send().map_err(UpstreamSendError::Transport)
 }
 
 pub(in super::super) fn send_upstream_request(
@@ -180,15 +257,15 @@ pub(in super::super) fn send_upstream_request(
     request_deadline: Option<Instant>,
     request_ctx: UpstreamRequestContext<'_>,
     incoming_headers: &super::super::super::IncomingHeaderSnapshot,
-    body: &Bytes,
+    body: &crate::gateway::RequestPayload,
     is_stream: bool,
     auth_token: &str,
     account: &Account,
     strip_session_affinity: bool,
-) -> Result<reqwest::blocking::Response, reqwest::Error> {
+) -> Result<reqwest::blocking::Response, String> {
     let attempt_started_at = Instant::now();
     let is_openai_api_target = super::super::super::is_openai_api_base(target_url);
-    let prompt_cache_key = extract_prompt_cache_key(body.as_ref());
+    let prompt_cache_key = extract_prompt_cache_key(body);
     let is_compact_request = is_compact_request_path(request_ctx.request_path);
     let request_affinity = super::super::super::session_affinity::derive_outgoing_session_affinity(
         incoming_headers.session_id(),
@@ -251,29 +328,24 @@ pub(in super::super) fn send_upstream_request(
         body,
         request_compression,
         &mut upstream_headers,
-    );
-    let build_request = |http: &reqwest::blocking::Client| {
-        let mut builder = http.request(method.clone(), target_url);
-        if let Some(timeout) =
-            super::super::support::deadline::send_timeout(request_deadline, is_stream)
-        {
-            builder = builder.timeout(timeout);
-        }
-        for (name, value) in upstream_headers.iter() {
-            builder = builder.header(name, value);
-        }
-        if !body_for_request.is_empty() {
-            builder = builder.body(body_for_request.clone());
-        }
-        builder
-    };
+    )?;
 
     let result =
         if is_gateway_account_proxy_request(target_url, request_ctx.request_path, is_stream) {
             if let Some(proxy_client) = super::super::super::gateway_account_proxy_client() {
-                match build_request(&proxy_client).send() {
+                match send_built_request(
+                    &proxy_client,
+                    method,
+                    target_url,
+                    request_deadline,
+                    is_stream,
+                    upstream_headers.as_slice(),
+                    &body_for_request,
+                ) {
                     Ok(resp) => Ok(resp),
-                    Err(proxy_err) if is_gateway_account_proxy_connect_error(&proxy_err) => {
+                    Err(UpstreamSendError::Transport(proxy_err))
+                        if is_gateway_account_proxy_connect_error(&proxy_err) =>
+                    {
                         log::warn!(
                         "event=gateway_account_proxy_fallback_direct path={} account_id={} err={}",
                         request_ctx.request_path,
@@ -281,24 +353,58 @@ pub(in super::super) fn send_upstream_request(
                         proxy_err
                     );
                         let direct = super::super::super::fresh_direct_upstream_client();
-                        build_request(&direct).send()
+                        send_built_request(
+                            &direct,
+                            method,
+                            target_url,
+                            request_deadline,
+                            is_stream,
+                            upstream_headers.as_slice(),
+                            &body_for_request,
+                        )
+                        .map_err(|err| err.to_string())
                     }
-                    Err(proxy_err) => Err(proxy_err),
+                    Err(proxy_err) => Err(proxy_err.to_string()),
                 }
             } else {
-                build_request(client).send()
+                send_built_request(
+                    client,
+                    method,
+                    target_url,
+                    request_deadline,
+                    is_stream,
+                    upstream_headers.as_slice(),
+                    &body_for_request,
+                )
+                .map_err(|err| err.to_string())
             }
         } else {
-            match build_request(client).send() {
+            match send_built_request(
+                client,
+                method,
+                target_url,
+                request_deadline,
+                is_stream,
+                upstream_headers.as_slice(),
+                &body_for_request,
+            ) {
                 Ok(resp) => Ok(resp),
                 Err(first_err) => {
                     // 中文注释：进程启动后才开启系统代理时，旧单例 client 可能仍走旧网络路径；
                     // 这里用 fresh client 立刻重试一次，避免必须手动重连服务。
                     let fresh =
                         super::super::super::fresh_upstream_client_for_account(account.id.as_str());
-                    match build_request(&fresh).send() {
+                    match send_built_request(
+                        &fresh,
+                        method,
+                        target_url,
+                        request_deadline,
+                        is_stream,
+                        upstream_headers.as_slice(),
+                        &body_for_request,
+                    ) {
                         Ok(resp) => Ok(resp),
-                        Err(_) => Err(first_err),
+                        Err(_) => Err(first_err.to_string()),
                     }
                 }
             }
@@ -314,7 +420,35 @@ mod tests {
         encode_request_body, matches_gateway_account_proxy_request_target,
         resolve_request_compression_with_flag, RequestCompression,
     };
-    use bytes::Bytes;
+    use std::sync::MutexGuard;
+
+    fn runtime_guard() -> MutexGuard<'static, ()> {
+        crate::gateway::gateway_runtime_test_guard()
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+            crate::gateway::reload_runtime_config_from_env();
+        }
+    }
 
     #[test]
     fn request_compression_only_applies_to_streaming_chatgpt_responses() {
@@ -367,7 +501,13 @@ mod tests {
 
     #[test]
     fn encode_request_body_adds_zstd_content_encoding() {
-        let body = Bytes::from_static(br#"{"model":"gpt-5.4","input":"compress me"}"#);
+        let _guard = runtime_guard();
+        let _compression_min = EnvGuard::set("CODEXMANAGER_REQUEST_COMPRESSION_MIN_BYTES", "1");
+        crate::gateway::reload_runtime_config_from_env();
+        let body = crate::gateway::RequestPayload::from_vec(
+            br#"{"model":"gpt-5.4","input":"compress me"}"#.to_vec(),
+        )
+        .expect("build request payload");
         let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
 
         let actual = encode_request_body(
@@ -375,12 +515,17 @@ mod tests {
             &body,
             RequestCompression::Zstd,
             &mut headers,
-        );
+        )
+        .expect("encode request body");
 
         assert!(headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("Content-Encoding") && value == "zstd"
         }));
-        let decoded = zstd::stream::decode_all(std::io::Cursor::new(actual.as_ref()))
+        let actual_bytes = match actual {
+            super::PreparedRequestBody::Memory(bytes) => bytes,
+            other => panic!("expected compressed in-memory body, got {other:?}"),
+        };
+        let decoded = zstd::stream::decode_all(std::io::Cursor::new(actual_bytes.as_ref()))
             .expect("decode zstd body");
         let value: serde_json::Value =
             serde_json::from_slice(&decoded).expect("parse decompressed json");
@@ -388,6 +533,64 @@ mod tests {
             value.get("model").and_then(serde_json::Value::as_str),
             Some("gpt-5.4")
         );
+    }
+
+    #[test]
+    fn encode_request_body_skips_compression_for_file_backed_payload() {
+        let _guard = runtime_guard();
+        let _spill = EnvGuard::set("CODEXMANAGER_REQUEST_SPILL_THRESHOLD_BYTES", "8");
+        let _max = EnvGuard::set("CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES", "1024");
+        let _compression_min = EnvGuard::set("CODEXMANAGER_REQUEST_COMPRESSION_MIN_BYTES", "1");
+        crate::gateway::reload_runtime_config_from_env();
+
+        let body = crate::gateway::RequestPayload::from_vec(vec![b'x'; 64])
+            .expect("build request payload");
+        let mut headers = Vec::new();
+        let actual = encode_request_body(
+            "/v1/responses",
+            &body,
+            RequestCompression::Zstd,
+            &mut headers,
+        )
+        .expect("encode request body");
+
+        assert!(!headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("Content-Encoding")));
+        match actual {
+            super::PreparedRequestBody::Payload(payload) => assert!(payload.is_file_backed()),
+            other => panic!("expected file-backed payload passthrough, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encode_request_body_skips_compression_below_min_threshold() {
+        let _guard = runtime_guard();
+        let _spill = EnvGuard::set("CODEXMANAGER_REQUEST_SPILL_THRESHOLD_BYTES", "1024");
+        let _max = EnvGuard::set("CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES", "4096");
+        let _compression_min = EnvGuard::set("CODEXMANAGER_REQUEST_COMPRESSION_MIN_BYTES", "1024");
+        crate::gateway::reload_runtime_config_from_env();
+
+        let body = crate::gateway::RequestPayload::from_vec(
+            br#"{"model":"gpt-5.4","input":"tiny"}"#.to_vec(),
+        )
+        .expect("build request payload");
+        let mut headers = Vec::new();
+        let actual = encode_request_body(
+            "/v1/responses",
+            &body,
+            RequestCompression::Zstd,
+            &mut headers,
+        )
+        .expect("encode request body");
+
+        assert!(headers
+            .iter()
+            .all(|(name, _)| !name.eq_ignore_ascii_case("Content-Encoding")));
+        match actual {
+            super::PreparedRequestBody::Payload(payload) => assert!(!payload.is_file_backed()),
+            other => panic!("expected in-memory payload passthrough, got {other:?}"),
+        }
     }
 
     #[test]

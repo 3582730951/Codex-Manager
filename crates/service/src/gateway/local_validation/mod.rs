@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use crate::gateway::RequestPayload;
 use reqwest::Method;
 use tiny_http::Request;
 
@@ -12,7 +12,7 @@ pub(super) struct LocalValidationResult {
     pub(super) storage: crate::storage_helpers::StorageHandle,
     pub(super) original_path: String,
     pub(super) path: String,
-    pub(super) body: Bytes,
+    pub(super) body: RequestPayload,
     pub(super) is_stream: bool,
     pub(super) has_prompt_cache_key: bool,
     pub(super) request_shape: Option<String>,
@@ -34,6 +34,7 @@ pub(super) struct LocalValidationResult {
     pub(super) method: Method,
 }
 
+#[derive(Debug)]
 pub(super) struct LocalValidationError {
     pub(super) status_code: u16,
     pub(super) message: String,
@@ -54,6 +55,7 @@ pub(super) fn prepare_local_request(
     debug: bool,
 ) -> Result<LocalValidationResult, LocalValidationError> {
     let body = io::read_request_body(request)?;
+    crate::gateway::record_gateway_request_payload(body.len(), body.is_file_backed());
     let incoming_headers = super::IncomingHeaderSnapshot::from_request(request);
     let platform_key = io::extract_platform_key_or_error(request, &incoming_headers, debug)?;
 

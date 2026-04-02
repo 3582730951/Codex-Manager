@@ -2,29 +2,24 @@ use tiny_http::Request;
 
 pub(super) fn read_request_body(
     request: &mut Request,
-) -> Result<Vec<u8>, super::LocalValidationError> {
+) -> Result<crate::gateway::RequestPayload, super::LocalValidationError> {
     // 中文注释：先把请求体读完再进入鉴权判断，避免客户端写流还在进行时被提前断开。
-    let mut body = Vec::new();
     let max_body_bytes = crate::gateway::front_proxy_max_body_bytes();
-    let reader = request.as_reader();
-    let mut chunk = [0_u8; 8192];
-
-    loop {
-        let read = match reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => read,
-            Err(_) => break,
-        };
-        body.extend_from_slice(&chunk[..read]);
-        if body.len() > max_body_bytes {
-            return Err(super::LocalValidationError::new(
-                413,
-                format!("request body too large: content-length>{max_body_bytes}"),
-            ));
-        }
-    }
-
-    Ok(body)
+    crate::gateway::RequestPayload::from_reader(request.as_reader(), max_body_bytes).map_err(
+        |err| {
+            if err.is_too_large() {
+                super::LocalValidationError::new(
+                    413,
+                    format!(
+                        "request body too large: content-length>{}",
+                        err.max_body_bytes().unwrap_or(max_body_bytes)
+                    ),
+                )
+            } else {
+                super::LocalValidationError::new(400, format!("read request body failed: {err}"))
+            }
+        },
+    )
 }
 
 pub(super) fn extract_platform_key_or_error(

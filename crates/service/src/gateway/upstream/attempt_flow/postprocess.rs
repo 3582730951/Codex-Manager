@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 use std::time::Instant;
 
@@ -49,6 +48,13 @@ fn is_sse_content_type(header: Option<&reqwest::header::HeaderValue>) -> bool {
         .is_some_and(|value| value.starts_with("text/event-stream"))
 }
 
+fn should_preinspect_success_stream(
+    upstream_is_stream: bool,
+    status: reqwest::StatusCode,
+) -> bool {
+    status.is_success() && upstream_is_stream
+}
+
 fn rebuild_upstream_response_from_bytes(
     status: reqwest::StatusCode,
     version: reqwest::Version,
@@ -75,7 +81,7 @@ fn retry_upstream_server_error_once(
     request_deadline: Option<Instant>,
     request_ctx: UpstreamRequestContext<'_>,
     incoming_headers: &super::super::super::IncomingHeaderSnapshot,
-    body: &Bytes,
+    body: &crate::gateway::RequestPayload,
     is_stream: bool,
     auth_token: &str,
     account: &Account,
@@ -137,7 +143,7 @@ fn retry_incomplete_sse_stream_once(
     request_deadline: Option<Instant>,
     request_ctx: UpstreamRequestContext<'_>,
     incoming_headers: &super::super::super::IncomingHeaderSnapshot,
-    body: &Bytes,
+    body: &crate::gateway::RequestPayload,
     is_stream: bool,
     auth_token: &str,
     account: &Account,
@@ -204,7 +210,7 @@ pub(super) fn process_upstream_post_retry_flow<F>(
     request_deadline: Option<Instant>,
     request_ctx: UpstreamRequestContext<'_>,
     incoming_headers: &super::super::super::IncomingHeaderSnapshot,
-    body: &Bytes,
+    body: &crate::gateway::RequestPayload,
     _client_is_stream: bool,
     upstream_is_stream: bool,
     auth_token: &str,
@@ -428,11 +434,18 @@ where
 
     let mut incomplete_stream_retry_used = false;
     loop {
-        if !(status.is_success()
-            && is_sse_content_type(upstream.headers().get(reqwest::header::CONTENT_TYPE)))
-        {
+        if !should_preinspect_success_stream(
+            upstream_is_stream,
+            status,
+        ) {
             break;
         }
+        // 中文注释：当前语义仍要求在真正向下游交付前，先对 SSE 做一次完整性检查，
+        // 以便：
+        // 1. 在首个账号 quota/usage-limit 失败时还能 failover；
+        // 2. 在单账号场景下对“半截 SSE”先补一次同账号重试。
+        // 后续若要进一步降低首包延迟，应改成“有限前缀缓冲 + 可续传 reader”，
+        // 不能直接移除这段预检查，否则会回归现有流式行为。
 
         let response_status = upstream.status();
         let response_version = upstream.version();
@@ -446,6 +459,27 @@ where
                 };
             }
         };
+        let declared_sse =
+            is_sse_content_type(response_headers.get(reqwest::header::CONTENT_TYPE));
+        let looks_like_sse = declared_sse || crate::gateway::looks_like_sse_payload(response_body.as_ref());
+        if !looks_like_sse {
+            upstream = match rebuild_upstream_response_from_bytes(
+                response_status,
+                response_version,
+                response_headers,
+                response_body,
+            ) {
+                Ok(response) => response,
+                Err(err) => {
+                    return PostRetryFlowDecision::Terminal {
+                        status_code: 502,
+                        message: err,
+                    };
+                }
+            };
+            status = upstream.status();
+            break;
+        }
         let inspection = crate::gateway::inspect_non_stream_sse_payload(response_body.as_ref());
 
         if !inspection.saw_terminal {
@@ -519,6 +553,20 @@ where
                     }
                 };
             }
+            super::super::super::mark_account_cooldown(
+                &account.id,
+                super::super::super::CooldownReason::Network,
+            );
+            super::super::super::record_route_quality(&account.id, 502);
+            log_gateway_result(Some(url), 502, Some(terminal_error));
+            return if has_more_candidates {
+                PostRetryFlowDecision::Failover
+            } else {
+                PostRetryFlowDecision::Terminal {
+                    status_code: 502,
+                    message: terminal_error.to_string(),
+                }
+            };
         }
         upstream = match rebuild_upstream_response_from_bytes(
             response_status,
@@ -617,7 +665,7 @@ mod tests {
         client: &reqwest::blocking::Client,
         request_ctx: UpstreamRequestContext<'_>,
         incoming_headers: &IncomingHeaderSnapshot,
-        body: &Bytes,
+        body: &crate::gateway::RequestPayload,
         auth_token: &str,
         account: &Account,
         url: &str,
@@ -636,6 +684,10 @@ mod tests {
             false,
         )
         .expect("send initial request")
+    }
+
+    fn build_request_body(raw: &[u8]) -> crate::gateway::RequestPayload {
+        crate::gateway::RequestPayload::from_vec(raw.to_vec()).expect("build request payload")
     }
 
     fn spawn_single_response_server(
@@ -668,6 +720,42 @@ mod tests {
                     )
                     .expect("date header"),
                 );
+            request.respond(response).expect("respond");
+        });
+        (addr, join)
+    }
+
+    fn spawn_optional_content_type_response_server(
+        status: u16,
+        content_type: Option<&str>,
+        body: &'static str,
+    ) -> (String, thread::JoinHandle<()>) {
+        let server = Server::http("127.0.0.1:0").expect("start server");
+        let addr = format!("http://{}", server.server_addr());
+        let body = body.to_string();
+        let content_type = content_type.map(str::to_string);
+        let join = thread::spawn(move || {
+            let request = server
+                .recv_timeout(Duration::from_secs(2))
+                .expect("receive upstream request")
+                .expect("request present");
+            let mut response = Response::from_string(body).with_status_code(StatusCode(status));
+            if let Some(content_type) = content_type.as_deref() {
+                response = response.with_header(
+                    tiny_http::Header::from_bytes(
+                        b"Content-Type".as_slice(),
+                        content_type.as_bytes(),
+                    )
+                    .expect("content-type header"),
+                );
+            }
+            response = response.with_header(
+                tiny_http::Header::from_bytes(
+                    b"Date".as_slice(),
+                    b"Tue, 31 Mar 2026 04:30:00 GMT".as_slice(),
+                )
+                .expect("date header"),
+            );
             request.respond(response).expect("respond");
         });
         (addr, join)
@@ -711,7 +799,7 @@ mod tests {
         let request_ctx = UpstreamRequestContext {
             request_path: "/v1/responses",
         };
-        let body = Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
+        let body = build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
         let upstream = super::super::transport::send_upstream_request(
             &client,
             &reqwest::Method::POST,
@@ -787,7 +875,7 @@ mod tests {
         let request_ctx = UpstreamRequestContext {
             request_path: "/v1/responses",
         };
-        let body = Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
+        let body = build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
         let upstream = send_test_upstream(
             &client,
             request_ctx,
@@ -856,7 +944,7 @@ mod tests {
         let request_ctx = UpstreamRequestContext {
             request_path: "/v1/responses",
         };
-        let body = Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
+        let body = build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello"}"#);
         let upstream = send_test_upstream(
             &client,
             request_ctx,
@@ -926,7 +1014,7 @@ mod tests {
             request_path: "/v1/responses",
         };
         let body =
-            Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+            build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
         let upstream = send_test_upstream(
             &client,
             request_ctx,
@@ -996,7 +1084,7 @@ mod tests {
             request_path: "/v1/responses",
         };
         let body =
-            Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+            build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
         let upstream = send_test_upstream(
             &client,
             request_ctx,
@@ -1093,7 +1181,7 @@ mod tests {
             request_path: "/v1/responses",
         };
         let body =
-            Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+            build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
         let upstream = send_test_upstream(
             &client,
             request_ctx,
@@ -1183,7 +1271,7 @@ mod tests {
             request_path: "/v1/responses",
         };
         let body =
-            Bytes::from_static(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+            build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
         let upstream = send_test_upstream(
             &client,
             request_ctx,
@@ -1223,6 +1311,167 @@ mod tests {
 
         join.join().expect("join server");
         assert_eq!(hit_count.load(Ordering::SeqCst), 2);
+        assert!(matches!(decision, PostRetryFlowDecision::Failover));
+    }
+
+    #[test]
+    fn streaming_incomplete_sse_without_content_type_retries_and_recovers() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-stream-incomplete-no-content-type", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let server = Server::http("127.0.0.1:0").expect("start server");
+        let addr = format!("http://{}", server.server_addr());
+        let hit_count = Arc::new(AtomicUsize::new(0));
+        let hit_count_thread = Arc::clone(&hit_count);
+        let join = thread::spawn(move || {
+            for index in 0..2 {
+                let request = server
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("receive upstream request")
+                    .expect("request present");
+                hit_count_thread.fetch_add(1, Ordering::SeqCst);
+                let body = if index == 0 {
+                    concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_retry_2\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n"
+                    )
+                } else {
+                    concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_retry_2\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n",
+                        "event: response.completed\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_retry_2\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n",
+                        "data: [DONE]\n\n"
+                    )
+                };
+                let response = Response::from_string(body).with_status_code(StatusCode(200));
+                request.respond(response).expect("respond");
+            }
+        });
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body =
+            build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            true,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
+        assert_eq!(hit_count.load(Ordering::SeqCst), 2);
+        match decision {
+            PostRetryFlowDecision::RespondUpstream(resp) => assert_eq!(resp.status(), 200),
+            _ => panic!("unexpected decision"),
+        }
+    }
+
+    #[test]
+    fn streaming_terminal_error_without_content_type_fails_over_before_delivery() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-stream-terminal-no-content-type", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_terminal_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"status\":500,\"error\":{\"type\":\"server_error\",\"code\":\"challenge_blocked\",\"message\":\"challenge blocked by upstream\"}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (addr, join) = spawn_optional_content_type_response_server(200, None, sse);
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body =
+            build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            true,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            true,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
         assert!(matches!(decision, PostRetryFlowDecision::Failover));
     }
 }

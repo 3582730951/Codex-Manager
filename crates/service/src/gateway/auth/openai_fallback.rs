@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 use reqwest::blocking::Client;
 use reqwest::Method;
@@ -21,13 +20,6 @@ fn force_connection_close(headers: &mut Vec<(String, String)>) {
     } else {
         headers.push(("Connection".to_string(), "close".to_string()));
     }
-}
-
-fn body_has_encrypted_content_hint(body: &[u8]) -> bool {
-    // Fast path: avoid JSON parsing unless we hit the recovery path.
-    std::str::from_utf8(body)
-        .ok()
-        .is_some_and(|text| text.contains("\"encrypted_content\""))
 }
 
 fn strip_encrypted_content_value(value: &mut Value) -> bool {
@@ -54,21 +46,21 @@ fn strip_encrypted_content_value(value: &mut Value) -> bool {
     }
 }
 
-fn strip_encrypted_content_from_body(body: &[u8]) -> Option<Vec<u8>> {
-    let mut value: Value = serde_json::from_slice(body).ok()?;
+fn strip_encrypted_content_from_payload(
+    body: &super::RequestPayload,
+) -> Result<Option<super::RequestPayload>, String> {
+    let mut value = body.read_json_value()?;
     if !strip_encrypted_content_value(&mut value) {
-        return None;
+        return Ok(None);
     }
-    serde_json::to_vec(&value).ok()
+    super::RequestPayload::from_json_value(&value).map(Some)
 }
 
-fn extract_prompt_cache_key(body: &[u8]) -> Option<String> {
+fn extract_prompt_cache_key(body: &super::RequestPayload) -> Option<String> {
     if body.is_empty() || body.len() > 64 * 1024 {
         return None;
     }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return None;
-    };
+    let value = body.read_json_value().ok()?;
     value
         .get("prompt_cache_key")
         .and_then(serde_json::Value::as_str)
@@ -87,7 +79,7 @@ pub(super) fn try_openai_fallback(
     method: &Method,
     request_path: &str,
     incoming_headers: &super::IncomingHeaderSnapshot,
-    body: &Bytes,
+    body: &super::RequestPayload,
     is_stream: bool,
     upstream_base: &str,
     account: &Account,
@@ -107,17 +99,15 @@ pub(super) fn try_openai_fallback(
     let strip_session_affinity =
         strip_session_affinity || incoming_headers.turn_state().is_some() || is_openai_api_target;
     let body_for_request =
-        if strip_session_affinity && body_has_encrypted_content_hint(body.as_ref()) {
-            strip_encrypted_content_from_body(body.as_ref())
-                .map(Bytes::from)
-                .unwrap_or_else(|| body.clone())
+        if strip_session_affinity && body.contains_bytes(br#""encrypted_content""#)? {
+            strip_encrypted_content_from_payload(body)?.unwrap_or_else(|| body.clone())
         } else {
             body.clone()
         };
     let prompt_cache_key = if strip_session_affinity {
         None
     } else {
-        extract_prompt_cache_key(body_for_request.as_ref())
+        extract_prompt_cache_key(&body_for_request)
     };
     let request_affinity = super::session_affinity::derive_outgoing_session_affinity(
         incoming_headers.session_id(),
@@ -180,21 +170,29 @@ pub(super) fn try_openai_fallback(
             upstream_base
         );
     }
-    let build_request = |http: &Client| {
+    let build_request = |http: &Client| -> Result<reqwest::blocking::RequestBuilder, String> {
         let mut builder = http.request(method.clone(), &url);
         for (name, value) in upstream_headers.iter() {
             builder = builder.header(name, value);
         }
         if !body_for_request.is_empty() {
-            builder = builder.body(body_for_request.clone());
+            if body_for_request.is_file_backed() {
+                let reader = body_for_request.open_blocking_reader()?;
+                builder = builder.body(reqwest::blocking::Body::sized(
+                    reader,
+                    body_for_request.len() as u64,
+                ));
+            } else {
+                builder = builder.body(body_for_request.read_all_bytes()?);
+            }
         }
-        builder
+        Ok(builder)
     };
-    let resp = match build_request(client).send() {
+    let resp = match build_request(client)?.send() {
         Ok(resp) => resp,
         Err(first_err) => {
             let fresh = super::fresh_upstream_client_for_account(account.id.as_str());
-            match build_request(&fresh).send() {
+            match build_request(&fresh)?.send() {
                 Ok(resp) => resp,
                 Err(second_err) => {
                     let duration_ms = super::duration_to_millis(attempt_started_at.elapsed());

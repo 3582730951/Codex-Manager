@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 
 use super::super::super::IncomingHeaderSnapshot;
@@ -31,7 +30,7 @@ pub(in super::super) struct UpstreamRequestSetup {
     pub(in super::super) has_sticky_fallback_session: bool,
     pub(in super::super) has_sticky_fallback_conversation: bool,
     pub(in super::super) has_body_encrypted_content: bool,
-    pub(in super::super) request_body_override: Option<Bytes>,
+    pub(in super::super) request_body_override: Option<crate::gateway::RequestPayload>,
     pub(in super::super) routing_state: RequestRoutingState,
     pub(in super::super) peer_runtime_key: Option<String>,
 }
@@ -81,7 +80,7 @@ pub(in super::super) fn prepare_request_setup(
     request_preflight: &ClientEntityRequestPreflight,
     has_prompt_cache_key: bool,
     incoming_headers: &IncomingHeaderSnapshot,
-    body: &bytes::Bytes,
+    body: &crate::gateway::RequestPayload,
     candidates: &mut Vec<(Account, Token)>,
     key_id: &str,
     platform_key_hash: &str,
@@ -105,7 +104,7 @@ pub(in super::super) fn prepare_request_setup(
         super::super::header_profile::derive_sticky_conversation_id_from_headers(incoming_headers)
             .is_some();
     let has_body_encrypted_content =
-        super::super::support::payload_rewrite::body_has_encrypted_content_hint(body.as_ref());
+        super::super::support::payload_rewrite::payload_has_encrypted_content_hint(body)?;
     let peer_runtime_key = request_preflight.trusted_peer_runtime_key.clone();
 
     let persistent_affinity = match request_preflight.mode {
@@ -206,17 +205,16 @@ pub(in super::super) fn prepare_request_setup(
                 conversation_binding.as_ref(),
             );
         let request_body_override = effective_thread_anchor.as_ref().map(|thread_anchor| {
-            Bytes::from(
-                super::super::super::apply_request_overrides_with_service_tier_and_forced_prompt_cache_key(
-                    path,
-                    body.to_vec(),
-                    None,
-                    None,
-                    None,
-                    Some(upstream_base.as_str()),
-                    Some(thread_anchor.as_str()),
-                ),
+            super::super::super::apply_request_overrides_payload_with_service_tier_and_forced_prompt_cache_key(
+                path,
+                body,
+                None,
+                None,
+                None,
+                Some(upstream_base.as_str()),
+                Some(thread_anchor.as_str()),
             )
+            .expect("conversation routing request body override should be serializable")
         });
         let conversation_routing =
             super::super::super::conversation_binding::prepare_conversation_routing(

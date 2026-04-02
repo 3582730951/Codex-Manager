@@ -1,25 +1,24 @@
-use bytes::Bytes;
 use codexmanager_core::storage::Account;
 use std::collections::HashMap;
 
-use super::super::support::payload_rewrite::strip_encrypted_content_from_body;
+use super::super::support::payload_rewrite::strip_encrypted_content_from_payload;
 use super::request_setup::UpstreamRequestSetup;
 
 #[derive(Default)]
 pub(in super::super) struct CandidateExecutionState {
-    stripped_body: Option<Bytes>,
-    rewritten_bodies: HashMap<String, Bytes>,
-    stripped_rewritten_bodies: HashMap<String, Bytes>,
+    stripped_body: Option<crate::gateway::RequestPayload>,
+    rewritten_bodies: HashMap<String, crate::gateway::RequestPayload>,
+    stripped_rewritten_bodies: HashMap<String, crate::gateway::RequestPayload>,
     first_candidate_account_scope: Option<String>,
 }
 
 impl CandidateExecutionState {
     fn base_body_for_attempt<'a>(
         &self,
-        body: &'a Bytes,
+        body: &'a crate::gateway::RequestPayload,
         setup: &'a UpstreamRequestSetup,
-        body_override: Option<&'a Bytes>,
-    ) -> &'a Bytes {
+        body_override: Option<&'a crate::gateway::RequestPayload>,
+    ) -> &'a crate::gateway::RequestPayload {
         body_override
             .or(setup.request_body_override.as_ref())
             .unwrap_or(body)
@@ -79,12 +78,12 @@ impl CandidateExecutionState {
     fn rewrite_body_for_model(
         &mut self,
         path: &str,
-        body: &Bytes,
+        body: &crate::gateway::RequestPayload,
         setup: &UpstreamRequestSetup,
-        body_override: Option<&Bytes>,
+        body_override: Option<&crate::gateway::RequestPayload>,
         model_override: Option<&str>,
         prompt_cache_key: Option<&str>,
-    ) -> Bytes {
+    ) -> crate::gateway::RequestPayload {
         let base_body = self.base_body_for_attempt(body, setup, body_override);
         let Some(cache_key) = Self::rewrite_cache_key(model_override, prompt_cache_key) else {
             return base_body.clone();
@@ -93,16 +92,16 @@ impl CandidateExecutionState {
         self.rewritten_bodies
             .entry(cache_key)
             .or_insert_with(|| {
-                Bytes::from(
-                    super::super::super::apply_request_overrides_with_forced_prompt_cache_key(
-                        path,
-                        base_body.to_vec(),
-                        model_override,
-                        None,
-                        Some(setup.upstream_base.as_str()),
-                        prompt_cache_key,
-                    ),
+                super::super::super::apply_request_overrides_payload_with_service_tier_and_forced_prompt_cache_key(
+                    path,
+                    base_body,
+                    model_override,
+                    None,
+                    None,
+                    Some(setup.upstream_base.as_str()),
+                    prompt_cache_key,
                 )
+                .expect("candidate payload rewrite should remain serializable")
             })
             .clone()
     }
@@ -110,13 +109,13 @@ impl CandidateExecutionState {
     pub(in super::super) fn body_for_attempt(
         &mut self,
         path: &str,
-        body: &Bytes,
+        body: &crate::gateway::RequestPayload,
         strip_session_affinity: bool,
         setup: &UpstreamRequestSetup,
-        body_override: Option<&Bytes>,
+        body_override: Option<&crate::gateway::RequestPayload>,
         model_override: Option<&str>,
         prompt_cache_key: Option<&str>,
-    ) -> Bytes {
+    ) -> crate::gateway::RequestPayload {
         let rewritten = self.rewrite_body_for_model(
             path,
             body,
@@ -131,15 +130,15 @@ impl CandidateExecutionState {
                     .stripped_rewritten_bodies
                     .entry(cache_key)
                     .or_insert_with(|| {
-                        strip_encrypted_content_from_body(rewritten.as_ref())
-                            .map(Bytes::from)
+                        strip_encrypted_content_from_payload(&rewritten)
+                            .expect("candidate stripped payload should remain readable")
                             .unwrap_or_else(|| rewritten.clone())
                     })
                     .clone();
             }
             if self.stripped_body.is_none() {
-                self.stripped_body = strip_encrypted_content_from_body(rewritten.as_ref())
-                    .map(Bytes::from)
+                self.stripped_body = strip_encrypted_content_from_payload(&rewritten)
+                    .expect("candidate stripped payload should remain readable")
                     .or_else(|| Some(rewritten.clone()));
             }
             self.stripped_body
@@ -154,12 +153,12 @@ impl CandidateExecutionState {
     pub(in super::super) fn retry_body(
         &mut self,
         path: &str,
-        body: &Bytes,
+        body: &crate::gateway::RequestPayload,
         setup: &UpstreamRequestSetup,
-        body_override: Option<&Bytes>,
+        body_override: Option<&crate::gateway::RequestPayload>,
         model_override: Option<&str>,
         prompt_cache_key: Option<&str>,
-    ) -> Bytes {
+    ) -> crate::gateway::RequestPayload {
         let rewritten = self.rewrite_body_for_model(
             path,
             body,
@@ -174,15 +173,15 @@ impl CandidateExecutionState {
                     .stripped_rewritten_bodies
                     .entry(cache_key)
                     .or_insert_with(|| {
-                        strip_encrypted_content_from_body(rewritten.as_ref())
-                            .map(Bytes::from)
+                        strip_encrypted_content_from_payload(&rewritten)
+                            .expect("candidate stripped payload should remain readable")
                             .unwrap_or_else(|| rewritten.clone())
                     })
                     .clone();
             }
             if self.stripped_body.is_none() {
-                self.stripped_body = strip_encrypted_content_from_body(rewritten.as_ref())
-                    .map(Bytes::from)
+                self.stripped_body = strip_encrypted_content_from_payload(&rewritten)
+                    .expect("candidate stripped payload should remain readable")
                     .or_else(|| Some(rewritten.clone()));
             }
             self.stripped_body
@@ -198,12 +197,14 @@ impl CandidateExecutionState {
 #[cfg(test)]
 mod tests {
     use super::CandidateExecutionState;
-    use bytes::Bytes;
 
     #[test]
     fn body_for_attempt_rewrites_model_override() {
         let mut state = CandidateExecutionState::default();
-        let body = Bytes::from_static(br#"{"model":"gpt-5.4","input":"hello"}"#);
+        let body = crate::gateway::RequestPayload::from_vec(
+            br#"{"model":"gpt-5.4","input":"hello"}"#.to_vec(),
+        )
+        .expect("build request payload");
         let setup = super::super::request_setup::UpstreamRequestSetup {
             upstream_base: "https://chatgpt.com/backend-api/codex".to_string(),
             upstream_fallback_base: None,
@@ -230,8 +231,7 @@ mod tests {
             Some("gpt-5.2"),
             Some("thread-2"),
         );
-        let value: serde_json::Value =
-            serde_json::from_slice(actual.as_ref()).expect("parse rewritten body");
+        let value = actual.read_json_value().expect("parse rewritten body");
 
         assert_eq!(
             value.get("model").and_then(serde_json::Value::as_str),

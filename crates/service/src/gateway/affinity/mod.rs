@@ -19,7 +19,8 @@ pub(crate) use routing::{
     acquire_affinity_lock, acquire_conversation_lock, build_attempt_replay_body,
     clear_account_hard_quota_exhaustion, finalize_affinity_success, is_hard_quota_error_message,
     mark_account_hard_quota_exhausted, record_affinity_attempt_feedback,
-    resolve_attempt_thread_assignment, resolve_enforced_routing, AffinityRoutingResolution,
+    resolve_attempt_thread_assignment, resolve_enforced_routing,
+    resolution_with_session_reset_recovery, AffinityRoutingResolution,
 };
 
 const ENV_AFFINITY_ROUTING_MODE: &str = "CODEXMANAGER_AFFINITY_ROUTING_MODE";

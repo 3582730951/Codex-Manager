@@ -638,14 +638,14 @@ pub(crate) fn inspect_non_stream_sse_payload(payload: &[u8]) -> NonStreamSseInsp
     }
 }
 
-pub(in super::super) fn collect_non_stream_json_from_sse_bytes(
+pub(crate) fn collect_non_stream_json_from_sse_bytes(
     payload: &[u8],
 ) -> (Option<Vec<u8>>, UpstreamResponseUsage) {
     let inspection = inspect_non_stream_sse_payload(payload);
     (inspection.synthesized_body, inspection.usage)
 }
 
-pub(in super::super) fn looks_like_sse_payload(body: &[u8]) -> bool {
+pub(crate) fn looks_like_sse_payload(body: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(body) else {
         return false;
     };

@@ -33,6 +33,8 @@ mod request_gate;
 mod request_helpers;
 #[path = "observability/request_log.rs"]
 mod request_log;
+#[path = "request/request_payload.rs"]
+mod request_payload;
 #[path = "request/request_rewrite.rs"]
 mod request_rewrite;
 #[path = "routing/route_hint.rs"]
@@ -69,14 +71,14 @@ use protocol_adapter::{
 };
 pub(super) use request_helpers::{
     is_html_content_type, is_upstream_challenge_response, normalize_models_path,
-    parse_request_metadata,
+    parse_request_metadata_payload,
 };
 #[cfg(test)]
 use request_helpers::{should_drop_incoming_header, should_drop_incoming_header_for_failover};
+pub(crate) use request_payload::{cleanup_request_spool_dir, RequestPayload};
 use request_rewrite::{
-    apply_request_overrides_with_forced_prompt_cache_key,
-    apply_request_overrides_with_service_tier_and_forced_prompt_cache_key,
-    apply_request_overrides_with_service_tier_and_prompt_cache_key, compute_upstream_url,
+    apply_request_overrides_payload_with_service_tier_and_forced_prompt_cache_key,
+    apply_request_overrides_payload_with_service_tier_and_prompt_cache_key, compute_upstream_url,
 };
 #[cfg(test)]
 use upstream::config::normalize_upstream_base_url;
@@ -106,6 +108,22 @@ pub(crate) fn record_http_queue_dequeue(is_stream_queue: bool) {
 pub(crate) fn record_http_queue_enqueue_failure() {
     metrics::record_http_queue_enqueue_failure();
 }
+
+pub(crate) fn record_gateway_request_payload(bytes: usize, spilled: bool) {
+    metrics::record_gateway_request_payload(bytes, spilled);
+}
+
+pub(crate) fn record_gateway_preprocess_duration(duration_ms: u64) {
+    metrics::record_gateway_preprocess_duration(duration_ms);
+}
+
+pub(crate) fn record_gateway_stream_pump_frame() {
+    metrics::record_gateway_stream_pump_frame();
+}
+
+pub(crate) fn record_gateway_stream_pump_disconnect() {
+    metrics::record_gateway_stream_pump_disconnect();
+}
 #[cfg(test)]
 use cooldown::cooldown_reason_for_status;
 use cooldown::{
@@ -117,7 +135,7 @@ pub(super) use failover::should_failover_after_refresh;
 use failover::should_failover_from_cached_snapshot;
 use http_bridge::respond_with_upstream;
 pub(crate) use http_bridge::{
-    inspect_non_stream_sse_payload, summarize_upstream_error_hint_from_body,
+    inspect_non_stream_sse_payload, looks_like_sse_payload, summarize_upstream_error_hint_from_body,
 };
 pub(crate) fn extract_identity_error_code_from_headers(
     headers: &reqwest::header::HeaderMap,
@@ -222,11 +240,18 @@ use route_hint::apply_route_strategy;
 use route_quality::record_route_quality as record_route_quality_inner;
 pub(crate) use runtime_config::fresh_upstream_client;
 pub(crate) use runtime_config::front_proxy_max_body_bytes;
+pub(crate) use runtime_config::request_spill_threshold_bytes;
 use runtime_config::{
     account_max_inflight_limit, fresh_direct_upstream_client, fresh_upstream_client_for_account,
     gateway_account_proxy_client, gateway_account_proxy_url, trace_body_preview_max_bytes,
     upstream_client, upstream_client_for_account, upstream_stream_timeout, upstream_total_timeout,
     DEFAULT_GATEWAY_DEBUG,
+};
+pub(crate) use runtime_config::{
+    current_stream_pump_channel_capacity, current_stream_pump_thread_stack_kb,
+    experimental_async_request_log_enabled, experimental_capped_http_workers_enabled,
+    experimental_prepared_request_enabled, experimental_sse_frame_pump_v2_enabled,
+    request_compression_min_bytes,
 };
 use selection::collect_gateway_candidates;
 #[cfg(test)]

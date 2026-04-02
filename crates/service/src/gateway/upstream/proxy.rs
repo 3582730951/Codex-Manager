@@ -102,9 +102,15 @@ pub(in super::super) fn proxy_validated_request(
         client_is_stream,
         protocol_type.as_str(),
     );
-    super::super::trace_log::log_request_body_preview(trace_id.as_str(), body.as_ref());
+    if let Ok(body_preview) = body.read_prefix_bytes(super::super::trace_body_preview_max_bytes()) {
+        let preview_slice: &[u8] = body_preview.as_ref();
+        super::super::trace_log::log_request_body_preview(trace_id.as_str(), preview_slice);
+    }
 
     if rotation_strategy == ROTATION_AGGREGATE_API {
+        let body_bytes = body
+            .read_all_bytes()
+            .map_err(|err| format!("read aggregate request body failed: {err}"))?;
         let aggregate_api_candidates =
             match super::protocol::aggregate_api::resolve_aggregate_api_rotation_candidates(
                 &storage,
@@ -168,7 +174,7 @@ pub(in super::super) fn proxy_validated_request(
             path.as_str(),
             request_method.as_str(),
             &method,
-            &body,
+            &body_bytes,
             client_is_stream,
             super::super::ResponseAdapter::Passthrough,
             model_for_log.as_deref(),
@@ -180,6 +186,9 @@ pub(in super::super) fn proxy_validated_request(
     }
 
     if protocol_type == PROTOCOL_AZURE_OPENAI {
+        let body_bytes = body
+            .read_all_bytes()
+            .map_err(|err| format!("read azure request body failed: {err}"))?;
         return super::protocol::azure_openai::proxy_azure_request(
             request,
             &storage,
@@ -189,7 +198,7 @@ pub(in super::super) fn proxy_validated_request(
             path.as_str(),
             request_method.as_str(),
             &method,
-            &body,
+            &body_bytes,
             upstream_is_stream,
             response_adapter,
             &tool_name_restore_map,

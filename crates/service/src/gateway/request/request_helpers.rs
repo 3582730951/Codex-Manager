@@ -11,6 +11,7 @@ pub(crate) struct ParsedRequestMetadata {
     pub(crate) has_prompt_cache_key: bool,
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_request_metadata(body: &[u8]) -> ParsedRequestMetadata {
     if body.is_empty() {
         return ParsedRequestMetadata::default();
@@ -18,6 +19,22 @@ pub(crate) fn parse_request_metadata(body: &[u8]) -> ParsedRequestMetadata {
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
         return ParsedRequestMetadata::default();
     };
+    parse_request_metadata_value(&value)
+}
+
+pub(crate) fn parse_request_metadata_payload(
+    payload: &crate::gateway::RequestPayload,
+) -> ParsedRequestMetadata {
+    if payload.is_empty() {
+        return ParsedRequestMetadata::default();
+    }
+    let Ok(value) = payload.read_json_value() else {
+        return ParsedRequestMetadata::default();
+    };
+    parse_request_metadata_value(&value)
+}
+
+fn parse_request_metadata_value(value: &Value) -> ParsedRequestMetadata {
     let Some(object) = value.as_object() else {
         return ParsedRequestMetadata::default();
     };

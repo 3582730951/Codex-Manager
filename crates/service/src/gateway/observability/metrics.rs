@@ -24,9 +24,16 @@ static HTTP_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static HTTP_STREAM_QUEUE_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static HTTP_STREAM_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static HTTP_QUEUE_ENQUEUE_FAILURES: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REQUEST_BODY_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static GATEWAY_REQUEST_BODY_SPILLED_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REQUEST_BODY_SPILLED_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static GATEWAY_PREPROCESS_DURATION_MS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static GATEWAY_PREPROCESS_COUNT: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPT_ERRORS: AtomicUsize = AtomicUsize::new(0);
 static GATEWAY_UPSTREAM_ATTEMPT_DURATION_MS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static GATEWAY_STREAM_PUMP_FRAMES_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_STREAM_PUMP_DISCONNECTS_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct GatewayRequestLabelKey {
@@ -56,9 +63,16 @@ pub(crate) struct GatewayMetricsSnapshot {
     pub http_stream_queue_capacity: usize,
     pub http_stream_queue_depth: usize,
     pub http_queue_enqueue_failures: usize,
+    pub gateway_request_body_bytes_total: u64,
+    pub gateway_request_body_spilled_total: usize,
+    pub gateway_request_body_spilled_bytes_total: u64,
+    pub gateway_preprocess_duration_ms_total: u64,
+    pub gateway_preprocess_count: usize,
     pub gateway_upstream_attempt_duration_ms_total: u64,
     pub gateway_upstream_attempts: usize,
     pub gateway_upstream_attempt_errors: usize,
+    pub gateway_stream_pump_frames_total: usize,
+    pub gateway_stream_pump_disconnects_total: usize,
 }
 
 pub(crate) struct GatewayRequestGuard;
@@ -153,12 +167,33 @@ pub(crate) fn record_http_queue_enqueue_failure() {
     HTTP_QUEUE_ENQUEUE_FAILURES.fetch_add(1, Ordering::Relaxed);
 }
 
+pub(crate) fn record_gateway_request_payload(bytes: usize, spilled: bool) {
+    GATEWAY_REQUEST_BODY_BYTES_TOTAL.fetch_add(bytes as u64, Ordering::Relaxed);
+    if spilled {
+        GATEWAY_REQUEST_BODY_SPILLED_TOTAL.fetch_add(1, Ordering::Relaxed);
+        GATEWAY_REQUEST_BODY_SPILLED_BYTES_TOTAL.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn record_gateway_preprocess_duration(duration_ms: u64) {
+    GATEWAY_PREPROCESS_COUNT.fetch_add(1, Ordering::Relaxed);
+    GATEWAY_PREPROCESS_DURATION_MS_TOTAL.fetch_add(duration_ms, Ordering::Relaxed);
+}
+
 pub(crate) fn record_gateway_upstream_attempt(duration_ms: u64, failed: bool) {
     GATEWAY_UPSTREAM_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
     GATEWAY_UPSTREAM_ATTEMPT_DURATION_MS_TOTAL.fetch_add(duration_ms, Ordering::Relaxed);
     if failed {
         GATEWAY_UPSTREAM_ATTEMPT_ERRORS.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+pub(crate) fn record_gateway_stream_pump_frame() {
+    GATEWAY_STREAM_PUMP_FRAMES_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_gateway_stream_pump_disconnect() {
+    GATEWAY_STREAM_PUMP_DISCONNECTS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn record_gateway_request_outcome(
@@ -208,10 +243,21 @@ pub(crate) fn gateway_metrics_snapshot() -> GatewayMetricsSnapshot {
         http_stream_queue_capacity: HTTP_STREAM_QUEUE_CAPACITY.load(Ordering::Relaxed),
         http_stream_queue_depth: HTTP_STREAM_QUEUE_DEPTH.load(Ordering::Relaxed),
         http_queue_enqueue_failures: HTTP_QUEUE_ENQUEUE_FAILURES.load(Ordering::Relaxed),
+        gateway_request_body_bytes_total: GATEWAY_REQUEST_BODY_BYTES_TOTAL.load(Ordering::Relaxed),
+        gateway_request_body_spilled_total: GATEWAY_REQUEST_BODY_SPILLED_TOTAL
+            .load(Ordering::Relaxed),
+        gateway_request_body_spilled_bytes_total: GATEWAY_REQUEST_BODY_SPILLED_BYTES_TOTAL
+            .load(Ordering::Relaxed),
+        gateway_preprocess_duration_ms_total: GATEWAY_PREPROCESS_DURATION_MS_TOTAL
+            .load(Ordering::Relaxed),
+        gateway_preprocess_count: GATEWAY_PREPROCESS_COUNT.load(Ordering::Relaxed),
         gateway_upstream_attempt_duration_ms_total: GATEWAY_UPSTREAM_ATTEMPT_DURATION_MS_TOTAL
             .load(Ordering::Relaxed),
         gateway_upstream_attempts: GATEWAY_UPSTREAM_ATTEMPTS.load(Ordering::Relaxed),
         gateway_upstream_attempt_errors: GATEWAY_UPSTREAM_ATTEMPT_ERRORS.load(Ordering::Relaxed),
+        gateway_stream_pump_frames_total: GATEWAY_STREAM_PUMP_FRAMES_TOTAL.load(Ordering::Relaxed),
+        gateway_stream_pump_disconnects_total: GATEWAY_STREAM_PUMP_DISCONNECTS_TOTAL
+            .load(Ordering::Relaxed),
     }
 }
 
@@ -240,9 +286,16 @@ codexmanager_http_queue_depth {}\n\
 codexmanager_http_stream_queue_capacity {}\n\
 codexmanager_http_stream_queue_depth {}\n\
 codexmanager_http_queue_enqueue_failures_total {}\n\
+codexmanager_gateway_request_body_bytes_total {}\n\
+codexmanager_gateway_request_body_spilled_total {}\n\
+codexmanager_gateway_request_body_spilled_bytes_total {}\n\
+codexmanager_gateway_preprocess_duration_milliseconds_total {}\n\
+codexmanager_gateway_preprocess_duration_milliseconds_count {}\n\
 codexmanager_gateway_upstream_attempt_duration_milliseconds_total {}\n\
 codexmanager_gateway_upstream_attempt_duration_milliseconds_count {}\n\
 codexmanager_gateway_upstream_attempt_errors_total {}\n\
+codexmanager_gateway_stream_pump_frames_total {}\n\
+codexmanager_gateway_stream_pump_disconnects_total {}\n\
 {}",
         m.total_requests,
         m.active_requests,
@@ -265,9 +318,16 @@ codexmanager_gateway_upstream_attempt_errors_total {}\n\
         m.http_stream_queue_capacity,
         m.http_stream_queue_depth,
         m.http_queue_enqueue_failures,
+        m.gateway_request_body_bytes_total,
+        m.gateway_request_body_spilled_total,
+        m.gateway_request_body_spilled_bytes_total,
+        m.gateway_preprocess_duration_ms_total,
+        m.gateway_preprocess_count,
         m.gateway_upstream_attempt_duration_ms_total,
         m.gateway_upstream_attempts,
         m.gateway_upstream_attempt_errors,
+        m.gateway_stream_pump_frames_total,
+        m.gateway_stream_pump_disconnects_total,
         labeled,
     )
 }

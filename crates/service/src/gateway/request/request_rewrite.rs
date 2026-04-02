@@ -65,6 +65,39 @@ fn resolve_retain_fn(path: &str, use_codex_responses_compat: bool) -> Option<Ret
     None
 }
 
+fn should_skip_request_rewrite(
+    path: &str,
+    model_slug: Option<&str>,
+    reasoning_effort: Option<&str>,
+    service_tier: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    force_prompt_cache_key: bool,
+    use_codex_responses_compat: bool,
+) -> bool {
+    let has_explicit_override = model_slug
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+        || reasoning_effort
+            .and_then(crate::reasoning_effort::normalize_reasoning_effort)
+            .is_some()
+        || service_tier
+            .and_then(crate::apikey::service_tier::normalize_service_tier)
+            .is_some()
+        || prompt_cache_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        || force_prompt_cache_key;
+    if has_explicit_override || super::strict_request_param_allowlist_enabled() {
+        return false;
+    }
+    if use_codex_responses_compat {
+        return false;
+    }
+    resolve_retain_fn(path, use_codex_responses_compat).is_none()
+}
+
 fn is_allowed_field(path: &str, key: &str, retain_fn: RetainFn) -> bool {
     let mut one = serde_json::Map::new();
     one.insert(key.to_string(), Value::Null);
@@ -312,6 +345,7 @@ pub(super) fn apply_request_overrides_with_service_tier_and_prompt_cache_key(
     )
 }
 
+#[allow(dead_code)]
 pub(super) fn apply_request_overrides_with_forced_prompt_cache_key(
     path: &str,
     body: Vec<u8>,
@@ -331,6 +365,7 @@ pub(super) fn apply_request_overrides_with_forced_prompt_cache_key(
     )
 }
 
+#[allow(dead_code)]
 pub(super) fn apply_request_overrides_with_service_tier_and_forced_prompt_cache_key(
     path: &str,
     body: Vec<u8>,
@@ -352,6 +387,241 @@ pub(super) fn apply_request_overrides_with_service_tier_and_forced_prompt_cache_
     )
 }
 
+pub(super) fn apply_request_overrides_payload_with_service_tier_and_prompt_cache_key(
+    path: &str,
+    body: &crate::gateway::RequestPayload,
+    model_slug: Option<&str>,
+    reasoning_effort: Option<&str>,
+    service_tier: Option<&str>,
+    upstream_base_url: Option<&str>,
+    prompt_cache_key: Option<&str>,
+) -> Result<crate::gateway::RequestPayload, String> {
+    apply_request_overrides_payload_with_prompt_cache_key_mode(
+        path,
+        body,
+        model_slug,
+        reasoning_effort,
+        upstream_base_url,
+        prompt_cache_key,
+        false,
+        service_tier,
+    )
+}
+
+pub(super) fn apply_request_overrides_payload_with_service_tier_and_forced_prompt_cache_key(
+    path: &str,
+    body: &crate::gateway::RequestPayload,
+    model_slug: Option<&str>,
+    reasoning_effort: Option<&str>,
+    service_tier: Option<&str>,
+    upstream_base_url: Option<&str>,
+    prompt_cache_key: Option<&str>,
+) -> Result<crate::gateway::RequestPayload, String> {
+    apply_request_overrides_payload_with_prompt_cache_key_mode(
+        path,
+        body,
+        model_slug,
+        reasoning_effort,
+        upstream_base_url,
+        prompt_cache_key,
+        true,
+        service_tier,
+    )
+}
+
+fn apply_request_overrides_payload_with_prompt_cache_key_mode(
+    path: &str,
+    body: &crate::gateway::RequestPayload,
+    model_slug: Option<&str>,
+    reasoning_effort: Option<&str>,
+    upstream_base_url: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    force_prompt_cache_key: bool,
+    service_tier: Option<&str>,
+) -> Result<crate::gateway::RequestPayload, String> {
+    let use_codex_responses_compat = should_apply_codex_responses_compat(path, upstream_base_url);
+    if should_skip_request_rewrite(
+        path,
+        model_slug,
+        reasoning_effort,
+        service_tier,
+        prompt_cache_key,
+        force_prompt_cache_key,
+        use_codex_responses_compat,
+    ) {
+        return Ok(body.clone());
+    }
+    let normalized_model = model_slug.map(str::trim).filter(|v| !v.is_empty());
+    let normalized_reasoning = reasoning_effort
+        .and_then(crate::reasoning_effort::normalize_reasoning_effort)
+        .map(str::to_string);
+    let normalized_service_tier = service_tier
+        .and_then(crate::apikey::service_tier::normalize_service_tier)
+        .map(str::to_string);
+    if body.is_empty() {
+        return Ok(body.clone());
+    }
+
+    if let Ok(mut payload) = body.read_json_value() {
+        if let Some(obj) = payload.as_object_mut() {
+            let mut changed = false;
+            let mut dropped_keys = Vec::new();
+
+            if let Some(model) = normalized_model {
+                obj.insert("model".to_string(), Value::String(model.to_string()));
+                changed = true;
+            }
+
+            if chat_completions::normalize_responses_payload(path, obj) {
+                changed = true;
+            }
+
+            if let Some(level) = normalized_reasoning.as_deref() {
+                if responses::apply_reasoning_override(path, obj, Some(level)) {
+                    changed = true;
+                }
+                if chat_completions::apply_reasoning_override(path, obj, Some(level)) {
+                    changed = true;
+                }
+            }
+
+            if let Some(service_tier) = normalized_service_tier.as_deref() {
+                obj.insert(
+                    "service_tier".to_string(),
+                    Value::String(service_tier.to_string()),
+                );
+                changed = true;
+            }
+
+            if chat_completions::ensure_reasoning_effort(path, obj) {
+                changed = true;
+            }
+            if chat_completions::ensure_stream_usage_override(path, obj) {
+                changed = true;
+            }
+
+            if super::strict_request_param_allowlist_enabled() {
+                dropped_keys.extend(chat_completions::retain_official_fields(path, obj));
+                if !use_codex_responses_compat {
+                    dropped_keys.extend(responses::retain_official_fields(path, obj));
+                }
+            }
+
+            if use_codex_responses_compat {
+                if responses::normalize_dynamic_tools_to_tools(path, obj) {
+                    changed = true;
+                }
+                if responses::ensure_input_list(path, obj) {
+                    changed = true;
+                }
+                if responses::ensure_tools_list(path, obj) {
+                    changed = true;
+                }
+                if responses::ensure_parallel_tool_calls_bool(path, obj) {
+                    changed = true;
+                }
+                if !responses::is_compact_path(path) {
+                    let had_stream_passthrough = obj.contains_key("stream_passthrough");
+                    let stream_passthrough = responses::take_stream_passthrough_flag(path, obj);
+                    if had_stream_passthrough {
+                        changed = true;
+                    }
+                    if !stream_passthrough && responses::ensure_stream_true(path, obj) {
+                        changed = true;
+                    }
+                    if responses::ensure_store_false(path, obj) {
+                        changed = true;
+                    }
+                    if responses::ensure_tool_choice_auto(path, obj) {
+                        changed = true;
+                    }
+                    if responses::normalize_service_tier(path, obj) {
+                        changed = true;
+                    }
+                    if responses::ensure_include_list(path, obj) {
+                        changed = true;
+                    }
+                    if responses::ensure_reasoning_include(path, obj) {
+                        changed = true;
+                    }
+                    let existing_prompt_cache_key = obj
+                        .get("prompt_cache_key")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let prompt_cache_key_decision =
+                        request_rewrite_prompt_cache::resolve_prompt_cache_key_rewrite(
+                            existing_prompt_cache_key.as_deref(),
+                            prompt_cache_key,
+                            force_prompt_cache_key,
+                        );
+                    if responses::ensure_prompt_cache_key(
+                        path,
+                        obj,
+                        prompt_cache_key,
+                        force_prompt_cache_key,
+                    ) {
+                        changed = true;
+                    }
+                    log::debug!(
+                        "event=gateway_prompt_cache_key_summary path={} source={} force_override={} changed={} codex_compat={} compact={} final_present={}",
+                        path,
+                        prompt_cache_key_decision.source.as_str(),
+                        if force_prompt_cache_key { "true" } else { "false" },
+                        if prompt_cache_key_decision.changed { "true" } else { "false" },
+                        if use_codex_responses_compat { "true" } else { "false" },
+                        if responses::is_compact_path(path) { "true" } else { "false" },
+                        if obj.get("prompt_cache_key").and_then(Value::as_str).is_some() {
+                            "true"
+                        } else {
+                            "false"
+                        },
+                    );
+                }
+                if responses::ensure_instructions(path, obj) {
+                    changed = true;
+                }
+                dropped_keys.extend(responses::retain_codex_fields(path, obj));
+            }
+
+            if !dropped_keys.is_empty() {
+                dropped_keys.sort_unstable();
+                dropped_keys.dedup();
+                changed = true;
+                log::debug!(
+                    "event=gateway_request_param_filtered path={} dropped_keys={}",
+                    path,
+                    dropped_keys.join(",")
+                );
+            }
+
+            if !changed {
+                return Ok(body.clone());
+            }
+            return crate::gateway::RequestPayload::from_json_value(&payload);
+        }
+    }
+
+    if !super::strict_request_param_allowlist_enabled() {
+        return Ok(body.clone());
+    }
+
+    let raw = body.read_all_bytes()?;
+    let rewritten = apply_request_overrides_with_prompt_cache_key_mode(
+        path,
+        raw.to_vec(),
+        model_slug,
+        reasoning_effort,
+        upstream_base_url,
+        prompt_cache_key,
+        force_prompt_cache_key,
+        service_tier,
+    );
+    if rewritten.as_slice() == raw.as_ref() {
+        return Ok(body.clone());
+    }
+    crate::gateway::RequestPayload::from_vec(rewritten)
+}
+
 fn apply_request_overrides_with_prompt_cache_key_mode(
     path: &str,
     body: Vec<u8>,
@@ -363,6 +633,17 @@ fn apply_request_overrides_with_prompt_cache_key_mode(
     service_tier: Option<&str>,
 ) -> Vec<u8> {
     let use_codex_responses_compat = should_apply_codex_responses_compat(path, upstream_base_url);
+    if should_skip_request_rewrite(
+        path,
+        model_slug,
+        reasoning_effort,
+        service_tier,
+        prompt_cache_key,
+        force_prompt_cache_key,
+        use_codex_responses_compat,
+    ) {
+        return body;
+    }
     let normalized_model = model_slug.map(str::trim).filter(|v| !v.is_empty());
     let normalized_reasoning = reasoning_effort
         .and_then(crate::reasoning_effort::normalize_reasoning_effort)

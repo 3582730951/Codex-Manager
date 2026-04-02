@@ -12,7 +12,7 @@ pub(super) use output_text::{
 pub(super) use output_text::{output_text_limit_bytes, OUTPUT_TEXT_TRUNCATED_MARKER};
 pub(crate) use output_text::{DeliveryState, UpstreamCompletionState};
 pub(crate) use sse_aggregate::inspect_non_stream_sse_payload;
-pub(super) use sse_aggregate::{collect_non_stream_json_from_sse_bytes, looks_like_sse_payload};
+pub(crate) use sse_aggregate::{collect_non_stream_json_from_sse_bytes, looks_like_sse_payload};
 #[cfg(test)]
 pub(super) use sse_frame::parse_usage_from_sse_frame;
 pub(super) use sse_frame::{

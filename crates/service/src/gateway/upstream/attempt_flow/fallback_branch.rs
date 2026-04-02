@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
@@ -198,7 +197,7 @@ pub(super) fn handle_openai_fallback_branch<F>(
     storage: &Storage,
     method: &reqwest::Method,
     incoming_headers: &super::super::super::IncomingHeaderSnapshot,
-    body: &Bytes,
+    body: &crate::gateway::RequestPayload,
     is_stream: bool,
     upstream_base: &str,
     path: &str,

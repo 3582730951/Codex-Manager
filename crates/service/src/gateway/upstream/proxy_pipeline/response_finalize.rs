@@ -131,7 +131,7 @@ pub(super) fn finalize_upstream_response(
     inflight_guard: super::super::super::AccountInFlightGuard,
     context: &GatewayUpstreamExecutionContext<'_>,
     account_id: &str,
-    request_body: &[u8],
+    request_body: &crate::gateway::RequestPayload,
     last_attempt_url: Option<&str>,
     last_attempt_error: Option<&str>,
     response_adapter: super::super::super::ResponseAdapter,
@@ -321,12 +321,24 @@ pub(super) fn finalize_upstream_response(
         if bridge_ok && status_for_log < 400 {
             let response_adapter_label = format!("{response_adapter:?}");
             if let Some(completed_response_body) = bridge.completed_response_body.as_deref() {
+                let request_body_bytes = match request_body.read_all_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        log::warn!(
+                            "event=gateway_affinity_finalize_skipped trace_id={} account_id={} reason=request_body_read_failed err={}",
+                            trace_id,
+                            account_id,
+                            err
+                        );
+                        return Ok(());
+                    }
+                };
                 if let Err(err) = super::super::super::affinity::finalize_affinity_success(
                     context.storage(),
                     resolution,
                     context.platform_key_hash(),
                     account_id,
-                    request_body,
+                    request_body_bytes.as_ref(),
                     Some(completed_response_body),
                     response_adapter_label.as_str(),
                     context.protocol_type(),

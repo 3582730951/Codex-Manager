@@ -98,6 +98,19 @@ pub(super) fn current_app_settings_value(
     let upstream_proxy_url = crate::gateway::current_upstream_proxy_url();
     let upstream_stream_timeout_ms = current_gateway_upstream_stream_timeout_ms();
     let sse_keepalive_interval_ms = current_gateway_sse_keepalive_interval_ms();
+    let front_proxy_max_body_bytes = crate::gateway::front_proxy_max_body_bytes();
+    let request_spill_threshold_bytes = crate::gateway::request_spill_threshold_bytes();
+    let request_compression_min_bytes = crate::gateway::request_compression_min_bytes();
+    let stream_pump_channel_capacity = crate::gateway::current_stream_pump_channel_capacity();
+    let stream_pump_thread_stack_kb = crate::gateway::current_stream_pump_thread_stack_kb();
+    let experimental_prepared_request_enabled =
+        crate::gateway::experimental_prepared_request_enabled();
+    let experimental_async_request_log_enabled =
+        crate::gateway::experimental_async_request_log_enabled();
+    let experimental_sse_frame_pump_v2_enabled =
+        crate::gateway::experimental_sse_frame_pump_v2_enabled();
+    let experimental_capped_http_workers_enabled =
+        crate::gateway::experimental_capped_http_workers_enabled();
     let background_tasks_raw = serde_json::to_string(&background_tasks)
         .map_err(|err| format!("serialize background tasks failed: {err}"))?;
     let env_overrides = current_env_overrides();
@@ -166,6 +179,15 @@ pub(super) fn current_app_settings_value(
         "upstreamProxyUrl": upstream_proxy_url.unwrap_or_default(),
         "upstreamStreamTimeoutMs": upstream_stream_timeout_ms,
         "sseKeepaliveIntervalMs": sse_keepalive_interval_ms,
+        "frontProxyMaxBodyBytes": front_proxy_max_body_bytes,
+        "requestSpillThresholdBytes": request_spill_threshold_bytes,
+        "requestCompressionMinBytes": request_compression_min_bytes,
+        "streamPumpChannelCapacity": stream_pump_channel_capacity,
+        "streamPumpThreadStackKb": stream_pump_thread_stack_kb,
+        "experimentalPreparedRequestEnabled": experimental_prepared_request_enabled,
+        "experimentalAsyncRequestLogEnabled": experimental_async_request_log_enabled,
+        "experimentalSseFramePumpV2Enabled": experimental_sse_frame_pump_v2_enabled,
+        "experimentalCappedHttpWorkersEnabled": experimental_capped_http_workers_enabled,
         "backgroundTasks": background_tasks,
         "envOverrides": env_overrides,
         "envOverrideCatalog": env_override_catalog_value(),

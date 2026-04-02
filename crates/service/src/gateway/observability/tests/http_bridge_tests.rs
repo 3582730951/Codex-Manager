@@ -6,7 +6,7 @@ use super::{
     should_skip_completion_live_text_event, synthesize_chat_completion_sse_from_json,
     synthesize_completions_sse_from_json, OpenAIChatCompletionsSseReader,
     OpenAICompletionsSseReader, OpenAIStreamMeta, PassthroughSseCollector,
-    PassthroughSseUsageReader, SseKeepAliveFrame,
+    PassthroughSseUsageReader, SseKeepAliveFrame, UpstreamCompletionState,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -831,6 +831,39 @@ fn passthrough_sse_reader_emits_keepalive_for_responses_stream() {
     assert!(mapped.contains("\"type\":\"codexmanager.keepalive\""));
     assert!(mapped.contains("\"type\":\"response.created\""));
     assert!(mapped.contains("data: [DONE]"));
+}
+
+#[test]
+fn passthrough_sse_reader_injects_terminal_error_on_unexpected_eof() {
+    let upstream = open_mock_http_response(
+        "text/event-stream",
+        concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_incomplete_1\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
+        ),
+    );
+    let usage_collector = Arc::new(Mutex::new(PassthroughSseCollector::default()));
+    let mut reader = PassthroughSseUsageReader::new(
+        upstream,
+        Arc::clone(&usage_collector),
+        SseKeepAliveFrame::OpenAIResponses,
+    );
+    let mut mapped = String::new();
+    reader
+        .read_to_string(&mut mapped)
+        .expect("read passthrough sse");
+    let collector = usage_collector
+        .lock()
+        .expect("lock usage collector")
+        .clone();
+
+    assert!(mapped.contains("event: response.failed"));
+    assert!(mapped.contains("\"code\":\"stream_incomplete\""));
+    assert!(collector.saw_terminal);
+    assert_eq!(
+        collector.completion_state,
+        Some(UpstreamCompletionState::TerminalErr)
+    );
 }
 
 #[test]

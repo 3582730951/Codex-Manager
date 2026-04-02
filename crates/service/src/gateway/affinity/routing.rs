@@ -38,7 +38,7 @@ pub(crate) struct AffinityRoutingResolution {
     pub(crate) thread: Option<ConversationThread>,
     pub(crate) chosen_account_id: String,
     pub(crate) candidate_account_ids: Vec<String>,
-    pub(crate) request_body_override: Option<Bytes>,
+    pub(crate) request_body_override: Option<crate::gateway::RequestPayload>,
     #[allow(dead_code)]
     pub(crate) thread_epoch: i64,
     #[allow(dead_code)]
@@ -316,7 +316,7 @@ pub(crate) fn resolve_enforced_routing(
     incoming_headers: &super::IncomingHeaderSnapshot,
     original_path: &str,
     path: &str,
-    body: &Bytes,
+    body: &crate::gateway::RequestPayload,
     candidates: &mut Vec<(Account, Token)>,
     key_id: &str,
     platform_key_hash: &str,
@@ -343,7 +343,8 @@ pub(crate) fn resolve_enforced_routing(
     }
 
     let requested_conversation_id = normalize_text(local_conversation_id);
-    let request_context = parse_canonical_request_body(body.as_ref())
+    let body_bytes = body.read_all_bytes()?;
+    let request_context = parse_canonical_request_body(body_bytes.as_ref())
         .ok_or_else(|| "invalid canonical request for affinity context".to_string())?;
     let mut resolved_affinity_key = derived.key.clone();
     let mut compat_affinity_key = None;
@@ -466,13 +467,15 @@ pub(crate) fn resolve_enforced_routing(
         match build_replay_request_body_with_initial_fallback(
             storage,
             path,
-            body.as_ref(),
+            body_bytes.as_ref(),
             platform_key_hash,
             resolved_affinity_key.as_str(),
             conversation_scope_id.as_str(),
             current_turn_index,
-        ) {
-            Ok(bytes) => Some(bytes),
+        )
+        .and_then(crate::gateway::RequestPayload::from_bytes)
+        {
+            Ok(payload) => Some(payload),
             Err(err) if err == "affinity_migration_context_unavailable" => {
                 replay_unavailable_session_reset = true;
                 current_turn_index = 1;
@@ -546,10 +549,10 @@ pub(crate) fn build_attempt_replay_body(
     storage: &Storage,
     resolution: &AffinityRoutingResolution,
     path: &str,
-    body: &[u8],
+    body: &crate::gateway::RequestPayload,
     platform_key_hash: &str,
     account_id: &str,
-) -> Result<Option<Bytes>, String> {
+) -> Result<Option<crate::gateway::RequestPayload>, String> {
     let Some(thread) = resolution.thread.as_ref() else {
         return Ok(None);
     };
@@ -562,15 +565,35 @@ pub(crate) fn build_attempt_replay_body(
     if resolution.replay_unavailable_session_reset {
         return Ok(None);
     }
-    Ok(Some(build_replay_request_body_with_initial_fallback(
-        storage,
-        path,
-        body,
-        platform_key_hash,
-        resolution.affinity_key.as_str(),
-        resolution.conversation_scope_id.as_str(),
-        resolution.current_turn_index,
+    let body_bytes = body.read_all_bytes()?;
+    Ok(Some(crate::gateway::RequestPayload::from_bytes(
+        build_replay_request_body_with_initial_fallback(
+            storage,
+            path,
+            body_bytes.as_ref(),
+            platform_key_hash,
+            resolution.affinity_key.as_str(),
+            resolution.conversation_scope_id.as_str(),
+            resolution.current_turn_index,
+        )?,
     )?))
+}
+
+pub(crate) fn resolution_with_session_reset_recovery(
+    resolution: &AffinityRoutingResolution,
+    account_id: &str,
+) -> AffinityRoutingResolution {
+    let mut downgraded = resolution.clone();
+    downgraded.chosen_account_id = account_id.to_string();
+    downgraded.request_body_override = None;
+    downgraded.requires_replay = false;
+    downgraded.replay_unavailable_session_reset = true;
+    downgraded.current_turn_index = 1;
+    downgraded.reset_session_affinity = true;
+    if downgraded.switch_reason.as_deref() != Some("session_reset") {
+        downgraded.switch_reason = Some("session_reset".to_string());
+    }
+    downgraded
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1931,13 +1954,13 @@ fn normalize_text(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::{
         build_replay_request_body, compare_scored_candidates, evaluate_candidate_state,
-        hamilton_targets, now_ts, record_affinity_attempt_feedback, resolve_scope_id,
-        supports_affinity_persistence_request, trim_replay_items, Account, AffinityScopePromotion,
-        ClientBinding, ConversationContextEvent, ConversationContextState, ConversationThread,
-        ScoredCandidate, Storage, Token,
+        hamilton_targets, now_ts, record_affinity_attempt_feedback,
+        resolution_with_session_reset_recovery, resolve_scope_id,
+        supports_affinity_persistence_request, trim_replay_items, Account,
+        AffinityScopePromotion, ClientBinding, ConversationContextEvent,
+        ConversationContextState, ConversationThread, ScoredCandidate, Storage, Token,
     };
     use crate::gateway::ResponseAdapter;
-    use bytes::Bytes;
     use std::sync::{Mutex, OnceLock};
 
     fn affinity_runtime_lock() -> &'static Mutex<()> {
@@ -2156,8 +2179,11 @@ mod tests {
 
         let storage = Storage::open_in_memory().expect("open in memory");
         storage.init().expect("init schema");
-        let original =
-            Bytes::from_static(br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}"#);
+        let original = crate::gateway::RequestPayload::from_vec(
+            br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}"#
+                .to_vec(),
+        )
+        .expect("build request payload");
         let resolution = super::AffinityRoutingResolution {
             affinity_key: "sid:test".to_string(),
             canonical_affinity_key: "sid:test".to_string(),
@@ -2205,7 +2231,7 @@ mod tests {
             &storage,
             &resolution,
             "/v1/responses",
-            original.as_ref(),
+            &original,
             "pk",
             "acc-fallback",
         )
@@ -2213,15 +2239,21 @@ mod tests {
         .expect("body override should exist");
 
         crate::gateway::affinity::set_context_replay_enabled(previous_context_replay);
-        assert_eq!(replay.as_ref(), original.as_ref());
+        assert_eq!(
+            replay.read_all_bytes().expect("read replay body"),
+            original.read_all_bytes().expect("read original body")
+        );
     }
 
     #[test]
     fn build_attempt_replay_body_skips_replay_when_session_reset_recovery_is_enabled() {
         let storage = Storage::open_in_memory().expect("open in memory");
         storage.init().expect("init schema");
-        let original =
-            Bytes::from_static(br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"fresh"}]}]}"#);
+        let original = crate::gateway::RequestPayload::from_vec(
+            br#"{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"fresh"}]}]}"#
+                .to_vec(),
+        )
+        .expect("build request payload");
         let resolution = super::AffinityRoutingResolution {
             affinity_key: "sid:reset".to_string(),
             canonical_affinity_key: "sid:reset".to_string(),
@@ -2269,13 +2301,69 @@ mod tests {
             &storage,
             &resolution,
             "/v1/responses",
-            original.as_ref(),
+            &original,
             "pk",
             "acc-fallback",
         )
         .expect("build attempt replay succeeds");
 
         assert!(replay.is_none(), "session reset should skip replay body");
+    }
+
+    #[test]
+    fn resolution_with_session_reset_recovery_resets_replay_for_target_account() {
+        let resolution = super::AffinityRoutingResolution {
+            affinity_key: "sid:reset".to_string(),
+            canonical_affinity_key: "sid:reset".to_string(),
+            compat_affinity_key: None,
+            affinity_source: "session_id",
+            conversation_scope_id: "scope".to_string(),
+            committed_conversation_scope_id: "scope".to_string(),
+            requested_conversation_id: None,
+            binding: None,
+            thread: Some(ConversationThread {
+                platform_key_hash: "pk".to_string(),
+                affinity_key: "sid:reset".to_string(),
+                conversation_scope_id: "scope".to_string(),
+                account_id: "acc-primary".to_string(),
+                thread_epoch: 1,
+                thread_anchor: "thread-1".to_string(),
+                thread_version: 1,
+                created_at: 1,
+                updated_at: 1,
+                last_seen_at: 1,
+            }),
+            chosen_account_id: "acc-primary".to_string(),
+            candidate_account_ids: vec!["acc-primary".to_string(), "acc-fallback".to_string()],
+            request_body_override: Some(
+                crate::gateway::RequestPayload::from_vec(b"{}".to_vec())
+                    .expect("request payload"),
+            ),
+            thread_epoch: 1,
+            thread_anchor: "thread-1".to_string(),
+            reset_session_affinity: false,
+            requires_replay: true,
+            replay_unavailable_session_reset: false,
+            current_turn_index: 7,
+            primary_scope_id_for_commit: Some("scope".to_string()),
+            scope_promotion: None,
+            current_turn_input_items: vec![],
+            selected_supply_score: Some(0.9),
+            selected_pressure_score: Some(0.7),
+            selected_final_score: Some(0.8),
+            switch_reason: Some("affinity_rebind".to_string()),
+        };
+
+        let downgraded =
+            resolution_with_session_reset_recovery(&resolution, "acc-fallback");
+
+        assert_eq!(downgraded.chosen_account_id, "acc-fallback");
+        assert!(downgraded.request_body_override.is_none());
+        assert!(!downgraded.requires_replay);
+        assert!(downgraded.replay_unavailable_session_reset);
+        assert!(downgraded.reset_session_affinity);
+        assert_eq!(downgraded.current_turn_index, 1);
+        assert_eq!(downgraded.switch_reason.as_deref(), Some("session_reset"));
     }
 
     #[test]
@@ -3201,9 +3289,13 @@ mod tests {
             thread: None,
             chosen_account_id: "acc-1".to_string(),
             candidate_account_ids: vec!["acc-1".to_string()],
-            request_body_override: Some(Bytes::from_static(
-                br#"{"model":"gpt-5.4","input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"history"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}"#,
-            )),
+            request_body_override: Some(
+                crate::gateway::RequestPayload::from_vec(
+                    br#"{"model":"gpt-5.4","input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"history"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}]}"#
+                        .to_vec(),
+                )
+                .expect("build replay override payload"),
+            ),
             thread_epoch: 1,
             thread_anchor: "thread-1".to_string(),
             reset_session_affinity: false,

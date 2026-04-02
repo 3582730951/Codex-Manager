@@ -47,6 +47,16 @@ fn estimate_input_tokens_from_anthropic_messages(body: &[u8]) -> Result<u64, Str
     Ok(estimated)
 }
 
+pub(super) fn should_handle_local_count_tokens(
+    protocol_type: &str,
+    request_method: &str,
+    path: &str,
+) -> bool {
+    protocol_type == PROTOCOL_ANTHROPIC_NATIVE
+        && request_method.eq_ignore_ascii_case("POST")
+        && (path == "/v1/messages/count_tokens" || path.starts_with("/v1/messages/count_tokens?"))
+}
+
 pub(super) fn maybe_respond_local_count_tokens(
     request: tiny_http::Request,
     trace_id: &str,
@@ -62,9 +72,8 @@ pub(super) fn maybe_respond_local_count_tokens(
     reasoning_for_log: Option<&str>,
     storage: &codexmanager_core::storage::Storage,
 ) -> Result<Option<tiny_http::Request>, String> {
-    let is_anthropic_count_tokens = protocol_type == PROTOCOL_ANTHROPIC_NATIVE
-        && request_method.eq_ignore_ascii_case("POST")
-        && (path == "/v1/messages/count_tokens" || path.starts_with("/v1/messages/count_tokens?"));
+    let is_anthropic_count_tokens =
+        should_handle_local_count_tokens(protocol_type, request_method, path);
     if !is_anthropic_count_tokens {
         return Ok(Some(request));
     }

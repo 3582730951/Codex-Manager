@@ -13,8 +13,9 @@ rand = "0.8"
 sha2 = "0.10"
 tiny_http = "0.12"
 axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "fs"] }
 futures-util = "0.3"
+http-body-util = "0.1"
 if-addrs = "0.13"
 url = "2"
 webbrowser = "0.8"

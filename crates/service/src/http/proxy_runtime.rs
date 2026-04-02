@@ -1,11 +1,14 @@
-use axum::body::{to_bytes, Body};
+use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, Request as HttpRequest, Response, StatusCode};
 use axum::routing::{any, post};
 use axum::Router;
+use futures_util::StreamExt;
 use reqwest::Client;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crate::http::proxy_bridge::run_proxy_server;
 use crate::http::proxy_request::{build_target_url, filter_request_headers};
@@ -36,6 +39,29 @@ fn build_local_backend_client() -> Result<Client, reqwest::Error> {
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build()
+}
+
+fn enforce_stream_body_limit(
+    seen: &AtomicUsize,
+    next_chunk_len: usize,
+    max_body_bytes: usize,
+) -> io::Result<()> {
+    let next_seen = seen.fetch_add(next_chunk_len, Ordering::Relaxed) + next_chunk_len;
+    if next_seen > max_body_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("request body too large: content-length>{max_body_bytes}"),
+        ));
+    }
+    Ok(())
+}
+
+fn status_for_backend_proxy_error(message: &str) -> StatusCode {
+    if message.contains("request body too large") {
+        StatusCode::PAYLOAD_TOO_LARGE
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
 }
 
 async fn proxy_handler(
@@ -98,33 +124,30 @@ async fn proxy_handler_with_peer(
         crate::gateway::affinity::should_strip_external_cli_affinity_id(),
         injected_headers.as_slice(),
     );
-    let body_bytes = match to_bytes(body, max_body_bytes).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            let message = format!("request body too large: content-length>{max_body_bytes}");
-            log_proxy_error(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                target_url.as_str(),
-                message.as_str(),
-            );
-            return text_error_response(StatusCode::PAYLOAD_TOO_LARGE, message);
-        }
-    };
-
     let mut builder = state.client.request(parts.method, target_url.as_str());
     builder = builder.headers(outbound_headers);
-    builder = builder.body(body_bytes);
+    let seen = Arc::new(AtomicUsize::new(0));
+    let seen_for_stream = Arc::clone(&seen);
+    builder = builder.body(reqwest::Body::wrap_stream(body.into_data_stream().map(
+        move |chunk| {
+            let max_body_bytes = max_body_bytes;
+            match chunk {
+                Ok(bytes) => {
+                    enforce_stream_body_limit(&seen_for_stream, bytes.len(), max_body_bytes)
+                        .map(|_| bytes)
+                }
+                Err(err) => Err(io::Error::other(err)),
+            }
+        },
+    )));
 
     let upstream = match builder.send().await {
         Ok(response) => response,
         Err(err) => {
             let message = format!("backend proxy error: {err}");
-            log_proxy_error(
-                StatusCode::BAD_GATEWAY,
-                target_url.as_str(),
-                message.as_str(),
-            );
-            return text_error_response(StatusCode::BAD_GATEWAY, message);
+            let status = status_for_backend_proxy_error(message.as_str());
+            log_proxy_error(status, target_url.as_str(), message.as_str());
+            return text_error_response(status, message);
         }
     };
 

@@ -11,20 +11,28 @@ use tiny_http::Server;
 
 const HTTP_WORKER_FACTOR: usize = 4;
 const HTTP_WORKER_MIN: usize = 8;
+const HTTP_WORKER_MAX: usize = 16;
 const HTTP_STREAM_WORKER_FACTOR: usize = 1;
 const HTTP_STREAM_WORKER_MIN: usize = 2;
+const HTTP_STREAM_WORKER_MAX: usize = 4;
 const HTTP_QUEUE_FACTOR: usize = 4;
 const HTTP_QUEUE_MIN: usize = 32;
+const HTTP_QUEUE_MAX: usize = 128;
 const HTTP_STREAM_QUEUE_FACTOR: usize = 2;
 const HTTP_STREAM_QUEUE_MIN: usize = 16;
+const HTTP_STREAM_QUEUE_MAX: usize = 32;
 const ENV_HTTP_WORKER_FACTOR: &str = "CODEXMANAGER_HTTP_WORKER_FACTOR";
 const ENV_HTTP_WORKER_MIN: &str = "CODEXMANAGER_HTTP_WORKER_MIN";
+const ENV_HTTP_WORKER_MAX: &str = "CODEXMANAGER_HTTP_WORKER_MAX";
 const ENV_HTTP_STREAM_WORKER_FACTOR: &str = "CODEXMANAGER_HTTP_STREAM_WORKER_FACTOR";
 const ENV_HTTP_STREAM_WORKER_MIN: &str = "CODEXMANAGER_HTTP_STREAM_WORKER_MIN";
+const ENV_HTTP_STREAM_WORKER_MAX: &str = "CODEXMANAGER_HTTP_STREAM_WORKER_MAX";
 const ENV_HTTP_QUEUE_FACTOR: &str = "CODEXMANAGER_HTTP_QUEUE_FACTOR";
 const ENV_HTTP_QUEUE_MIN: &str = "CODEXMANAGER_HTTP_QUEUE_MIN";
+const ENV_HTTP_QUEUE_MAX: &str = "CODEXMANAGER_HTTP_QUEUE_MAX";
 const ENV_HTTP_STREAM_QUEUE_FACTOR: &str = "CODEXMANAGER_HTTP_STREAM_QUEUE_FACTOR";
 const ENV_HTTP_STREAM_QUEUE_MIN: &str = "CODEXMANAGER_HTTP_STREAM_QUEUE_MIN";
+const ENV_HTTP_STREAM_QUEUE_MAX: &str = "CODEXMANAGER_HTTP_STREAM_QUEUE_MAX";
 
 pub(crate) struct BackendServer {
     #[cfg_attr(not(test), allow(dead_code))]
@@ -50,7 +58,13 @@ fn http_worker_count() -> usize {
         .unwrap_or(4);
     let factor = env_usize_or(ENV_HTTP_WORKER_FACTOR, HTTP_WORKER_FACTOR).max(1);
     let min = env_usize_or(ENV_HTTP_WORKER_MIN, HTTP_WORKER_MIN).max(1);
-    (cpus.saturating_mul(factor)).max(min)
+    let workers = (cpus.saturating_mul(factor)).max(min);
+    if crate::gateway::experimental_capped_http_workers_enabled() {
+        let max = env_usize_or(ENV_HTTP_WORKER_MAX, HTTP_WORKER_MAX).max(min);
+        workers.min(max)
+    } else {
+        workers
+    }
 }
 
 fn http_stream_worker_count() -> usize {
@@ -59,20 +73,38 @@ fn http_stream_worker_count() -> usize {
         .unwrap_or(4);
     let factor = env_usize_or(ENV_HTTP_STREAM_WORKER_FACTOR, HTTP_STREAM_WORKER_FACTOR).max(1);
     let min = env_usize_or(ENV_HTTP_STREAM_WORKER_MIN, HTTP_STREAM_WORKER_MIN).max(1);
-    (cpus.saturating_mul(factor)).max(min)
+    let workers = (cpus.saturating_mul(factor)).max(min);
+    if crate::gateway::experimental_capped_http_workers_enabled() {
+        let max = env_usize_or(ENV_HTTP_STREAM_WORKER_MAX, HTTP_STREAM_WORKER_MAX).max(min);
+        workers.min(max)
+    } else {
+        workers
+    }
 }
 
 fn http_queue_size(worker_count: usize) -> usize {
     // 中文注释：使用有界队列给入口施加背压；不这样做会在峰值流量下无限堆积请求并放大内存抖动。
     let factor = env_usize_or(ENV_HTTP_QUEUE_FACTOR, HTTP_QUEUE_FACTOR).max(1);
     let min = env_usize_or(ENV_HTTP_QUEUE_MIN, HTTP_QUEUE_MIN).max(1);
-    worker_count.saturating_mul(factor).max(min)
+    let size = worker_count.saturating_mul(factor).max(min);
+    if crate::gateway::experimental_capped_http_workers_enabled() {
+        let max = env_usize_or(ENV_HTTP_QUEUE_MAX, HTTP_QUEUE_MAX).max(min);
+        size.min(max)
+    } else {
+        size
+    }
 }
 
 fn http_stream_queue_size(worker_count: usize) -> usize {
     let factor = env_usize_or(ENV_HTTP_STREAM_QUEUE_FACTOR, HTTP_STREAM_QUEUE_FACTOR).max(1);
     let min = env_usize_or(ENV_HTTP_STREAM_QUEUE_MIN, HTTP_STREAM_QUEUE_MIN).max(1);
-    worker_count.saturating_mul(factor).max(min)
+    let size = worker_count.saturating_mul(factor).max(min);
+    if crate::gateway::experimental_capped_http_workers_enabled() {
+        let max = env_usize_or(ENV_HTTP_STREAM_QUEUE_MAX, HTTP_STREAM_QUEUE_MAX).max(min);
+        size.min(max)
+    } else {
+        size
+    }
 }
 
 fn env_usize_or(name: &str, default: usize) -> usize {

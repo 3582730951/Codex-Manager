@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 use std::time::Instant;
 
@@ -21,7 +20,7 @@ pub(in super::super) struct CandidateAttemptParams<'a> {
     pub(in super::super) method: &'a reqwest::Method,
     pub(in super::super) request_ctx: UpstreamRequestContext<'a>,
     pub(in super::super) incoming_headers: &'a super::super::super::IncomingHeaderSnapshot,
-    pub(in super::super) body: &'a Bytes,
+    pub(in super::super) body: &'a crate::gateway::RequestPayload,
     pub(in super::super) client_is_stream: bool,
     pub(in super::super) upstream_is_stream: bool,
     pub(in super::super) path: &'a str,

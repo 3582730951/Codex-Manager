@@ -27,3 +27,22 @@ fn estimate_input_tokens_rejects_non_object_payload() {
         .expect_err("should reject non-object payload");
     assert_eq!(err, "claude request body must be an object");
 }
+
+#[test]
+fn should_handle_local_count_tokens_only_matches_anthropic_post_endpoint() {
+    assert!(should_handle_local_count_tokens(
+        crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
+        "POST",
+        "/v1/messages/count_tokens"
+    ));
+    assert!(!should_handle_local_count_tokens(
+        crate::apikey_profile::PROTOCOL_OPENAI_COMPAT,
+        "POST",
+        "/v1/messages/count_tokens"
+    ));
+    assert!(!should_handle_local_count_tokens(
+        crate::apikey_profile::PROTOCOL_ANTHROPIC_NATIVE,
+        "GET",
+        "/v1/messages/count_tokens"
+    ));
+}

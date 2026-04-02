@@ -73,11 +73,14 @@ fn aggregate_passthrough_applies_model_reasoning_and_service_tier_overrides() {
         Some("high"),
         Some("fast"),
     );
-    let body = br#"{"model":"gpt-4.1","input":"hi","reasoning":{"effort":"low"}}"#.to_vec();
+    let body = crate::gateway::RequestPayload::from_vec(
+        br#"{"model":"gpt-4.1","input":"hi","reasoning":{"effort":"low"}}"#.to_vec(),
+    )
+    .expect("payload");
 
-    let (rewritten_body, model_for_log, reasoning_for_log, _has_prompt_cache_key, _request_shape) =
-        apply_passthrough_request_overrides("/v1/responses", body, &api_key);
-    let payload: Value = serde_json::from_slice(&rewritten_body).expect("json body");
+    let prepared = apply_passthrough_request_overrides("/v1/responses", &body, &api_key)
+        .expect("rewrite passthrough body");
+    let payload: Value = prepared.body.read_json_value().expect("json body");
 
     assert_eq!(
         payload.get("model").and_then(Value::as_str),
@@ -95,8 +98,11 @@ fn aggregate_passthrough_applies_model_reasoning_and_service_tier_overrides() {
         payload.get("service_tier").and_then(Value::as_str),
         Some("priority")
     );
-    assert_eq!(model_for_log.as_deref(), Some("gpt-5.4"));
-    assert_eq!(reasoning_for_log.as_deref(), Some("high"));
+    assert_eq!(prepared.request_meta.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        prepared.request_meta.reasoning_effort.as_deref(),
+        Some("high")
+    );
 }
 
 #[test]

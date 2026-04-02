@@ -1,3 +1,4 @@
+use std::time::Instant;
 use tiny_http::{Request, Response};
 
 pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String> {
@@ -19,11 +20,15 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
     let trace_id = super::trace_log::next_trace_id();
     let request_path_for_log = super::normalize_models_path(request.url());
     let request_method_for_log = request.method().as_str().to_string();
+    let preprocess_started_at = Instant::now();
     let validated =
         match super::local_validation::prepare_local_request(&mut request, trace_id.clone(), debug)
         {
             Ok(v) => v,
             Err(err) => {
+                super::record_gateway_preprocess_duration(super::duration_to_millis(
+                    preprocess_started_at.elapsed(),
+                ));
                 super::trace_log::log_request_start(
                     trace_id.as_str(),
                     "-",
@@ -79,6 +84,9 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
                 return Ok(());
             }
         };
+    super::record_gateway_preprocess_duration(super::duration_to_millis(
+        preprocess_started_at.elapsed(),
+    ));
 
     let request = if validated.rotation_strategy == crate::apikey_profile::ROTATION_AGGREGATE_API {
         request
@@ -112,23 +120,35 @@ pub(crate) fn handle_gateway_request(mut request: Request) -> Result<(), String>
     let request = if validated.rotation_strategy == crate::apikey_profile::ROTATION_AGGREGATE_API {
         request
     } else {
-        match super::maybe_respond_local_count_tokens(
-            request,
-            trace_id_for_count_tokens.as_str(),
-            key_id_for_count_tokens.as_str(),
-            validated.owner_key_id.as_deref(),
+        if super::local_count_tokens::should_handle_local_count_tokens(
             protocol_type_for_count_tokens.as_str(),
-            validated.original_path.as_str(),
-            path_for_count_tokens.as_str(),
-            validated.response_adapter,
             request_method_for_count_tokens.as_str(),
-            validated.body.as_ref(),
-            model_for_count_tokens.as_deref(),
-            reasoning_for_count_tokens.as_deref(),
-            &validated.storage,
-        )? {
-            Some(request) => request,
-            None => return Ok(()),
+            path_for_count_tokens.as_str(),
+        ) {
+            let body_for_local_count_tokens = validated
+                .body
+                .read_all_bytes()
+                .map_err(|err| format!("read request body failed: {err}"))?;
+            match super::maybe_respond_local_count_tokens(
+                request,
+                trace_id_for_count_tokens.as_str(),
+                key_id_for_count_tokens.as_str(),
+                validated.owner_key_id.as_deref(),
+                protocol_type_for_count_tokens.as_str(),
+                validated.original_path.as_str(),
+                path_for_count_tokens.as_str(),
+                validated.response_adapter,
+                request_method_for_count_tokens.as_str(),
+                body_for_local_count_tokens.as_ref(),
+                model_for_count_tokens.as_deref(),
+                reasoning_for_count_tokens.as_deref(),
+                &validated.storage,
+            )? {
+                Some(request) => request,
+                None => return Ok(()),
+            }
+        } else {
+            request
         }
     };
 

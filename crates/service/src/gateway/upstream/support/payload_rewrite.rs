@@ -1,10 +1,17 @@
 use serde_json::Value;
 
+#[allow(dead_code)]
 pub(in super::super) fn body_has_encrypted_content_hint(body: &[u8]) -> bool {
     // Fast path: avoid JSON parsing unless we hit a recovery path.
     std::str::from_utf8(body)
         .ok()
         .is_some_and(|text| text.contains("\"encrypted_content\""))
+}
+
+pub(in super::super) fn payload_has_encrypted_content_hint(
+    body: &crate::gateway::RequestPayload,
+) -> Result<bool, String> {
+    body.contains_bytes(br#""encrypted_content""#)
 }
 
 fn strip_encrypted_content_value(value: &mut Value) -> bool {
@@ -31,10 +38,21 @@ fn strip_encrypted_content_value(value: &mut Value) -> bool {
     }
 }
 
+#[allow(dead_code)]
 pub(in super::super) fn strip_encrypted_content_from_body(body: &[u8]) -> Option<Vec<u8>> {
     let mut value: Value = serde_json::from_slice(body).ok()?;
     if !strip_encrypted_content_value(&mut value) {
         return None;
     }
     serde_json::to_vec(&value).ok()
+}
+
+pub(in super::super) fn strip_encrypted_content_from_payload(
+    body: &crate::gateway::RequestPayload,
+) -> Result<Option<crate::gateway::RequestPayload>, String> {
+    let mut value = body.read_json_value()?;
+    if !strip_encrypted_content_value(&mut value) {
+        return Ok(None);
+    }
+    crate::gateway::RequestPayload::from_json_value(&value).map(Some)
 }

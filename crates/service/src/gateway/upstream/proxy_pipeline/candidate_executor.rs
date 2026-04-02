@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 use std::time::Instant;
 use tiny_http::Request;
@@ -18,11 +17,11 @@ use super::response_finalize::{
     respond_total_timeout,
 };
 
-fn extract_prompt_cache_key_for_trace(body: &[u8]) -> Option<String> {
+fn extract_prompt_cache_key_for_trace(body: &crate::gateway::RequestPayload) -> Option<String> {
     if body.is_empty() || body.len() > 64 * 1024 {
         return None;
     }
-    let value = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let value = body.read_json_value().ok()?;
     value
         .get("prompt_cache_key")
         .and_then(serde_json::Value::as_str)
@@ -47,7 +46,7 @@ pub(in super::super) struct CandidateExecutorParams<'a> {
     pub(in super::super) storage: &'a Storage,
     pub(in super::super) method: &'a reqwest::Method,
     pub(in super::super) incoming_headers: &'a super::super::super::IncomingHeaderSnapshot,
-    pub(in super::super) body: &'a Bytes,
+    pub(in super::super) body: &'a crate::gateway::RequestPayload,
     pub(in super::super) path: &'a str,
     pub(in super::super) request_shape: Option<&'a str>,
     pub(in super::super) trace_id: &'a str,
@@ -126,8 +125,9 @@ pub(in super::super) fn execute_candidate_sequence(
                     setup.legacy_conversation_routing(),
                     account,
                 );
+            let mut attempt_affinity_resolution = setup.persistent_affinity_resolution().cloned();
             let (attempt_thread_anchor, reset_session_affinity, persistent_body_override) =
-                if let Some(resolution) = setup.persistent_affinity_resolution() {
+                if let Some(resolution) = attempt_affinity_resolution.as_mut() {
                     let (_, thread_anchor, reset_session_affinity) =
                         super::super::super::affinity::resolve_attempt_thread_assignment(
                             resolution,
@@ -139,11 +139,32 @@ pub(in super::super) fn execute_candidate_sequence(
                             storage,
                             resolution,
                             path,
-                            body.as_ref(),
+                            body,
                             context.platform_key_hash(),
                             account.id.as_str(),
                         ) {
                             Ok(body_override) => body_override,
+                            Err(err) if err == "affinity_migration_context_unavailable" => {
+                                log::warn!(
+                                    "event=gateway_affinity_replay_session_reset_late trace_id={} affinity_key={} previous_account={} chosen_account={} fallback_account={} reason={}",
+                                    trace_id,
+                                    resolution.affinity_key,
+                                    resolution
+                                        .thread
+                                        .as_ref()
+                                        .map(|item| item.account_id.as_str())
+                                        .unwrap_or("-"),
+                                    resolution.chosen_account_id,
+                                    account.id,
+                                    err,
+                                );
+                                *resolution =
+                                    super::super::super::affinity::resolution_with_session_reset_recovery(
+                                        resolution,
+                                        account.id.as_str(),
+                                    );
+                                None
+                            }
                             Err(err) => {
                                 let request = request.take().expect(
                                     "request should be available before replay failure response",
@@ -225,8 +246,7 @@ pub(in super::super) fn execute_candidate_sequence(
             let incoming_session_id = attempt_headers.session_id();
             let incoming_turn_state = attempt_headers.turn_state();
             let incoming_conversation_id = attempt_headers.conversation_id();
-            let prompt_cache_key_for_trace =
-                extract_prompt_cache_key_for_trace(body_for_attempt.as_ref());
+            let prompt_cache_key_for_trace = extract_prompt_cache_key_for_trace(&body_for_attempt);
             super::super::super::trace_log::log_attempt_profile(
                 trace_id,
                 &account.id,
@@ -421,14 +441,14 @@ pub(in super::super) fn execute_candidate_sequence(
                         guard,
                         context,
                         &account.id,
-                        request_body_for_success.as_ref(),
+                        &request_body_for_success,
                         attempt_trace.last_attempt_url.as_deref(),
                         attempt_trace.last_attempt_error.as_deref(),
                         response_adapter,
                         tool_name_restore_map,
                         client_is_stream,
                         path,
-                        setup.persistent_affinity_resolution(),
+                        attempt_affinity_resolution.as_ref(),
                         setup.peer_runtime_key.as_deref(),
                         trace_id,
                         started_at,

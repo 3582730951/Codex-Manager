@@ -1,4 +1,6 @@
 use std::io;
+use std::panic;
+use std::sync::OnceLock;
 use std::thread;
 
 pub struct ServerHandle {
@@ -32,10 +34,42 @@ impl Drop for ServerHandle {
     }
 }
 
+fn install_panic_hook() {
+    static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+    PANIC_HOOK_INSTALLED.get_or_init(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            let current_thread = thread::current();
+            let thread_name = current_thread.name().unwrap_or("unnamed");
+            let location = info
+                .location()
+                .map(|value| format!("{}:{}", value.file(), value.line()))
+                .unwrap_or_else(|| "unknown".to_string());
+            let payload = if let Some(message) = info.payload().downcast_ref::<&str>() {
+                (*message).to_string()
+            } else if let Some(message) = info.payload().downcast_ref::<String>() {
+                message.clone()
+            } else {
+                "unknown panic payload".to_string()
+            };
+            log::error!(
+                "event=process_panic thread={} location={} payload={} backtrace_enabled={}",
+                thread_name,
+                location,
+                payload,
+                std::env::var_os("RUST_BACKTRACE").is_some()
+            );
+            previous(info);
+        }));
+    });
+}
+
 pub fn start_one_shot_server() -> std::io::Result<ServerHandle> {
     crate::clear_shutdown_flag();
+    install_panic_hook();
     crate::portable::bootstrap_current_process();
     crate::gateway::reload_runtime_config_from_env();
+    crate::gateway::cleanup_request_spool_dir();
     if let Err(err) = crate::storage_helpers::initialize_storage() {
         log::warn!("storage startup init skipped: {}", err);
     }
@@ -61,8 +95,10 @@ pub fn start_one_shot_server() -> std::io::Result<ServerHandle> {
 
 pub fn start_test_server() -> std::io::Result<ServerHandle> {
     crate::clear_shutdown_flag();
+    install_panic_hook();
     crate::portable::bootstrap_current_process();
     crate::gateway::reload_runtime_config_from_env();
+    crate::gateway::cleanup_request_spool_dir();
     if let Err(err) = crate::storage_helpers::initialize_storage() {
         log::warn!("storage startup init skipped: {}", err);
     }
@@ -76,8 +112,10 @@ pub fn start_test_server() -> std::io::Result<ServerHandle> {
 }
 
 pub fn start_server(addr: &str) -> std::io::Result<()> {
+    install_panic_hook();
     crate::portable::bootstrap_current_process();
     crate::gateway::reload_runtime_config_from_env();
+    crate::gateway::cleanup_request_spool_dir();
     if let Err(err) = crate::storage_helpers::initialize_storage() {
         log::warn!("storage startup init skipped: {}", err);
     }

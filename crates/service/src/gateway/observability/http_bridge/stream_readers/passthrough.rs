@@ -8,6 +8,21 @@ use crate::gateway::http_bridge::extract_error_hint_from_body;
 
 const RAW_SSE_CAPTURE_LIMIT_BYTES: usize = 512 * 1024;
 
+fn build_terminal_error_frame(message: &str) -> Vec<u8> {
+    let payload = serde_json::json!({
+        "type": "response.failed",
+        "response": {
+            "status": "failed",
+            "error": {
+                "type": "server_error",
+                "code": "stream_incomplete",
+                "message": message,
+            }
+        }
+    });
+    format!("event: response.failed\ndata: {payload}\n\n").into_bytes()
+}
+
 pub(crate) struct PassthroughSseUsageReader {
     upstream: UpstreamSseFramePump,
     out_cursor: Cursor<Vec<u8>>,
@@ -91,11 +106,12 @@ impl PassthroughSseUsageReader {
             Ok(UpstreamSseFramePumpItem::Eof) => {
                 if let Ok(mut collector) = self.usage_collector.lock() {
                     if !collector.saw_terminal {
-                        collector.completion_state =
-                            Some(UpstreamCompletionState::EofWithoutTerminal);
-                        collector
-                            .terminal_error
-                            .get_or_insert_with(stream_incomplete_message);
+                        let message = stream_incomplete_message();
+                        collector.saw_terminal = true;
+                        collector.completion_state = Some(UpstreamCompletionState::TerminalErr);
+                        collector.terminal_error = Some(message.clone());
+                        self.finished = true;
+                        return Ok(build_terminal_error_frame(message.as_str()));
                     }
                 }
                 self.finished = true;
@@ -103,10 +119,12 @@ impl PassthroughSseUsageReader {
             }
             Ok(UpstreamSseFramePumpItem::Error(err)) => {
                 if let Ok(mut collector) = self.usage_collector.lock() {
-                    collector.completion_state = Some(UpstreamCompletionState::ReaderError);
-                    collector
-                        .terminal_error
-                        .get_or_insert_with(|| classify_upstream_stream_read_error(&err));
+                    let message = classify_upstream_stream_read_error(&err);
+                    collector.saw_terminal = true;
+                    collector.completion_state = Some(UpstreamCompletionState::TerminalErr);
+                    collector.terminal_error = Some(message.clone());
+                    self.finished = true;
+                    return Ok(build_terminal_error_frame(message.as_str()));
                 }
                 self.finished = true;
                 Ok(Vec::new())
@@ -116,10 +134,12 @@ impl PassthroughSseUsageReader {
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 if let Ok(mut collector) = self.usage_collector.lock() {
-                    collector.completion_state = Some(UpstreamCompletionState::ReaderError);
-                    collector
-                        .terminal_error
-                        .get_or_insert_with(stream_reader_disconnected_message);
+                    let message = stream_reader_disconnected_message();
+                    collector.saw_terminal = true;
+                    collector.completion_state = Some(UpstreamCompletionState::TerminalErr);
+                    collector.terminal_error = Some(message.clone());
+                    self.finished = true;
+                    return Ok(build_terminal_error_frame(message.as_str()));
                 }
                 self.finished = true;
                 Ok(Vec::new())

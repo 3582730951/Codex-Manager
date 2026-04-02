@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use codexmanager_core::storage::{Account, Storage, Token};
 use std::time::Instant;
 
@@ -20,7 +19,7 @@ pub(in super::super) fn process_candidate_upstream_flow<F>(
     method: &reqwest::Method,
     request_ctx: UpstreamRequestContext<'_>,
     incoming_headers: &super::super::super::IncomingHeaderSnapshot,
-    body: &Bytes,
+    body: &crate::gateway::RequestPayload,
     client_is_stream: bool,
     upstream_is_stream: bool,
     base: &str,

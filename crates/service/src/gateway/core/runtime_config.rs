@@ -15,6 +15,10 @@ static TRACE_BODY_PREVIEW_MAX_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES);
 static FRONT_PROXY_MAX_BODY_BYTES: AtomicUsize =
     AtomicUsize::new(DEFAULT_FRONT_PROXY_MAX_BODY_BYTES);
+static REQUEST_SPILL_THRESHOLD_BYTES: AtomicUsize =
+    AtomicUsize::new(DEFAULT_REQUEST_SPILL_THRESHOLD_BYTES);
+static REQUEST_COMPRESSION_MIN_BYTES: AtomicUsize =
+    AtomicUsize::new(DEFAULT_REQUEST_COMPRESSION_MIN_BYTES);
 static UPSTREAM_CONNECT_TIMEOUT_SECS: AtomicU64 =
     AtomicU64::new(DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS);
 static UPSTREAM_TOTAL_TIMEOUT_MS: AtomicU64 = AtomicU64::new(DEFAULT_UPSTREAM_TOTAL_TIMEOUT_MS);
@@ -23,6 +27,18 @@ static ACCOUNT_MAX_INFLIGHT: AtomicUsize = AtomicUsize::new(DEFAULT_ACCOUNT_MAX_
 static STRICT_REQUEST_PARAM_ALLOWLIST: AtomicBool =
     AtomicBool::new(DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST);
 static ENABLE_REQUEST_COMPRESSION: AtomicBool = AtomicBool::new(DEFAULT_ENABLE_REQUEST_COMPRESSION);
+static STREAM_PUMP_CHANNEL_CAPACITY: AtomicUsize =
+    AtomicUsize::new(DEFAULT_STREAM_PUMP_CHANNEL_CAPACITY);
+static STREAM_PUMP_THREAD_STACK_KB: AtomicUsize =
+    AtomicUsize::new(DEFAULT_STREAM_PUMP_THREAD_STACK_KB);
+static EXPERIMENTAL_PREPARED_REQUEST: AtomicBool =
+    AtomicBool::new(DEFAULT_EXPERIMENTAL_PREPARED_REQUEST);
+static EXPERIMENTAL_ASYNC_REQUEST_LOG: AtomicBool =
+    AtomicBool::new(DEFAULT_EXPERIMENTAL_ASYNC_REQUEST_LOG);
+static EXPERIMENTAL_SSE_FRAME_PUMP_V2: AtomicBool =
+    AtomicBool::new(DEFAULT_EXPERIMENTAL_SSE_FRAME_PUMP_V2);
+static EXPERIMENTAL_CAPPED_HTTP_WORKERS: AtomicBool =
+    AtomicBool::new(DEFAULT_EXPERIMENTAL_CAPPED_HTTP_WORKERS);
 static UPSTREAM_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static GATEWAY_ACCOUNT_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static GATEWAY_ACCOUNT_PROXY_CLIENT: OnceLock<RwLock<Option<Client>>> = OnceLock::new();
@@ -43,7 +59,15 @@ const DEFAULT_STRICT_REQUEST_PARAM_ALLOWLIST: bool = true;
 const DEFAULT_ENABLE_REQUEST_COMPRESSION: bool = true;
 const DEFAULT_REQUEST_GATE_WAIT_TIMEOUT_MS: u64 = 300;
 const DEFAULT_TRACE_BODY_PREVIEW_MAX_BYTES: usize = 0;
-const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+const DEFAULT_FRONT_PROXY_MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_REQUEST_SPILL_THRESHOLD_BYTES: usize = 1 * 1024 * 1024;
+const DEFAULT_REQUEST_COMPRESSION_MIN_BYTES: usize = 16 * 1024;
+const DEFAULT_STREAM_PUMP_CHANNEL_CAPACITY: usize = 8;
+const DEFAULT_STREAM_PUMP_THREAD_STACK_KB: usize = 256;
+const DEFAULT_EXPERIMENTAL_PREPARED_REQUEST: bool = false;
+const DEFAULT_EXPERIMENTAL_ASYNC_REQUEST_LOG: bool = false;
+const DEFAULT_EXPERIMENTAL_SSE_FRAME_PUMP_V2: bool = false;
+const DEFAULT_EXPERIMENTAL_CAPPED_HTTP_WORKERS: bool = false;
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL: &str = "auto";
 const DEFAULT_CODEX_USER_AGENT_VERSION: &str = "0.101.0";
 const MAX_UPSTREAM_PROXY_POOL_SIZE: usize = 5;
@@ -51,12 +75,20 @@ const MAX_UPSTREAM_PROXY_POOL_SIZE: usize = 5;
 const ENV_REQUEST_GATE_WAIT_TIMEOUT_MS: &str = "CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS";
 const ENV_TRACE_BODY_PREVIEW_MAX_BYTES: &str = "CODEXMANAGER_TRACE_BODY_PREVIEW_MAX_BYTES";
 const ENV_FRONT_PROXY_MAX_BODY_BYTES: &str = "CODEXMANAGER_FRONT_PROXY_MAX_BODY_BYTES";
+const ENV_REQUEST_SPILL_THRESHOLD_BYTES: &str = "CODEXMANAGER_REQUEST_SPILL_THRESHOLD_BYTES";
+const ENV_REQUEST_COMPRESSION_MIN_BYTES: &str = "CODEXMANAGER_REQUEST_COMPRESSION_MIN_BYTES";
 const ENV_UPSTREAM_CONNECT_TIMEOUT_SECS: &str = "CODEXMANAGER_UPSTREAM_CONNECT_TIMEOUT_SECS";
 const ENV_UPSTREAM_TOTAL_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_TOTAL_TIMEOUT_MS";
 const ENV_UPSTREAM_STREAM_TIMEOUT_MS: &str = "CODEXMANAGER_UPSTREAM_STREAM_TIMEOUT_MS";
 const ENV_ACCOUNT_MAX_INFLIGHT: &str = "CODEXMANAGER_ACCOUNT_MAX_INFLIGHT";
 const ENV_STRICT_REQUEST_PARAM_ALLOWLIST: &str = "CODEXMANAGER_STRICT_REQUEST_PARAM_ALLOWLIST";
 const ENV_ENABLE_REQUEST_COMPRESSION: &str = "CODEXMANAGER_ENABLE_REQUEST_COMPRESSION";
+const ENV_STREAM_PUMP_CHANNEL_CAPACITY: &str = "CODEXMANAGER_STREAM_PUMP_CHANNEL_CAPACITY";
+const ENV_STREAM_PUMP_THREAD_STACK_KB: &str = "CODEXMANAGER_STREAM_PUMP_THREAD_STACK_KB";
+const ENV_EXPERIMENTAL_PREPARED_REQUEST: &str = "CODEXMANAGER_EXPERIMENTAL_PREPARED_REQUEST";
+const ENV_EXPERIMENTAL_ASYNC_REQUEST_LOG: &str = "CODEXMANAGER_EXPERIMENTAL_ASYNC_REQUEST_LOG";
+const ENV_EXPERIMENTAL_SSE_FRAME_PUMP_V2: &str = "CODEXMANAGER_EXPERIMENTAL_SSE_FRAME_PUMP_V2";
+const ENV_EXPERIMENTAL_CAPPED_HTTP_WORKERS: &str = "CODEXMANAGER_EXPERIMENTAL_CAPPED_HTTP_WORKERS";
 const ENV_TOKEN_EXCHANGE_CLIENT_ID: &str = "CODEXMANAGER_CLIENT_ID";
 const ENV_TOKEN_EXCHANGE_ISSUER: &str = "CODEXMANAGER_ISSUER";
 const ENV_PROXY_LIST: &str = "CODEXMANAGER_PROXY_LIST";
@@ -142,6 +174,7 @@ fn build_upstream_client_with_proxy(proxy_url: Option<&str>) -> Client {
         .timeout(None::<Duration>)
         // 中文注释：连接阶段设置超时，避免网络异常时线程长期卡死占满并发槽位。
         .connect_timeout(upstream_connect_timeout_cached())
+        .tcp_nodelay(true)
         .pool_max_idle_per_host(32)
         .pool_idle_timeout(Some(Duration::from_secs(90)))
         .tcp_keepalive(Some(Duration::from_secs(30)));
@@ -219,6 +252,46 @@ pub(crate) fn trace_body_preview_max_bytes() -> usize {
 pub(crate) fn front_proxy_max_body_bytes() -> usize {
     ensure_runtime_config_loaded();
     FRONT_PROXY_MAX_BODY_BYTES.load(Ordering::Relaxed)
+}
+
+pub(crate) fn request_spill_threshold_bytes() -> usize {
+    ensure_runtime_config_loaded();
+    REQUEST_SPILL_THRESHOLD_BYTES.load(Ordering::Relaxed)
+}
+
+pub(crate) fn request_compression_min_bytes() -> usize {
+    ensure_runtime_config_loaded();
+    REQUEST_COMPRESSION_MIN_BYTES.load(Ordering::Relaxed)
+}
+
+pub(crate) fn current_stream_pump_channel_capacity() -> usize {
+    ensure_runtime_config_loaded();
+    STREAM_PUMP_CHANNEL_CAPACITY.load(Ordering::Relaxed).max(1)
+}
+
+pub(crate) fn current_stream_pump_thread_stack_kb() -> usize {
+    ensure_runtime_config_loaded();
+    STREAM_PUMP_THREAD_STACK_KB.load(Ordering::Relaxed).max(64)
+}
+
+pub(crate) fn experimental_prepared_request_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    EXPERIMENTAL_PREPARED_REQUEST.load(Ordering::Relaxed)
+}
+
+pub(crate) fn experimental_async_request_log_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    EXPERIMENTAL_ASYNC_REQUEST_LOG.load(Ordering::Relaxed)
+}
+
+pub(crate) fn experimental_sse_frame_pump_v2_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    EXPERIMENTAL_SSE_FRAME_PUMP_V2.load(Ordering::Relaxed)
+}
+
+pub(crate) fn experimental_capped_http_workers_enabled() -> bool {
+    ensure_runtime_config_loaded();
+    EXPERIMENTAL_CAPPED_HTTP_WORKERS.load(Ordering::Relaxed)
 }
 
 pub(super) fn upstream_proxy_url() -> Option<String> {
@@ -384,6 +457,21 @@ pub(super) fn reload_from_env() {
         ),
         Ordering::Relaxed,
     );
+    REQUEST_SPILL_THRESHOLD_BYTES.store(
+        env_usize_or(
+            ENV_REQUEST_SPILL_THRESHOLD_BYTES,
+            DEFAULT_REQUEST_SPILL_THRESHOLD_BYTES,
+        )
+        .max(1),
+        Ordering::Relaxed,
+    );
+    REQUEST_COMPRESSION_MIN_BYTES.store(
+        env_usize_or(
+            ENV_REQUEST_COMPRESSION_MIN_BYTES,
+            DEFAULT_REQUEST_COMPRESSION_MIN_BYTES,
+        ),
+        Ordering::Relaxed,
+    );
     UPSTREAM_CONNECT_TIMEOUT_SECS.store(
         env_u64_or(
             ENV_UPSTREAM_CONNECT_TIMEOUT_SECS,
@@ -420,6 +508,50 @@ pub(super) fn reload_from_env() {
         env_bool_or(
             ENV_ENABLE_REQUEST_COMPRESSION,
             DEFAULT_ENABLE_REQUEST_COMPRESSION,
+        ),
+        Ordering::Relaxed,
+    );
+    STREAM_PUMP_CHANNEL_CAPACITY.store(
+        env_usize_or(
+            ENV_STREAM_PUMP_CHANNEL_CAPACITY,
+            DEFAULT_STREAM_PUMP_CHANNEL_CAPACITY,
+        )
+        .max(1),
+        Ordering::Relaxed,
+    );
+    STREAM_PUMP_THREAD_STACK_KB.store(
+        env_usize_or(
+            ENV_STREAM_PUMP_THREAD_STACK_KB,
+            DEFAULT_STREAM_PUMP_THREAD_STACK_KB,
+        )
+        .max(64),
+        Ordering::Relaxed,
+    );
+    EXPERIMENTAL_PREPARED_REQUEST.store(
+        env_bool_or(
+            ENV_EXPERIMENTAL_PREPARED_REQUEST,
+            DEFAULT_EXPERIMENTAL_PREPARED_REQUEST,
+        ),
+        Ordering::Relaxed,
+    );
+    EXPERIMENTAL_ASYNC_REQUEST_LOG.store(
+        env_bool_or(
+            ENV_EXPERIMENTAL_ASYNC_REQUEST_LOG,
+            DEFAULT_EXPERIMENTAL_ASYNC_REQUEST_LOG,
+        ),
+        Ordering::Relaxed,
+    );
+    EXPERIMENTAL_SSE_FRAME_PUMP_V2.store(
+        env_bool_or(
+            ENV_EXPERIMENTAL_SSE_FRAME_PUMP_V2,
+            DEFAULT_EXPERIMENTAL_SSE_FRAME_PUMP_V2,
+        ),
+        Ordering::Relaxed,
+    );
+    EXPERIMENTAL_CAPPED_HTTP_WORKERS.store(
+        env_bool_or(
+            ENV_EXPERIMENTAL_CAPPED_HTTP_WORKERS,
+            DEFAULT_EXPERIMENTAL_CAPPED_HTTP_WORKERS,
         ),
         Ordering::Relaxed,
     );

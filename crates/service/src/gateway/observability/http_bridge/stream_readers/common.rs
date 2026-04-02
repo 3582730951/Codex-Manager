@@ -1,5 +1,5 @@
 use super::{Arc, Mutex, UpstreamCompletionState, UpstreamResponseUsage};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
@@ -7,6 +7,8 @@ use std::time::Duration;
 
 const DEFAULT_SSE_KEEPALIVE_INTERVAL_MS: u64 = 15_000;
 const ENV_SSE_KEEPALIVE_INTERVAL_MS: &str = "CODEXMANAGER_SSE_KEEPALIVE_INTERVAL_MS";
+const LEGACY_SSE_FRAME_PUMP_CHANNEL_CAPACITY: usize = 32;
+const SSE_FRAME_PUMP_READ_CHUNK_BYTES: usize = 8192;
 
 static SSE_KEEPALIVE_INTERVAL_MS: AtomicU64 = AtomicU64::new(DEFAULT_SSE_KEEPALIVE_INTERVAL_MS);
 
@@ -61,41 +63,26 @@ pub(crate) struct UpstreamSseFramePump {
 
 impl UpstreamSseFramePump {
     pub(crate) fn new(upstream: reqwest::blocking::Response) -> Self {
-        let (tx, rx) = mpsc::sync_channel::<UpstreamSseFramePumpItem>(32);
-        thread::spawn(move || {
-            let mut reader = BufReader::new(upstream);
-            let mut pending_frame_lines = Vec::new();
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => {
-                        if !pending_frame_lines.is_empty()
-                            && tx
-                                .send(UpstreamSseFramePumpItem::Frame(pending_frame_lines))
-                                .is_err()
-                        {
-                            return;
-                        }
-                        let _ = tx.send(UpstreamSseFramePumpItem::Eof);
-                        return;
-                    }
-                    Ok(_) => {
-                        let is_blank = line == "\n" || line == "\r\n";
-                        pending_frame_lines.push(line);
-                        if is_blank {
-                            let frame = std::mem::take(&mut pending_frame_lines);
-                            if tx.send(UpstreamSseFramePumpItem::Frame(frame)).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        let _ = tx.send(UpstreamSseFramePumpItem::Error(err.to_string()));
-                        return;
-                    }
-                }
+        let use_v2 = crate::gateway::experimental_sse_frame_pump_v2_enabled();
+        let channel_capacity = if use_v2 {
+            crate::gateway::current_stream_pump_channel_capacity()
+        } else {
+            LEGACY_SSE_FRAME_PUMP_CHANNEL_CAPACITY
+        };
+        let (tx, rx) = mpsc::sync_channel::<UpstreamSseFramePumpItem>(channel_capacity);
+        if use_v2 {
+            let stack_size =
+                crate::gateway::current_stream_pump_thread_stack_kb().saturating_mul(1024);
+            if let Err(err) = thread::Builder::new()
+                .name("gateway-sse-pump".to_string())
+                .stack_size(stack_size)
+                .spawn(move || run_v2_frame_pump(upstream, tx))
+            {
+                log::warn!("event=gateway_sse_frame_pump_spawn_failed err={}", err);
             }
-        });
+        } else {
+            thread::spawn(move || run_legacy_frame_pump(upstream, tx));
+        }
         Self { rx }
     }
 
@@ -105,6 +92,132 @@ impl UpstreamSseFramePump {
     ) -> Result<UpstreamSseFramePumpItem, RecvTimeoutError> {
         self.rx.recv_timeout(timeout)
     }
+}
+
+fn run_legacy_frame_pump(
+    upstream: reqwest::blocking::Response,
+    tx: mpsc::SyncSender<UpstreamSseFramePumpItem>,
+) {
+    let mut reader = BufReader::new(upstream);
+    let mut pending_frame_lines = Vec::new();
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                if !pending_frame_lines.is_empty() {
+                    crate::gateway::record_gateway_stream_pump_frame();
+                    if tx
+                        .send(UpstreamSseFramePumpItem::Frame(pending_frame_lines))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let _ = tx.send(UpstreamSseFramePumpItem::Eof);
+                return;
+            }
+            Ok(_) => {
+                let is_blank = line == "\n" || line == "\r\n";
+                pending_frame_lines.push(line);
+                if is_blank {
+                    let frame = std::mem::take(&mut pending_frame_lines);
+                    crate::gateway::record_gateway_stream_pump_frame();
+                    if tx.send(UpstreamSseFramePumpItem::Frame(frame)).is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(err) => {
+                crate::gateway::record_gateway_stream_pump_disconnect();
+                let _ = tx.send(UpstreamSseFramePumpItem::Error(err.to_string()));
+                return;
+            }
+        }
+    }
+}
+
+fn run_v2_frame_pump(
+    upstream: reqwest::blocking::Response,
+    tx: mpsc::SyncSender<UpstreamSseFramePumpItem>,
+) {
+    let mut reader = BufReader::with_capacity(SSE_FRAME_PUMP_READ_CHUNK_BYTES, upstream);
+    let mut chunk = [0_u8; SSE_FRAME_PUMP_READ_CHUNK_BYTES];
+    let mut pending = Vec::with_capacity(SSE_FRAME_PUMP_READ_CHUNK_BYTES * 2);
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => {
+                if !pending.is_empty() {
+                    crate::gateway::record_gateway_stream_pump_frame();
+                    if tx
+                        .send(UpstreamSseFramePumpItem::Frame(frame_bytes_to_lines(
+                            pending.as_slice(),
+                        )))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let _ = tx.send(UpstreamSseFramePumpItem::Eof);
+                return;
+            }
+            Ok(read) => {
+                pending.extend_from_slice(&chunk[..read]);
+                while let Some(frame) = take_next_frame_bytes(&mut pending) {
+                    crate::gateway::record_gateway_stream_pump_frame();
+                    if tx
+                        .send(UpstreamSseFramePumpItem::Frame(frame_bytes_to_lines(
+                            frame.as_slice(),
+                        )))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            Err(err) => {
+                crate::gateway::record_gateway_stream_pump_disconnect();
+                let _ = tx.send(UpstreamSseFramePumpItem::Error(err.to_string()));
+                return;
+            }
+        }
+    }
+}
+
+fn take_next_frame_bytes(pending: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let boundary = find_frame_boundary(pending.as_slice())?;
+    Some(pending.drain(..boundary).collect())
+}
+
+fn find_frame_boundary(input: &[u8]) -> Option<usize> {
+    let mut idx = 0usize;
+    while idx + 1 < input.len() {
+        if input[idx] == b'\n' && input[idx + 1] == b'\n' {
+            return Some(idx + 2);
+        }
+        if idx + 3 < input.len() && &input[idx..idx + 4] == b"\r\n\r\n" {
+            return Some(idx + 4);
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn frame_bytes_to_lines(frame: &[u8]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    for (idx, byte) in frame.iter().enumerate() {
+        if *byte == b'\n' {
+            lines.push(String::from_utf8_lossy(&frame[start..=idx]).into_owned());
+            start = idx + 1;
+        }
+    }
+    if start < frame.len() {
+        lines.push(String::from_utf8_lossy(&frame[start..]).into_owned());
+    }
+    if lines.is_empty() && !frame.is_empty() {
+        lines.push(String::from_utf8_lossy(frame).into_owned());
+    }
+    lines
 }
 
 pub(super) fn reload_from_env() {
@@ -209,8 +322,8 @@ pub(super) fn classify_upstream_stream_read_error(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_upstream_stream_read_error, stream_incomplete_message,
-        stream_reader_disconnected_message,
+        classify_upstream_stream_read_error, find_frame_boundary, frame_bytes_to_lines,
+        stream_incomplete_message, stream_reader_disconnected_message, take_next_frame_bytes,
     };
 
     #[test]
@@ -244,5 +357,26 @@ mod tests {
             stream_reader_disconnected_message(),
             "上游流读取失败（连接中断）"
         );
+    }
+
+    #[test]
+    fn find_frame_boundary_detects_lf_delimiter() {
+        assert_eq!(find_frame_boundary(b"data: one\n\ndata: two"), Some(11));
+    }
+
+    #[test]
+    fn take_next_frame_bytes_splits_crlf_delimiter() {
+        let mut input = b"data: one\r\n\r\ndata: two\r\n\r\n".to_vec();
+        let first = take_next_frame_bytes(&mut input).expect("first frame");
+        assert_eq!(String::from_utf8_lossy(&first), "data: one\r\n\r\n");
+        assert_eq!(String::from_utf8_lossy(&input), "data: two\r\n\r\n");
+    }
+
+    #[test]
+    fn frame_bytes_to_lines_preserves_newlines() {
+        let lines = frame_bytes_to_lines(b"event: message\ndata: ok\n\n");
+        assert_eq!(lines[0], "event: message\n");
+        assert_eq!(lines[1], "data: ok\n");
+        assert_eq!(lines[2], "\n");
     }
 }

@@ -39,9 +39,16 @@ fn reload_from_env_updates_timeout_and_proxy() {
     let _guard = test_guard();
     let _timeout_guard = EnvGuard::set(ENV_UPSTREAM_TOTAL_TIMEOUT_MS, "777");
     let _stream_timeout_guard = EnvGuard::set(ENV_UPSTREAM_STREAM_TIMEOUT_MS, "888");
+    let _compression_min_guard = EnvGuard::set(ENV_REQUEST_COMPRESSION_MIN_BYTES, "24576");
     let _inflight_guard = EnvGuard::set(ENV_ACCOUNT_MAX_INFLIGHT, "4");
     let _strict_allowlist_guard = EnvGuard::set(ENV_STRICT_REQUEST_PARAM_ALLOWLIST, "0");
     let _request_compression_guard = EnvGuard::set(ENV_ENABLE_REQUEST_COMPRESSION, "0");
+    let _stream_pump_capacity_guard = EnvGuard::set(ENV_STREAM_PUMP_CHANNEL_CAPACITY, "12");
+    let _stream_pump_stack_guard = EnvGuard::set(ENV_STREAM_PUMP_THREAD_STACK_KB, "320");
+    let _experimental_prepared_guard = EnvGuard::set(ENV_EXPERIMENTAL_PREPARED_REQUEST, "1");
+    let _experimental_log_guard = EnvGuard::set(ENV_EXPERIMENTAL_ASYNC_REQUEST_LOG, "1");
+    let _experimental_sse_guard = EnvGuard::set(ENV_EXPERIMENTAL_SSE_FRAME_PUMP_V2, "1");
+    let _experimental_http_guard = EnvGuard::set(ENV_EXPERIMENTAL_CAPPED_HTTP_WORKERS, "1");
     let _client_id_guard = EnvGuard::set(ENV_TOKEN_EXCHANGE_CLIENT_ID, "client-id-123");
     let _issuer_guard = EnvGuard::set(ENV_TOKEN_EXCHANGE_ISSUER, "https://issuer.example");
     let _proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "socks5://127.0.0.1:7890");
@@ -55,6 +62,13 @@ fn reload_from_env_updates_timeout_and_proxy() {
     assert_eq!(account_max_inflight_limit(), 4);
     assert!(!strict_request_param_allowlist_enabled());
     assert!(!request_compression_enabled());
+    assert_eq!(request_compression_min_bytes(), 24_576);
+    assert_eq!(current_stream_pump_channel_capacity(), 12);
+    assert_eq!(current_stream_pump_thread_stack_kb(), 320);
+    assert!(experimental_prepared_request_enabled());
+    assert!(experimental_async_request_log_enabled());
+    assert!(experimental_sse_frame_pump_v2_enabled());
+    assert!(experimental_capped_http_workers_enabled());
     assert_eq!(token_exchange_client_id(), "client-id-123");
     assert_eq!(
         token_exchange_default_issuer(),
@@ -75,11 +89,25 @@ fn reload_from_env_defaults_account_max_inflight_to_dynamic_scheduler_mode() {
     let _guard = test_guard();
     let _guard = EnvGuard::clear(ENV_ACCOUNT_MAX_INFLIGHT);
     let _request_compression_guard = EnvGuard::clear(ENV_ENABLE_REQUEST_COMPRESSION);
+    let _compression_min_guard = EnvGuard::clear(ENV_REQUEST_COMPRESSION_MIN_BYTES);
+    let _stream_pump_capacity_guard = EnvGuard::clear(ENV_STREAM_PUMP_CHANNEL_CAPACITY);
+    let _stream_pump_stack_guard = EnvGuard::clear(ENV_STREAM_PUMP_THREAD_STACK_KB);
+    let _experimental_prepared_guard = EnvGuard::clear(ENV_EXPERIMENTAL_PREPARED_REQUEST);
+    let _experimental_log_guard = EnvGuard::clear(ENV_EXPERIMENTAL_ASYNC_REQUEST_LOG);
+    let _experimental_sse_guard = EnvGuard::clear(ENV_EXPERIMENTAL_SSE_FRAME_PUMP_V2);
+    let _experimental_http_guard = EnvGuard::clear(ENV_EXPERIMENTAL_CAPPED_HTTP_WORKERS);
 
     reload_from_env();
 
     assert_eq!(account_max_inflight_limit(), 0);
     assert!(request_compression_enabled());
+    assert_eq!(request_compression_min_bytes(), 16 * 1024);
+    assert_eq!(current_stream_pump_channel_capacity(), 8);
+    assert_eq!(current_stream_pump_thread_stack_kb(), 256);
+    assert!(!experimental_prepared_request_enabled());
+    assert!(!experimental_async_request_log_enabled());
+    assert!(!experimental_sse_frame_pump_v2_enabled());
+    assert!(!experimental_capped_http_workers_enabled());
 }
 
 #[test]
