@@ -350,6 +350,27 @@ impl Storage {
             .optional()
     }
 
+    pub fn latest_conversation_turn_index(
+        &self,
+        platform_key_hash: &str,
+        affinity_key: &str,
+        conversation_scope_id: &str,
+    ) -> Result<Option<i64>> {
+        self.conn
+            .query_row(
+                "SELECT turn_index
+                 FROM conversation_context_events
+                 WHERE platform_key_hash = ?1
+                   AND affinity_key = ?2
+                   AND conversation_scope_id = ?3
+                 ORDER BY turn_index DESC, item_seq ASC
+                 LIMIT 1",
+                params![platform_key_hash, affinity_key, conversation_scope_id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
     pub fn list_conversation_threads_for_affinity(
         &self,
         platform_key_hash: &str,

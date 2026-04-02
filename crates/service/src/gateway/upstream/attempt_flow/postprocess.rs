@@ -48,10 +48,7 @@ fn is_sse_content_type(header: Option<&reqwest::header::HeaderValue>) -> bool {
         .is_some_and(|value| value.starts_with("text/event-stream"))
 }
 
-fn should_preinspect_success_stream(
-    upstream_is_stream: bool,
-    status: reqwest::StatusCode,
-) -> bool {
+fn should_preinspect_success_stream(upstream_is_stream: bool, status: reqwest::StatusCode) -> bool {
     status.is_success() && upstream_is_stream
 }
 
@@ -434,10 +431,7 @@ where
 
     let mut incomplete_stream_retry_used = false;
     loop {
-        if !should_preinspect_success_stream(
-            upstream_is_stream,
-            status,
-        ) {
+        if !should_preinspect_success_stream(upstream_is_stream, status) {
             break;
         }
         // 中文注释：当前语义仍要求在真正向下游交付前，先对 SSE 做一次完整性检查，
@@ -459,9 +453,9 @@ where
                 };
             }
         };
-        let declared_sse =
-            is_sse_content_type(response_headers.get(reqwest::header::CONTENT_TYPE));
-        let looks_like_sse = declared_sse || crate::gateway::looks_like_sse_payload(response_body.as_ref());
+        let declared_sse = is_sse_content_type(response_headers.get(reqwest::header::CONTENT_TYPE));
+        let looks_like_sse =
+            declared_sse || crate::gateway::looks_like_sse_payload(response_body.as_ref());
         if !looks_like_sse {
             upstream = match rebuild_upstream_response_from_bytes(
                 response_status,

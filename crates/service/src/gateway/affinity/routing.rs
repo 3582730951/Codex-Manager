@@ -456,12 +456,16 @@ pub(crate) fn resolve_enforced_routing(
         requested_conversation_id.as_deref(),
         chosen.as_str(),
     );
-    let mut current_turn_index = next_turn_index(
-        storage,
-        platform_key_hash,
-        resolved_affinity_key.as_str(),
-        conversation_scope_id.as_str(),
-    )?;
+    let mut current_turn_index = if thread.is_some() {
+        next_turn_index(
+            storage,
+            platform_key_hash,
+            resolved_affinity_key.as_str(),
+            conversation_scope_id.as_str(),
+        )?
+    } else {
+        1
+    };
     let mut replay_unavailable_session_reset = false;
     let request_body_override = if requires_replay {
         match build_replay_request_body_with_initial_fallback(
@@ -1342,10 +1346,10 @@ fn next_turn_index(
     affinity_key: &str,
     conversation_scope_id: &str,
 ) -> Result<i64, String> {
-    let events = storage
-        .list_conversation_context_events(platform_key_hash, affinity_key, conversation_scope_id)
-        .map_err(|err| format!("load context events for turn index failed: {err}"))?;
-    Ok(events.iter().map(|item| item.turn_index).max().unwrap_or(0) + 1)
+    let latest = storage
+        .latest_conversation_turn_index(platform_key_hash, affinity_key, conversation_scope_id)
+        .map_err(|err| format!("load latest context turn failed: {err}"))?;
+    Ok(latest.unwrap_or(0) + 1)
 }
 
 fn supports_affinity_persistence_request(
@@ -1954,11 +1958,11 @@ fn normalize_text(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::{
         build_replay_request_body, compare_scored_candidates, evaluate_candidate_state,
-        hamilton_targets, now_ts, record_affinity_attempt_feedback,
+        hamilton_targets, next_turn_index, now_ts, record_affinity_attempt_feedback,
         resolution_with_session_reset_recovery, resolve_scope_id,
-        supports_affinity_persistence_request, trim_replay_items, Account,
-        AffinityScopePromotion, ClientBinding, ConversationContextEvent,
-        ConversationContextState, ConversationThread, ScoredCandidate, Storage, Token,
+        supports_affinity_persistence_request, trim_replay_items, Account, AffinityScopePromotion,
+        ClientBinding, ConversationContextEvent, ConversationContextState, ConversationThread,
+        ScoredCandidate, Storage, Token,
     };
     use crate::gateway::ResponseAdapter;
     use std::sync::{Mutex, OnceLock};
@@ -2170,6 +2174,66 @@ mod tests {
     }
 
     #[test]
+    fn next_turn_index_uses_latest_turn_without_loading_full_history() {
+        let storage = Storage::open_in_memory().expect("open in memory");
+        storage.init().expect("init schema");
+        let now = now_ts();
+
+        storage
+            .replace_conversation_context_turn(
+                "pk",
+                "sid:test",
+                "scope",
+                2,
+                &[ConversationContextEvent {
+                    platform_key_hash: "pk".to_string(),
+                    affinity_key: "sid:test".to_string(),
+                    conversation_scope_id: "scope".to_string(),
+                    turn_index: 2,
+                    item_seq: 0,
+                    role: Some("user".to_string()),
+                    pair_group_id: None,
+                    capture_complete: true,
+                    item_json: "{\"type\":\"message\",\"role\":\"user\",\"content\":\"old\"}"
+                        .to_string(),
+                    created_at: now,
+                }],
+            )
+            .expect("insert turn 2");
+        storage
+            .replace_conversation_context_turn(
+                "pk",
+                "sid:test",
+                "scope",
+                7,
+                &[ConversationContextEvent {
+                    platform_key_hash: "pk".to_string(),
+                    affinity_key: "sid:test".to_string(),
+                    conversation_scope_id: "scope".to_string(),
+                    turn_index: 7,
+                    item_seq: 0,
+                    role: Some("assistant".to_string()),
+                    pair_group_id: None,
+                    capture_complete: true,
+                    item_json:
+                        "{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"latest\"}"
+                            .to_string(),
+                    created_at: now,
+                }],
+            )
+            .expect("insert turn 7");
+
+        assert_eq!(
+            next_turn_index(&storage, "pk", "sid:test", "scope").expect("next turn"),
+            8
+        );
+        assert_eq!(
+            next_turn_index(&storage, "pk", "sid:test", "missing").expect("empty scope"),
+            1
+        );
+    }
+
+    #[test]
     fn build_attempt_replay_body_reuses_original_body_when_first_turn_has_no_persisted_context() {
         let _guard = affinity_runtime_lock()
             .lock()
@@ -2336,8 +2400,7 @@ mod tests {
             chosen_account_id: "acc-primary".to_string(),
             candidate_account_ids: vec!["acc-primary".to_string(), "acc-fallback".to_string()],
             request_body_override: Some(
-                crate::gateway::RequestPayload::from_vec(b"{}".to_vec())
-                    .expect("request payload"),
+                crate::gateway::RequestPayload::from_vec(b"{}".to_vec()).expect("request payload"),
             ),
             thread_epoch: 1,
             thread_anchor: "thread-1".to_string(),
@@ -2354,8 +2417,7 @@ mod tests {
             switch_reason: Some("affinity_rebind".to_string()),
         };
 
-        let downgraded =
-            resolution_with_session_reset_recovery(&resolution, "acc-fallback");
+        let downgraded = resolution_with_session_reset_recovery(&resolution, "acc-fallback");
 
         assert_eq!(downgraded.chosen_account_id, "acc-fallback");
         assert!(downgraded.request_body_override.is_none());

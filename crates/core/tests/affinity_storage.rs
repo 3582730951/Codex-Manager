@@ -253,6 +253,67 @@ fn conversation_affinity_storage_roundtrip_and_delete_for_account() {
 }
 
 #[test]
+fn latest_conversation_turn_index_returns_highest_turn_without_listing_all_events() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+    let now = now_ts();
+
+    storage
+        .replace_conversation_context_turn(
+            "platform-1",
+            "sid:test-1",
+            "scope-1",
+            0,
+            &[ConversationContextEvent {
+                platform_key_hash: "platform-1".to_string(),
+                affinity_key: "sid:test-1".to_string(),
+                conversation_scope_id: "scope-1".to_string(),
+                turn_index: 0,
+                item_seq: 0,
+                role: Some("user".to_string()),
+                pair_group_id: None,
+                capture_complete: true,
+                item_json: "{\"type\":\"message\",\"role\":\"user\",\"content\":\"hello\"}"
+                    .to_string(),
+                created_at: now,
+            }],
+        )
+        .expect("replace turn 0");
+    storage
+        .replace_conversation_context_turn(
+            "platform-1",
+            "sid:test-1",
+            "scope-1",
+            3,
+            &[ConversationContextEvent {
+                platform_key_hash: "platform-1".to_string(),
+                affinity_key: "sid:test-1".to_string(),
+                conversation_scope_id: "scope-1".to_string(),
+                turn_index: 3,
+                item_seq: 0,
+                role: Some("assistant".to_string()),
+                pair_group_id: None,
+                capture_complete: true,
+                item_json: "{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"done\"}"
+                    .to_string(),
+                created_at: now,
+            }],
+        )
+        .expect("replace turn 3");
+
+    let latest = storage
+        .latest_conversation_turn_index("platform-1", "sid:test-1", "scope-1")
+        .expect("query latest turn");
+    assert_eq!(latest, Some(3));
+    assert_eq!(
+        storage
+            .latest_conversation_turn_index("platform-1", "sid:test-1", "missing")
+            .expect("query missing scope"),
+        None
+    );
+}
+
+#[test]
 fn commit_affinity_turn_success_rolls_back_on_cas_miss() {
     let storage = Storage::open_in_memory().expect("open in memory");
     storage.init().expect("init schema");
