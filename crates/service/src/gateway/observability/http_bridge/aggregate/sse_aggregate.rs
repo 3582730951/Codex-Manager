@@ -658,7 +658,11 @@ pub(crate) fn looks_like_sse_payload(body: &[u8]) -> bool {
             }
             continue;
         }
-        if trimmed.starts_with("data:") || trimmed.starts_with("event:") || trimmed.starts_with(':')
+        if trimmed.starts_with("data:")
+            || trimmed.starts_with("event:")
+            || trimmed.starts_with("id:")
+            || trimmed.starts_with("retry:")
+            || trimmed.starts_with(':')
         {
             saw_sse_prefix = true;
             continue;

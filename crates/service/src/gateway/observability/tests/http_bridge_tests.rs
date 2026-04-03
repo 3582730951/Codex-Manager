@@ -1,8 +1,8 @@
 use super::{
     apply_openai_stream_meta_defaults, collect_non_stream_json_from_sse_bytes,
     extract_openai_completed_output_text, inspect_non_stream_sse_payload, inspect_sse_frame,
-    normalize_chat_chunk_delta_role, parse_sse_frame_json, parse_usage_from_json,
-    parse_usage_from_sse_frame, should_skip_chat_live_text_event,
+    looks_like_sse_payload, normalize_chat_chunk_delta_role, parse_sse_frame_json,
+    parse_usage_from_json, parse_usage_from_sse_frame, should_skip_chat_live_text_event,
     should_skip_completion_live_text_event, synthesize_chat_completion_sse_from_json,
     synthesize_completions_sse_from_json, OpenAIChatCompletionsSseReader,
     OpenAICompletionsSseReader, OpenAIStreamMeta, PassthroughSseCollector,
@@ -573,6 +573,17 @@ fn inspect_non_stream_sse_payload_keeps_completed_body_and_trailing_quota_error(
     let terminal_error = inspection.terminal_error.unwrap_or_default();
     assert!(terminal_error.contains("usage_limit_reached"));
     assert!(terminal_error.contains("usage limit"));
+}
+
+#[test]
+fn looks_like_sse_payload_accepts_standard_id_and_retry_fields() {
+    let sse = concat!(
+        "id: evt-1\n",
+        "retry: 1500\n",
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_id_1\"}}\n\n"
+    );
+    assert!(looks_like_sse_payload(sse.as_bytes()));
 }
 
 #[test]

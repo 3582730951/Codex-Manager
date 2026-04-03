@@ -1402,6 +1402,101 @@ mod tests {
     }
 
     #[test]
+    fn streaming_incomplete_sse_with_leading_id_retries_and_recovers() {
+        let storage = Storage::open_in_memory().expect("open storage");
+        storage.init().expect("init storage");
+        let now = now_ts();
+        let account = build_account("acc-stream-incomplete-leading-id", now);
+        let mut token = build_token(account.id.as_str(), now);
+        let auth_token = token.access_token.clone();
+        storage.insert_account(&account).expect("insert account");
+        storage.insert_token(&token).expect("insert token");
+
+        let server = Server::http("127.0.0.1:0").expect("start server");
+        let addr = format!("http://{}", server.server_addr());
+        let hit_count = Arc::new(AtomicUsize::new(0));
+        let hit_count_thread = Arc::clone(&hit_count);
+        let join = thread::spawn(move || {
+            for index in 0..2 {
+                let request = server
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("receive upstream request")
+                    .expect("request present");
+                hit_count_thread.fetch_add(1, Ordering::SeqCst);
+                let body = if index == 0 {
+                    concat!(
+                        "id: evt-leading-id-1\n",
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_retry_id_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n"
+                    )
+                } else {
+                    concat!(
+                        "id: evt-leading-id-1\n",
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_retry_id_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\"}}\n\n",
+                        "event: response.completed\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_retry_id_1\",\"created\":1774960200,\"model\":\"gpt-5.3-codex\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n",
+                        "data: [DONE]\n\n"
+                    )
+                };
+                let response = Response::from_string(body).with_status_code(StatusCode(200));
+                request.respond(response).expect("respond");
+            }
+        });
+
+        let client = reqwest::blocking::Client::new();
+        let incoming_headers = IncomingHeaderSnapshot::default();
+        let request_ctx = UpstreamRequestContext {
+            request_path: "/v1/responses",
+        };
+        let body =
+            build_request_body(br#"{"model":"gpt-5.3-codex","input":"hello","stream":true}"#);
+        let upstream = send_test_upstream(
+            &client,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            auth_token.as_str(),
+            &account,
+            addr.as_str(),
+        );
+
+        let decision = process_upstream_post_retry_flow(
+            &client,
+            &storage,
+            &reqwest::Method::POST,
+            addr.as_str(),
+            "/v1/responses",
+            addr.as_str(),
+            None,
+            None,
+            request_ctx,
+            &incoming_headers,
+            &body,
+            true,
+            true,
+            auth_token.as_str(),
+            &account,
+            &mut token,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            upstream,
+            |_, _, _| {},
+        );
+
+        join.join().expect("join server");
+        assert_eq!(hit_count.load(Ordering::SeqCst), 2);
+        match decision {
+            PostRetryFlowDecision::RespondUpstream(resp) => assert_eq!(resp.status(), 200),
+            _ => panic!("unexpected decision"),
+        }
+    }
+
+    #[test]
     fn streaming_terminal_error_without_content_type_fails_over_before_delivery() {
         let storage = Storage::open_in_memory().expect("open storage");
         storage.init().expect("init storage");
