@@ -2,7 +2,7 @@ use codexmanager_core::auth::DEFAULT_ORIGINATOR;
 use codexmanager_core::auth::{DEFAULT_CLIENT_ID, DEFAULT_ISSUER};
 use reqwest::blocking::Client;
 use reqwest::Proxy;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
@@ -42,6 +42,8 @@ static EXPERIMENTAL_CAPPED_HTTP_WORKERS: AtomicBool =
 static UPSTREAM_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static GATEWAY_ACCOUNT_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static GATEWAY_ACCOUNT_PROXY_CLIENT: OnceLock<RwLock<Option<Client>>> = OnceLock::new();
+static GATEWAY_ACCOUNT_PROXY_MODE: AtomicU8 =
+    AtomicU8::new(DEFAULT_GATEWAY_ACCOUNT_PROXY_MODE as u8);
 static FREE_ACCOUNT_MAX_MODEL: OnceLock<RwLock<String>> = OnceLock::new();
 static ORIGINATOR: OnceLock<RwLock<String>> = OnceLock::new();
 static CODEX_USER_AGENT_VERSION: OnceLock<RwLock<String>> = OnceLock::new();
@@ -68,8 +70,10 @@ const DEFAULT_EXPERIMENTAL_PREPARED_REQUEST: bool = false;
 const DEFAULT_EXPERIMENTAL_ASYNC_REQUEST_LOG: bool = false;
 const DEFAULT_EXPERIMENTAL_SSE_FRAME_PUMP_V2: bool = false;
 const DEFAULT_EXPERIMENTAL_CAPPED_HTTP_WORKERS: bool = false;
+const DEFAULT_GATEWAY_ACCOUNT_PROXY_MODE: GatewayAccountProxyMode =
+    GatewayAccountProxyMode::GroupAuto;
 const DEFAULT_FREE_ACCOUNT_MAX_MODEL: &str = "auto";
-const DEFAULT_CODEX_USER_AGENT_VERSION: &str = "0.101.0";
+const DEFAULT_CODEX_USER_AGENT_VERSION: &str = "0.118.0";
 const MAX_UPSTREAM_PROXY_POOL_SIZE: usize = 5;
 
 const ENV_REQUEST_GATE_WAIT_TIMEOUT_MS: &str = "CODEXMANAGER_REQUEST_GATE_WAIT_TIMEOUT_MS";
@@ -94,6 +98,7 @@ const ENV_TOKEN_EXCHANGE_ISSUER: &str = "CODEXMANAGER_ISSUER";
 const ENV_PROXY_LIST: &str = "CODEXMANAGER_PROXY_LIST";
 const ENV_UPSTREAM_PROXY_URL: &str = "CODEXMANAGER_UPSTREAM_PROXY_URL";
 const ENV_GATEWAY_ACCOUNT_PROXY_URL: &str = "CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL";
+const ENV_GATEWAY_ACCOUNT_PROXY_MODE: &str = "CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE";
 const ENV_FREE_ACCOUNT_MAX_MODEL: &str = "CODEXMANAGER_FREE_ACCOUNT_MAX_MODEL";
 const ENV_ORIGINATOR: &str = "CODEXMANAGER_ORIGINATOR";
 const ENV_RESIDENCY_REQUIREMENT: &str = "CODEXMANAGER_RESIDENCY_REQUIREMENT";
@@ -103,6 +108,49 @@ pub(crate) const RESIDENCY_HEADER_NAME: &str = "x-openai-internal-codex-residenc
 struct UpstreamClientPool {
     proxies: Vec<String>,
     clients: Vec<Client>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayAccountProxyMode {
+    Always = 0,
+    GroupAuto = 1,
+}
+
+impl GatewayAccountProxyMode {
+    fn from_env(value: Option<&str>) -> Self {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return DEFAULT_GATEWAY_ACCOUNT_PROXY_MODE;
+        };
+        if value.eq_ignore_ascii_case("always") {
+            Self::Always
+        } else if value.eq_ignore_ascii_case("group_auto")
+            || value.eq_ignore_ascii_case("group-auto")
+            || value.eq_ignore_ascii_case("auto")
+        {
+            Self::GroupAuto
+        } else {
+            log::warn!(
+                "event=gateway_invalid_account_proxy_mode value={} fallback={}",
+                value,
+                DEFAULT_GATEWAY_ACCOUNT_PROXY_MODE.as_str()
+            );
+            DEFAULT_GATEWAY_ACCOUNT_PROXY_MODE
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::GroupAuto => "group_auto",
+        }
+    }
+
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::GroupAuto,
+            _ => Self::Always,
+        }
+    }
 }
 
 impl UpstreamClientPool {
@@ -152,6 +200,11 @@ pub(crate) fn gateway_account_proxy_client() -> Option<Client> {
         "gateway_account_proxy_client",
     )
     .clone()
+}
+
+pub(crate) fn gateway_account_proxy_mode() -> GatewayAccountProxyMode {
+    ensure_runtime_config_loaded();
+    GatewayAccountProxyMode::from_u8(GATEWAY_ACCOUNT_PROXY_MODE.load(Ordering::Relaxed))
 }
 
 pub(crate) fn fresh_direct_upstream_client() -> Client {
@@ -606,6 +659,12 @@ pub(super) fn reload_from_env() {
     );
     *cached_gateway_account_proxy = converted_gateway_account_proxy;
     drop(cached_gateway_account_proxy);
+
+    GATEWAY_ACCOUNT_PROXY_MODE.store(
+        GatewayAccountProxyMode::from_env(env_non_empty(ENV_GATEWAY_ACCOUNT_PROXY_MODE).as_deref())
+            as u8,
+        Ordering::Relaxed,
+    );
 
     let free_account_max_model = env_non_empty(ENV_FREE_ACCOUNT_MAX_MODEL)
         .and_then(|value| normalize_model_slug(value.as_str()).ok())

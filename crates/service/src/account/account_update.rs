@@ -9,6 +9,7 @@ pub(crate) fn update_account(
     label: Option<&str>,
     note: Option<&str>,
     tags: Option<&str>,
+    group_name: Option<&str>,
 ) -> Result<(), String> {
     // 更新账号排序或状态并记录事件
     let normalized_account_id = account_id.trim();
@@ -20,12 +21,15 @@ pub(crate) fn update_account(
     let normalized_label = normalize_optional_label(label)?;
     let normalized_note = normalize_optional_text(note);
     let normalized_tags = normalize_optional_tags(tags);
+    let normalized_group_name = normalize_optional_group_name(group_name);
     let metadata_requested = note.is_some() || tags.is_some();
+    let group_name_requested = group_name.is_some();
 
     if sort.is_none()
         && normalized_status.is_none()
         && normalized_label.is_none()
         && !metadata_requested
+        && !group_name_requested
     {
         return Err("missing account update fields".to_string());
     }
@@ -61,6 +65,21 @@ pub(crate) fn update_account(
             account_id: Some(normalized_account_id.to_string()),
             event_type: "account_profile_update".to_string(),
             message: format!("label={label}"),
+            created_at: now,
+        });
+    }
+
+    if group_name_requested {
+        storage
+            .update_account_group_name(normalized_account_id, normalized_group_name.as_deref())
+            .map_err(|e| e.to_string())?;
+        let _ = storage.insert_event(&Event {
+            account_id: Some(normalized_account_id.to_string()),
+            event_type: "account_profile_update".to_string(),
+            message: format!(
+                "group_name={}",
+                normalized_group_name.as_deref().unwrap_or("-")
+            ),
             created_at: now,
         });
     }
@@ -132,4 +151,11 @@ fn normalize_optional_tags(value: Option<&str>) -> Option<String> {
     } else {
         Some(parts.join(","))
     }
+}
+
+fn normalize_optional_group_name(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|group_name| !group_name.is_empty())
+        .map(ToString::to_string)
 }

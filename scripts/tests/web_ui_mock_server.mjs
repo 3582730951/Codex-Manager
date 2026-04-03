@@ -67,7 +67,7 @@ function createDefaultSettings() {
     ],
     requestCompressionEnabled: true,
     gatewayOriginator: "codex_cli_rs",
-    gatewayUserAgentVersion: "0.101.0",
+    gatewayUserAgentVersion: "0.118.0",
     gatewayResidencyRequirement: "",
     gatewayResidencyRequirementOptions: ["", "us"],
     upstreamProxyUrl: "",

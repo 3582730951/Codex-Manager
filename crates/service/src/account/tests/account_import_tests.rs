@@ -197,7 +197,7 @@ fn import_single_item_reuses_existing_login_account_by_scope_identity() {
     let accounts = storage.list_accounts().expect("list accounts");
     assert_eq!(accounts.len(), 1);
     assert_eq!(accounts[0].id, existing_id);
-    assert_eq!(accounts[0].group_name, None);
+    assert_eq!(accounts[0].group_name.as_deref(), Some("LOGIN"));
     assert!(storage
         .find_account_metadata(&accounts[0].id)
         .expect("find metadata")
@@ -243,7 +243,7 @@ fn import_single_item_prefers_meta_fields_for_new_account() {
     );
     assert_eq!(accounts[0].label, "Meta Label");
     assert_eq!(accounts[0].issuer, "https://issuer.example");
-    assert_eq!(accounts[0].group_name, None);
+    assert_eq!(accounts[0].group_name.as_deref(), Some("IMPORT"));
     assert_eq!(
         accounts[0].chatgpt_account_id.as_deref(),
         Some("cgpt-manual")

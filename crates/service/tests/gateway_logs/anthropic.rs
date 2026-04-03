@@ -127,7 +127,7 @@ fn gateway_claude_protocol_end_to_end_uses_codex_headers() {
         captured
             .headers
             .get("user-agent")
-            .is_some_and(|value| value.contains("0.101.0")),
+            .is_some_and(|value| value.contains("0.118.0")),
         "user-agent should carry codex client version"
     );
     assert!(!captured.headers.contains_key("openai-beta"));

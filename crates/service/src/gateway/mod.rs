@@ -10,6 +10,8 @@ mod cooldown;
 mod error_response;
 #[path = "routing/failover.rs"]
 mod failover;
+#[path = "routing/group_proxy.rs"]
+mod group_proxy;
 #[path = "observability/http_bridge/mod.rs"]
 mod http_bridge;
 #[path = "request/incoming_headers.rs"]
@@ -243,8 +245,8 @@ pub(crate) use runtime_config::front_proxy_max_body_bytes;
 pub(crate) use runtime_config::request_spill_threshold_bytes;
 use runtime_config::{
     account_max_inflight_limit, fresh_direct_upstream_client, fresh_upstream_client_for_account,
-    gateway_account_proxy_client, gateway_account_proxy_url, trace_body_preview_max_bytes,
-    upstream_client, upstream_client_for_account, upstream_stream_timeout, upstream_total_timeout,
+    gateway_account_proxy_client, trace_body_preview_max_bytes, upstream_client,
+    upstream_client_for_account, upstream_stream_timeout, upstream_total_timeout,
     DEFAULT_GATEWAY_DEBUG,
 };
 pub(crate) use runtime_config::{
@@ -266,6 +268,7 @@ pub(crate) fn reload_runtime_config_from_env() {
     request_gate::clear_runtime_state();
     cooldown::clear_runtime_state();
     route_quality::clear_runtime_state();
+    group_proxy::clear_runtime_state();
     scheduler::clear_runtime_state();
     route_hint::reload_from_env();
     upstream::config::reload_from_env();
@@ -370,6 +373,24 @@ pub(crate) fn strict_request_param_allowlist_enabled() -> bool {
 
 pub(crate) fn current_upstream_proxy_url() -> Option<String> {
     runtime_config::upstream_proxy_url()
+}
+
+pub(crate) fn should_use_gateway_account_proxy_for_account(
+    account: &codexmanager_core::storage::Account,
+) -> bool {
+    group_proxy::should_use_gateway_account_proxy_for_account(account)
+}
+
+pub(crate) fn record_account_group_proxy_challenge(
+    account: &codexmanager_core::storage::Account,
+) {
+    group_proxy::record_account_group_proxy_challenge(account);
+}
+
+pub(crate) fn record_account_group_proxy_success(
+    account: &codexmanager_core::storage::Account,
+) {
+    group_proxy::record_account_group_proxy_success(account);
 }
 
 pub(crate) fn set_upstream_proxy_url(proxy_url: Option<&str>) -> Result<Option<String>, String> {

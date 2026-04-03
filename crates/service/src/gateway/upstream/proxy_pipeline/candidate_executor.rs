@@ -440,7 +440,7 @@ pub(in super::super) fn execute_candidate_sequence(
                         resp,
                         guard,
                         context,
-                        &account.id,
+                        account,
                         &request_body_for_success,
                         attempt_trace.last_attempt_url.as_deref(),
                         attempt_trace.last_attempt_error.as_deref(),

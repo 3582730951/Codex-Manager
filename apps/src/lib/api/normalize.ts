@@ -597,7 +597,7 @@ export function normalizeAppSettings(payload: unknown): AppSettings {
     ),
     requestCompressionEnabled: asBoolean(source.requestCompressionEnabled, true),
     gatewayOriginator: asString(source.gatewayOriginator) || "codex_cli_rs",
-    gatewayUserAgentVersion: asString(source.gatewayUserAgentVersion) || "0.101.0",
+    gatewayUserAgentVersion: asString(source.gatewayUserAgentVersion) || "0.118.0",
     gatewayResidencyRequirement: asString(source.gatewayResidencyRequirement),
     gatewayResidencyRequirementOptions: asArray(
       source.gatewayResidencyRequirementOptions

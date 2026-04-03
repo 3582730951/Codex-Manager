@@ -57,7 +57,16 @@ DEFAULT_CODEXMANAGER_QXCNM_COMPOSE_PROJECT_NAME="codexmanager-qxcnm"
 DEFAULT_CODEXMANAGER_REMOTE_COMPOSE_PROJECT_NAME="codexmanager-remote"
 DEFAULT_CODEXMANAGER_REMOTE_SERVER_NAME="_"
 DEFAULT_CODEXMANAGER_REMOTE_HTTP_PORT="80"
-DEFAULT_CODEXMANAGER_REMOTE_WARP_PROXY_URL="socks5h://127.0.0.1:40000"
+DEFAULT_CODEXMANAGER_WARP_ENABLED="1"
+DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME="codexmanager-warp"
+DEFAULT_CODEXMANAGER_WARP_IMAGE="caomingjun/warp:latest"
+DEFAULT_CODEXMANAGER_WARP_PROXY_PORT="1080"
+DEFAULT_CODEXMANAGER_WARP_SLEEP="5"
+DEFAULT_CODEXMANAGER_WARP_LICENSE_KEY=""
+DEFAULT_CODEXMANAGER_WARP_PROFILE="warp"
+DEFAULT_CODEXMANAGER_WARP_PROXY_URL="socks5h://${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}:${DEFAULT_CODEXMANAGER_WARP_PROXY_PORT}"
+LEGACY_DEFAULT_CODEXMANAGER_WARP_PROXY_URL="socks5h://host.docker.internal:40000"
+DEFAULT_CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE="group_auto"
 
 CODEX_VOLUME_SUFFIXES=(
   agents_home
@@ -80,6 +89,30 @@ warn() { printf '\n[WARN] %s\n' "$*" >&2; }
 die() { printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "未找到命令: $1"; }
 need_file() { [[ -f "$1" ]] || die "未找到文件: $1"; }
+
+default_codexmanager_warp_proxy_url() {
+  printf '%s' "${DEFAULT_CODEXMANAGER_WARP_PROXY_URL}"
+}
+
+normalize_codexmanager_warp_proxy_url_default() {
+  local raw="${1:-}"
+  raw="$(strip_terminal_control_sequences "${raw}")"
+  case "${raw}" in
+    ""|"${LEGACY_DEFAULT_CODEXMANAGER_WARP_PROXY_URL}")
+      default_codexmanager_warp_proxy_url
+      ;;
+    *)
+      printf '%s' "${raw}"
+      ;;
+  esac
+}
+
+append_codexmanager_warp_profile_args() {
+  local enabled="${1:-0}"
+  if [[ "${enabled}" == "1" ]]; then
+    printf '%s\n' "--profile" "${DEFAULT_CODEXMANAGER_WARP_PROFILE}"
+  fi
+}
 
 support_bundle_ready() {
   local required_files=(
@@ -1124,7 +1157,7 @@ remove_image_interactive() {
 }
 
 write_codexmanager_runtime_env() {
-  local file="$1" repo_url="$2" repo_ref="$3" source_path="$4" compose_project_name="$5"
+  local file="$1" repo_url="$2" repo_ref="$3" source_path="$4" compose_project_name="$5" warp_enabled="$6" warp_proxy_url="$7" gateway_proxy_mode="$8"
   local network_name
   network_name="$(compose_default_network_name "${compose_project_name}")"
   cat > "${file}" <<EOF_CODEXMANAGER
@@ -1133,12 +1166,19 @@ CODEXMANAGER_REPO_REF=${repo_ref}
 CODEXMANAGER_SOURCE_PATH=${source_path}
 CODEXMANAGER_COMPOSE_PROJECT_NAME=${compose_project_name}
 CODEXMANAGER_NETWORK_NAME=${network_name}
+CODEXMANAGER_WARP_ENABLED=${warp_enabled}
+CODEXMANAGER_UPSTREAM_PROXY_URL=${warp_proxy_url}
+CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL=${warp_proxy_url}
+CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE=${gateway_proxy_mode}
+CODEXMANAGER_WARP_IMAGE=${DEFAULT_CODEXMANAGER_WARP_IMAGE}
+CODEXMANAGER_WARP_SLEEP=${DEFAULT_CODEXMANAGER_WARP_SLEEP}
+CODEXMANAGER_WARP_LICENSE_KEY=${DEFAULT_CODEXMANAGER_WARP_LICENSE_KEY}
 EOF_CODEXMANAGER
   chmod 600 "${file}"
 }
 
 write_codexmanager_remote_runtime_env() {
-  local file="$1" repo_url="$2" repo_ref="$3" source_path="$4" compose_project_name="$5" server_name="$6" http_port="$7" warp_enabled="$8" warp_proxy_url="$9"
+  local file="$1" repo_url="$2" repo_ref="$3" source_path="$4" compose_project_name="$5" server_name="$6" http_port="$7" warp_enabled="$8" warp_proxy_url="$9" gateway_proxy_mode="${10}"
   local network_name nginx_conf_path
   network_name="$(compose_default_network_name "${compose_project_name}")"
   nginx_conf_path="${source_path}/docker/nginx/codexmanager.remote.generated.conf"
@@ -1151,7 +1191,12 @@ CODEXMANAGER_NETWORK_NAME=${network_name}
 CODEXMANAGER_REMOTE_SERVER_NAME=${server_name}
 CODEXMANAGER_REMOTE_HTTP_PORT=${http_port}
 CODEXMANAGER_REMOTE_WARP_ENABLED=${warp_enabled}
+CODEXMANAGER_UPSTREAM_PROXY_URL=${warp_proxy_url}
 CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL=${warp_proxy_url}
+CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE=${gateway_proxy_mode}
+CODEXMANAGER_WARP_IMAGE=${DEFAULT_CODEXMANAGER_WARP_IMAGE}
+CODEXMANAGER_WARP_SLEEP=${DEFAULT_CODEXMANAGER_WARP_SLEEP}
+CODEXMANAGER_WARP_LICENSE_KEY=${DEFAULT_CODEXMANAGER_WARP_LICENSE_KEY}
 CODEXMANAGER_REMOTE_NGINX_CONF_PATH=${nginx_conf_path}
 EOF_CODEXMANAGER_REMOTE
   chmod 600 "${file}"
@@ -1159,7 +1204,7 @@ EOF_CODEXMANAGER_REMOTE
 
 collect_codexmanager_remote_runtime_inputs() {
   local file="$1" default_repo_url="$2" default_repo_ref="$3" default_source_path="$4" default_project_name="$5" target_label="$6"
-  local repo_url repo_ref source_path compose_project_name server_name http_port warp_enabled warp_proxy_url
+  local repo_url repo_ref source_path compose_project_name server_name http_port warp_enabled warp_proxy_url gateway_proxy_mode
 
   repo_url="$(prompt_default "请输入${target_label}仓库地址" "$(get_env_value "${file}" CODEXMANAGER_REPO_URL "${default_repo_url}")")"
   repo_ref="$(prompt_default "请输入${target_label}分支/标签" "$(get_env_value "${file}" CODEXMANAGER_REPO_REF "${default_repo_ref}")")"
@@ -1168,29 +1213,40 @@ collect_codexmanager_remote_runtime_inputs() {
   compose_project_name="$(prompt_default "请输入${target_label} compose project name" "$(get_env_value "${file}" CODEXMANAGER_COMPOSE_PROJECT_NAME "${default_project_name}")")"
   server_name="$(prompt_default "请输入远程 Nginx server_name（域名或 _）" "$(get_env_value "${file}" CODEXMANAGER_REMOTE_SERVER_NAME "${DEFAULT_CODEXMANAGER_REMOTE_SERVER_NAME}")")"
   http_port="$(validate_host_port_or_die "$(prompt_default "请输入远程 Nginx 对外 HTTP 端口" "$(get_env_value "${file}" CODEXMANAGER_REMOTE_HTTP_PORT "${DEFAULT_CODEXMANAGER_REMOTE_HTTP_PORT}")")" "CODEXMANAGER_REMOTE_HTTP_PORT")"
-  warp_enabled="$(prompt_bool_default "是否启用 WARP 模式（通过专用代理出站）" "$(get_env_value "${file}" CODEXMANAGER_REMOTE_WARP_ENABLED "0")")"
+  warp_enabled="$(prompt_bool_default "是否启用内置 WARP sidecar（默认自动部署并按组切换）" "$(get_env_value "${file}" CODEXMANAGER_REMOTE_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")")"
   if [[ "${warp_enabled}" == "1" ]]; then
-    warp_proxy_url="$(prompt_default "请输入 WARP/代理 URL（支持 socks5/http）" "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL "${DEFAULT_CODEXMANAGER_REMOTE_WARP_PROXY_URL}")")"
-    [[ -n "${warp_proxy_url}" ]] || die "启用 WARP 模式时，代理 URL 不能为空。"
+    warp_proxy_url="$(normalize_codexmanager_warp_proxy_url_default "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL "$(default_codexmanager_warp_proxy_url)")")"
+    gateway_proxy_mode="$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE "${DEFAULT_CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE}")"
+    log "WARP 已启用：将自动使用内置 sidecar ${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}（${warp_proxy_url}）。"
   else
     warp_proxy_url=""
+    gateway_proxy_mode="${DEFAULT_CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE}"
   fi
 
-  write_codexmanager_remote_runtime_env "${file}" "${repo_url}" "${repo_ref}" "${source_path}" "${compose_project_name}" "${server_name}" "${http_port}" "${warp_enabled}" "${warp_proxy_url}"
+  write_codexmanager_remote_runtime_env "${file}" "${repo_url}" "${repo_ref}" "${source_path}" "${compose_project_name}" "${server_name}" "${http_port}" "${warp_enabled}" "${warp_proxy_url}" "${gateway_proxy_mode}"
   log "已写入 ${file}"
 }
 
 collect_codexmanager_runtime_inputs() {
   local file="$1" default_repo_url="$2" default_repo_ref="$3" default_source_path="$4" default_project_name="$5" target_label="$6"
-  local repo_url repo_ref source_path compose_project_name
+  local repo_url repo_ref source_path compose_project_name warp_enabled warp_proxy_url gateway_proxy_mode
 
   repo_url="$(prompt_default "请输入${target_label}仓库地址" "$(get_env_value "${file}" CODEXMANAGER_REPO_URL "${default_repo_url}")")"
   repo_ref="$(prompt_default "请输入${target_label}分支/标签" "$(get_env_value "${file}" CODEXMANAGER_REPO_REF "${default_repo_ref}")")"
   source_path="$(prompt_default "请输入${target_label}源码路径（如果输入未被独占的目录可自动拉取）" "$(get_env_value "${file}" CODEXMANAGER_SOURCE_PATH "${default_source_path}")")"
   source_path="$(normalize_path "${source_path}")"
   compose_project_name="$(prompt_default "请输入${target_label} compose project name" "$(get_env_value "${file}" CODEXMANAGER_COMPOSE_PROJECT_NAME "${default_project_name}")")"
+  warp_enabled="$(prompt_bool_default "是否启用内置 WARP sidecar（默认自动部署并按组切换）" "$(get_env_value "${file}" CODEXMANAGER_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")")"
+  if [[ "${warp_enabled}" == "1" ]]; then
+    warp_proxy_url="$(normalize_codexmanager_warp_proxy_url_default "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL "$(default_codexmanager_warp_proxy_url)")")"
+    gateway_proxy_mode="$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE "${DEFAULT_CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE}")"
+    log "WARP 已启用：将自动使用内置 sidecar ${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}（${warp_proxy_url}）。"
+  else
+    warp_proxy_url=""
+    gateway_proxy_mode="${DEFAULT_CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE}"
+  fi
 
-  write_codexmanager_runtime_env "${file}" "${repo_url}" "${repo_ref}" "${source_path}" "${compose_project_name}"
+  write_codexmanager_runtime_env "${file}" "${repo_url}" "${repo_ref}" "${source_path}" "${compose_project_name}" "${warp_enabled}" "${warp_proxy_url}" "${gateway_proxy_mode}"
   log "已写入 ${file}"
 }
 
@@ -1290,6 +1346,29 @@ wait_for_http_ready() {
     sleep 2
   done
   warn "${label} 在等待窗口内未确认就绪：${url}"
+  return 1
+}
+
+wait_for_codexmanager_warp_sidecar_ready() {
+  local source_path="$1" compose_project_name="$2" compose_file="$3" env_file="$4" max_attempts="${5:-45}"
+  local attempt container_id status
+  for ((attempt=1; attempt<=max_attempts; attempt+=1)); do
+    container_id="$(
+      cd "${source_path}" && \
+      COMPOSE_PROJECT_NAME="${compose_project_name}" docker compose --env-file "${env_file}" -f "${compose_file}" ps -q "${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}" 2>/dev/null | head -n 1
+    )"
+    if [[ -n "${container_id}" ]]; then
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_id}" 2>/dev/null || true)"
+      case "${status}" in
+        healthy|running)
+          log "WARP Sidecar 已就绪（${status}）：${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}"
+          return 0
+          ;;
+      esac
+    fi
+    sleep 2
+  done
+  warn "WARP Sidecar 在等待窗口内未确认就绪：${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}"
   return 1
 }
 
@@ -1443,6 +1522,12 @@ show_codexmanager_access_info_before() {
   printf '  - 容器内 API 地址:       %s\n' "$(codexmanager_service_api_base)"
   printf '  - 宿主机 API 地址:       http://127.0.0.1:%s/v1\n' "${DEFAULT_CODEXMANAGER_SERVICE_PORT}"
   printf '  - 宿主机 Web 地址:       http://127.0.0.1:%s/\n' "${DEFAULT_CODEXMANAGER_WEB_PORT}"
+  printf '  - WARP 模式:            %s\n' "$(if [[ "$(get_env_value "${file}" CODEXMANAGER_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")" == "1" ]]; then printf '开启'; else printf '关闭'; fi)"
+  if [[ "$(get_env_value "${file}" CODEXMANAGER_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")" == "1" ]]; then
+    printf '  - WARP Sidecar:         %s (%s)\n' "${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}" "$(get_env_value "${file}" CODEXMANAGER_WARP_IMAGE "${DEFAULT_CODEXMANAGER_WARP_IMAGE}")"
+    printf '  - WARP/代理 URL:        %s\n' "$(normalize_codexmanager_warp_proxy_url_default "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL "$(default_codexmanager_warp_proxy_url)")")"
+    printf '  - WARP 策略模式:        %s\n' "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE "${DEFAULT_CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE}")"
+  fi
   printf '  - 说明: %s会后台启动服务，并在当前终端实时显示日志；按 Ctrl+C 只退出日志视图，不会停止服务。\n\n' "${branch_label}"
 }
 
@@ -1452,6 +1537,11 @@ show_codexmanager_access_info_after() {
   printf '  - 独立网络名:           %s\n' "$(get_env_value "${file}" CODEXMANAGER_NETWORK_NAME "")"
   printf '  - 宿主机 Web 地址:       http://127.0.0.1:%s/\n' "${DEFAULT_CODEXMANAGER_WEB_PORT}"
   printf '  - 宿主机 API 地址:       http://127.0.0.1:%s/v1\n' "${DEFAULT_CODEXMANAGER_SERVICE_PORT}"
+  printf '  - WARP 模式:            %s\n' "$(if [[ "$(get_env_value "${file}" CODEXMANAGER_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")" == "1" ]]; then printf '开启'; else printf '关闭'; fi)"
+  if [[ "$(get_env_value "${file}" CODEXMANAGER_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")" == "1" ]]; then
+    printf '  - WARP Sidecar:         %s (%s)\n' "${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}" "$(get_env_value "${file}" CODEXMANAGER_WARP_IMAGE "${DEFAULT_CODEXMANAGER_WARP_IMAGE}")"
+    printf '  - WARP/代理 URL:        %s\n' "$(normalize_codexmanager_warp_proxy_url_default "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL "$(default_codexmanager_warp_proxy_url)")")"
+  fi
   printf '  - 说明: 下面将实时显示 compose 日志；按 Ctrl+C 只退出日志视图，服务会继续在后台运行。\n\n'
 }
 
@@ -1482,9 +1572,11 @@ show_codexmanager_remote_access_info_before() {
   printf '  - Compose 文件:         %s\n' "${compose_file}"
   printf '  - Nginx server_name:    %s\n' "$(get_env_value "${file}" CODEXMANAGER_REMOTE_SERVER_NAME "${DEFAULT_CODEXMANAGER_REMOTE_SERVER_NAME}")"
   printf '  - Nginx 对外端口:        %s\n' "$(get_env_value "${file}" CODEXMANAGER_REMOTE_HTTP_PORT "${DEFAULT_CODEXMANAGER_REMOTE_HTTP_PORT}")"
-  printf '  - WARP 模式:            %s\n' "$(if [[ "$(get_env_value "${file}" CODEXMANAGER_REMOTE_WARP_ENABLED "0")" == "1" ]]; then printf '开启'; else printf '关闭'; fi)"
-  if [[ "$(get_env_value "${file}" CODEXMANAGER_REMOTE_WARP_ENABLED "0")" == "1" ]]; then
-    printf '  - WARP/代理 URL:        %s\n' "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL "")"
+  printf '  - WARP 模式:            %s\n' "$(if [[ "$(get_env_value "${file}" CODEXMANAGER_REMOTE_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")" == "1" ]]; then printf '开启'; else printf '关闭'; fi)"
+  if [[ "$(get_env_value "${file}" CODEXMANAGER_REMOTE_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")" == "1" ]]; then
+    printf '  - WARP Sidecar:         %s (%s)\n' "${DEFAULT_CODEXMANAGER_WARP_SERVICE_NAME}" "$(get_env_value "${file}" CODEXMANAGER_WARP_IMAGE "${DEFAULT_CODEXMANAGER_WARP_IMAGE}")"
+    printf '  - WARP/代理 URL:        %s\n' "$(normalize_codexmanager_warp_proxy_url_default "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL "$(default_codexmanager_warp_proxy_url)")")"
+    printf '  - WARP 策略模式:        %s\n' "$(get_env_value "${file}" CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE "${DEFAULT_CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE}")"
   fi
   printf '  - 本机检查地址:         http://127.0.0.1:%s/\n' "$(get_env_value "${file}" CODEXMANAGER_REMOTE_HTTP_PORT "${DEFAULT_CODEXMANAGER_REMOTE_HTTP_PORT}")"
   printf '  - 下游接入 /v1:         %s/v1\n' "$(codexmanager_remote_public_host_label "${file}")"
@@ -1519,10 +1611,17 @@ run_codexmanager_deploy_option() {
   ensure_local_codexmanager_ports_available_or_owned_by_project "${compose_project_name}" "${branch_label}"
 
   show_codexmanager_access_info_before "${branch_label}" "${file}" "${compose_file}"
+  local warp_enabled
+  local -a compose_profile_args=()
+  warp_enabled="$(get_env_value "${file}" CODEXMANAGER_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")"
+  mapfile -t compose_profile_args < <(append_codexmanager_warp_profile_args "${warp_enabled}")
   (
     cd "${source_path}"
-    COMPOSE_PROJECT_NAME="${compose_project_name}" docker compose -f "${compose_file}" up --build -d
+    COMPOSE_PROJECT_NAME="${compose_project_name}" docker compose "${compose_profile_args[@]}" --env-file "${file}" -f "${compose_file}" up --build -d
   )
+  if [[ "${warp_enabled}" == "1" ]]; then
+    wait_for_codexmanager_warp_sidecar_ready "${source_path}" "${compose_project_name}" "${compose_file}" "${file}" 45 || true
+  fi
   wait_for_codexmanager_stack_ready || warn "${branch_label}部署已启动，但宿主机 Web/API 端口尚未确认可访问，请结合下面日志继续观察。"
   ensure_codexmanager_affinity_defaults || true
   show_codexmanager_access_info_after "${branch_label}" "${file}"
@@ -1548,10 +1647,17 @@ run_codexmanager_remote_deploy_option() {
   render_codexmanager_remote_nginx_conf "${file}" "${source_path}"
 
   show_codexmanager_remote_access_info_before "${branch_label}" "${file}" "${compose_file}"
+  local warp_enabled
+  local -a compose_profile_args=()
+  warp_enabled="$(get_env_value "${file}" CODEXMANAGER_REMOTE_WARP_ENABLED "${DEFAULT_CODEXMANAGER_WARP_ENABLED}")"
+  mapfile -t compose_profile_args < <(append_codexmanager_warp_profile_args "${warp_enabled}")
   (
     cd "${source_path}"
-    COMPOSE_PROJECT_NAME="${compose_project_name}" docker compose --env-file "${file}" -f "${compose_file}" up --build -d
+    COMPOSE_PROJECT_NAME="${compose_project_name}" docker compose "${compose_profile_args[@]}" --env-file "${file}" -f "${compose_file}" up --build -d
   )
+  if [[ "${warp_enabled}" == "1" ]]; then
+    wait_for_codexmanager_warp_sidecar_ready "${source_path}" "${compose_project_name}" "${compose_file}" "${file}" 45 || true
+  fi
   wait_for_codexmanager_remote_stack_ready "${http_port}" || warn "${branch_label}部署已启动，但远程 nginx 检查口尚未确认可访问，请结合下面日志继续观察。"
   show_codexmanager_remote_access_info_after "${branch_label}" "${file}"
   follow_codexmanager_compose_logs "${source_path}" "${compose_project_name}" "${compose_file}" "${branch_label}" "${file}"
@@ -1641,9 +1747,9 @@ show_menu() {
 5) 停止并删除当前 Codex 容器
 6) 删除 Codex 镜像/关联网络卷
 7) 安装并启动 Cockpit Tools 容器
-8) 拉取并后台部署当前项目 CodexManager（实时日志）
-9) 拉取并后台部署 qxcnm/Codex-Manager（实时日志）
-10) 远程服务器 Docker + Nginx 部署（默认亲和度，支持 OAuth/API Key，可选 WARP）
+8) 拉取并后台部署当前项目 CodexManager（默认启用内置 WARP sidecar，实时日志）
+9) 拉取并后台部署 qxcnm/Codex-Manager（默认启用内置 WARP sidecar，实时日志）
+10) 远程服务器 Docker + Nginx 部署（默认亲和度，支持 OAuth/API Key，默认启用内置 WARP sidecar）
 11) 为当前 Codex 容器安装可选 OLLVM 工具链
 0) 退出
 

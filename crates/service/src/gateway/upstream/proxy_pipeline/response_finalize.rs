@@ -1,3 +1,4 @@
+use codexmanager_core::storage::Account;
 use tiny_http::Request;
 
 use super::super::super::request_log::RequestLogUsage;
@@ -130,7 +131,7 @@ pub(super) fn finalize_upstream_response(
     response: reqwest::blocking::Response,
     inflight_guard: super::super::super::AccountInFlightGuard,
     context: &GatewayUpstreamExecutionContext<'_>,
-    account_id: &str,
+    account: &Account,
     request_body: &crate::gateway::RequestPayload,
     last_attempt_url: Option<&str>,
     last_attempt_error: Option<&str>,
@@ -145,6 +146,7 @@ pub(super) fn finalize_upstream_response(
     model_for_log: Option<&str>,
     attempted_account_ids: Option<&[String]>,
 ) -> Result<(), String> {
+    let account_id = account.id.as_str();
     let status_code = response.status().as_u16();
     let mut final_error = None;
 
@@ -286,6 +288,7 @@ pub(super) fn finalize_upstream_response(
         && !client_delivery_failed
         && !upstream_eof_without_terminal
     {
+        super::super::super::record_account_group_proxy_success(account);
         super::super::super::affinity::clear_account_hard_quota_exhaustion(
             context.storage(),
             account_id,
@@ -294,6 +297,13 @@ pub(super) fn finalize_upstream_response(
             super::super::super::affinity::record_peer_runtime_success(runtime_key, account_id);
         }
     } else {
+        if final_error
+            .as_deref()
+            .map(crate::error_codes::classify_message)
+            == Some(crate::error_codes::ErrorCode::UpstreamChallengeBlocked)
+        {
+            super::super::super::record_account_group_proxy_challenge(account);
+        }
         let _ = super::super::super::affinity::mark_account_hard_quota_exhausted(
             context.storage(),
             account_id,

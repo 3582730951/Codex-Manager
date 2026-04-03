@@ -1,4 +1,25 @@
 services:
+  codexmanager-warp:
+    image: ${CODEXMANAGER_WARP_IMAGE:-caomingjun/warp:latest}
+    restart: unless-stopped
+    profiles: ["warp"]
+    environment:
+      WARP_SLEEP: ${CODEXMANAGER_WARP_SLEEP:-5}
+      WARP_LICENSE_KEY: ${CODEXMANAGER_WARP_LICENSE_KEY:-}
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    device_cgroup_rules:
+      - "c 10:200 rwm"
+    cap_add:
+      - MKNOD
+      - AUDIT_WRITE
+      - NET_ADMIN
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+      net.ipv4.conf.all.src_valid_mark: 1
+    volumes:
+      - codexmanager-warp-data:/var/lib/cloudflare-warp
+
   codexmanager-service:
     build:
       context: ..
@@ -14,10 +35,15 @@ services:
       CODEXMANAGER_CONTEXT_REPLAY_ENABLED: "1"
       CODEXMANAGER_AFFINITY_SOFT_QUOTA_PERCENT: "5"
       CODEXMANAGER_REPLAY_MAX_TURNS: "12"
+      CODEXMANAGER_UPSTREAM_PROXY_URL: ${CODEXMANAGER_UPSTREAM_PROXY_URL:-}
+      CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL: ${CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL:-}
+      CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE: ${CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE:-group_auto}
     volumes:
       - codexmanager-data:/data
     ports:
       - "48760:48760"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   codexmanager-web:
     build:
@@ -41,3 +67,4 @@ services:
 
 volumes:
   codexmanager-data:
+  codexmanager-warp-data:

@@ -553,6 +553,9 @@ impl Storage {
             "036_accounts_metadata_and_drop_group_name",
             include_str!("../../migrations/036_accounts_metadata_and_drop_group_name.sql"),
         )?;
+        // 中文注释：036 历史迁移会删掉 accounts/login_sessions.group_name；
+        // 当前账号组路由仍依赖这两列，因此在迁移后立即通过 compat 补回。
+        self.ensure_account_meta_columns()?;
         self.apply_sql_or_compat_migration(
             "037_aggregate_api_routing",
             include_str!("../../migrations/037_aggregate_api_routing.sql"),
@@ -599,7 +602,7 @@ impl Storage {
 
     pub fn insert_login_session(&self, session: &LoginSession) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO login_sessions (login_id, code_verifier, state, status, error, workspace_id, note, tags, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO login_sessions (login_id, code_verifier, state, status, error, workspace_id, note, tags, group_name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             (
                 &session.login_id,
                 &session.code_verifier,
@@ -609,6 +612,7 @@ impl Storage {
                 &session.workspace_id,
                 &session.note,
                 &session.tags,
+                &session.group_name,
                 session.created_at,
                 session.updated_at,
             ),
@@ -618,7 +622,7 @@ impl Storage {
 
     pub fn get_login_session(&self, login_id: &str) -> Result<Option<LoginSession>> {
         let mut stmt = self.conn.prepare(
-            "SELECT login_id, code_verifier, state, status, error, workspace_id, note, tags, created_at, updated_at FROM login_sessions WHERE login_id = ?1",
+            "SELECT login_id, code_verifier, state, status, error, workspace_id, note, tags, group_name, created_at, updated_at FROM login_sessions WHERE login_id = ?1",
         )?;
         let mut rows = stmt.query([login_id])?;
         if let Some(row) = rows.next()? {
@@ -631,9 +635,9 @@ impl Storage {
                 workspace_id: row.get(5)?,
                 note: row.get(6)?,
                 tags: row.get(7)?,
-                group_name: None,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
+                group_name: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
             }))
         } else {
             Ok(None)

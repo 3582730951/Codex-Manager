@@ -221,7 +221,7 @@ fn storage_login_session_roundtrip() {
         workspace_id: Some("org_123".to_string()),
         note: None,
         tags: None,
-        group_name: None,
+        group_name: Some("auto:team-alpha".to_string()),
         created_at: now_ts(),
         updated_at: now_ts(),
     };
@@ -234,6 +234,46 @@ fn storage_login_session_roundtrip() {
         .expect("session exists");
     assert_eq!(loaded.status, "pending");
     assert_eq!(loaded.workspace_id.as_deref(), Some("org_123"));
+    assert_eq!(loaded.group_name.as_deref(), Some("auto:team-alpha"));
+}
+
+#[test]
+fn storage_account_group_name_roundtrip_and_filter() {
+    let storage = Storage::open_in_memory().expect("open in memory");
+    storage.init().expect("init schema");
+    let now = now_ts();
+
+    for (idx, group_name) in [Some("auto:team-alpha"), Some("warp:team-beta"), None]
+        .into_iter()
+        .enumerate()
+    {
+        storage
+            .insert_account(&Account {
+                id: format!("acc-group-{idx}"),
+                label: format!("Account {idx}"),
+                issuer: "https://auth.openai.com".to_string(),
+                chatgpt_account_id: None,
+                workspace_id: None,
+                group_name: group_name.map(str::to_string),
+                sort: idx as i64,
+                status: "active".to_string(),
+                created_at: now + idx as i64,
+                updated_at: now + idx as i64,
+            })
+            .expect("insert account");
+    }
+
+    let account = storage
+        .find_account_by_id("acc-group-0")
+        .expect("find account")
+        .expect("account exists");
+    assert_eq!(account.group_name.as_deref(), Some("auto:team-alpha"));
+
+    let filtered = storage
+        .list_accounts_filtered(None, Some("warp:team-beta"))
+        .expect("list filtered");
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].id, "acc-group-1");
 }
 
 #[test]

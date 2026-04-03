@@ -256,7 +256,7 @@ fn codex_header_profile_uses_dynamic_originator_and_residency_requirement() {
     );
     assert!(find_header(&headers, "User-Agent")
         .as_deref()
-        .is_some_and(|value| value.contains("codex_cli_rs/0.101.0")));
+        .is_some_and(|value| value.contains("codex_cli_rs/0.118.0")));
 }
 
 #[test]

@@ -1,5 +1,21 @@
 use super::*;
+use codexmanager_core::storage::Account;
 use reqwest::header::HeaderValue;
+
+fn build_account(account_id: &str) -> Account {
+    Account {
+        id: account_id.to_string(),
+        label: account_id.to_string(),
+        issuer: "issuer".to_string(),
+        chatgpt_account_id: Some(format!("chatgpt-{account_id}")),
+        workspace_id: Some(format!("workspace-{account_id}")),
+        group_name: None,
+        sort: 0,
+        status: "active".to_string(),
+        created_at: 1,
+        updated_at: 1,
+    }
+}
 
 #[test]
 fn status_404_with_more_candidates_triggers_failover() {
@@ -7,7 +23,7 @@ fn status_404_with_more_candidates_triggers_failover() {
     storage.init().expect("init");
     let decision = decide_upstream_outcome(
         &storage,
-        "acc-404",
+        &build_account("acc-404"),
         reqwest::StatusCode::NOT_FOUND,
         None,
         "https://chatgpt.com/backend-api/codex/chat/completions",
@@ -23,7 +39,7 @@ fn status_404_on_last_candidate_keeps_upstream_response() {
     storage.init().expect("init");
     let decision = decide_upstream_outcome(
         &storage,
-        "acc-404",
+        &build_account("acc-404"),
         reqwest::StatusCode::NOT_FOUND,
         None,
         "https://chatgpt.com/backend-api/codex/chat/completions",
@@ -39,7 +55,7 @@ fn status_429_with_more_candidates_triggers_failover() {
     storage.init().expect("init");
     let decision = decide_upstream_outcome(
         &storage,
-        "acc-429",
+        &build_account("acc-429"),
         reqwest::StatusCode::TOO_MANY_REQUESTS,
         None,
         "https://api.openai.com/v1/responses",
@@ -55,7 +71,7 @@ fn status_429_on_last_candidate_keeps_upstream_response() {
     storage.init().expect("init");
     let decision = decide_upstream_outcome(
         &storage,
-        "acc-429",
+        &build_account("acc-429"),
         reqwest::StatusCode::TOO_MANY_REQUESTS,
         None,
         "https://api.openai.com/v1/responses",
@@ -72,7 +88,7 @@ fn challenge_with_more_candidates_triggers_failover() {
     let content_type = HeaderValue::from_static("text/html; charset=utf-8");
     let decision = decide_upstream_outcome(
         &storage,
-        "acc-challenge",
+        &build_account("acc-challenge"),
         reqwest::StatusCode::FORBIDDEN,
         Some(&content_type),
         "https://chatgpt.com/backend-api/codex/responses",
@@ -89,7 +105,7 @@ fn challenge_on_last_candidate_keeps_upstream_response() {
     let content_type = HeaderValue::from_static("text/html; charset=utf-8");
     let decision = decide_upstream_outcome(
         &storage,
-        "acc-challenge",
+        &build_account("acc-challenge"),
         reqwest::StatusCode::FORBIDDEN,
         Some(&content_type),
         "https://chatgpt.com/backend-api/codex/responses",
@@ -105,7 +121,7 @@ fn status_500_with_more_candidates_triggers_failover() {
     storage.init().expect("init");
     let decision = decide_upstream_outcome(
         &storage,
-        "acc-500",
+        &build_account("acc-500"),
         reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         None,
         "https://chatgpt.com/backend-api/codex/responses",
@@ -121,7 +137,7 @@ fn status_500_on_last_candidate_keeps_upstream_response() {
     storage.init().expect("init");
     let decision = decide_upstream_outcome(
         &storage,
-        "acc-500",
+        &build_account("acc-500"),
         reqwest::StatusCode::INTERNAL_SERVER_ERROR,
         None,
         "https://chatgpt.com/backend-api/codex/responses",

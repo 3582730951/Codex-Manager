@@ -98,11 +98,16 @@ fn matches_gateway_account_proxy_request_target(
     true
 }
 
-fn is_gateway_account_proxy_request(target_url: &str, request_path: &str, is_stream: bool) -> bool {
+fn is_gateway_account_proxy_request(
+    target_url: &str,
+    request_path: &str,
+    is_stream: bool,
+    account: &Account,
+) -> bool {
     if !matches_gateway_account_proxy_request_target(target_url, request_path, is_stream) {
         return false;
     }
-    super::super::super::gateway_account_proxy_url().is_some()
+    super::super::super::should_use_gateway_account_proxy_for_account(account)
 }
 
 fn is_gateway_account_proxy_connect_error(err: &reqwest::Error) -> bool {
@@ -331,7 +336,8 @@ pub(in super::super) fn send_upstream_request(
     )?;
 
     let result =
-        if is_gateway_account_proxy_request(target_url, request_ctx.request_path, is_stream) {
+        if is_gateway_account_proxy_request(target_url, request_ctx.request_path, is_stream, account)
+        {
             if let Some(proxy_client) = super::super::super::gateway_account_proxy_client() {
                 match send_built_request(
                     &proxy_client,
@@ -417,9 +423,11 @@ pub(in super::super) fn send_upstream_request(
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_request_body, matches_gateway_account_proxy_request_target,
+        encode_request_body, is_gateway_account_proxy_request,
+        matches_gateway_account_proxy_request_target,
         resolve_request_compression_with_flag, RequestCompression,
     };
+    use codexmanager_core::storage::Account;
     use std::sync::MutexGuard;
 
     fn runtime_guard() -> MutexGuard<'static, ()> {
@@ -619,6 +627,42 @@ mod tests {
             "https://api.openai.com/v1/responses",
             "/v1/responses",
             true
+        ));
+    }
+
+    #[test]
+    fn gateway_account_proxy_respects_account_group_policy() {
+        let _guard = runtime_guard();
+        let _proxy = EnvGuard::set("CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_URL", "socks5://127.0.0.1:40000");
+        crate::gateway::reload_runtime_config_from_env();
+        let warp_account = Account {
+            id: "acc-warp".to_string(),
+            label: "acc-warp".to_string(),
+            issuer: "issuer".to_string(),
+            chatgpt_account_id: Some("chatgpt-1".to_string()),
+            workspace_id: Some("workspace-1".to_string()),
+            group_name: Some("warp:team-a".to_string()),
+            sort: 0,
+            status: "active".to_string(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let direct_account = Account {
+            group_name: Some("direct:team-a".to_string()),
+            ..warp_account.clone()
+        };
+
+        assert!(is_gateway_account_proxy_request(
+            "https://chatgpt.com/backend-api/codex/responses",
+            "/v1/responses",
+            true,
+            &warp_account
+        ));
+        assert!(!is_gateway_account_proxy_request(
+            "https://chatgpt.com/backend-api/codex/responses",
+            "/v1/responses",
+            true,
+            &direct_account
         ));
     }
 }

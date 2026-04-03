@@ -1,4 +1,4 @@
-use codexmanager_core::storage::Storage;
+use codexmanager_core::storage::{Account, Storage};
 use reqwest::header::HeaderValue;
 
 pub(in super::super) enum UpstreamOutcomeDecision {
@@ -8,7 +8,7 @@ pub(in super::super) enum UpstreamOutcomeDecision {
 
 pub(in super::super) fn decide_upstream_outcome<F>(
     storage: &Storage,
-    account_id: &str,
+    account: &Account,
     status: reqwest::StatusCode,
     upstream_content_type: Option<&HeaderValue>,
     url: &str,
@@ -18,6 +18,7 @@ pub(in super::super) fn decide_upstream_outcome<F>(
 where
     F: FnMut(Option<&str>, u16, Option<&str>),
 {
+    let account_id = account.id.as_str();
     if matches!(status.as_u16(), 429 | 500..=599) {
         // 中文注释：即使当前响应会回给客户端，也要先标记冷却，
         // 否则并发流量会继续命中同一故障账号造成雪崩。
@@ -61,6 +62,7 @@ where
             account_id,
             super::super::super::CooldownReason::Challenge,
         );
+        super::super::super::record_account_group_proxy_challenge(account);
         log_gateway_result(
             Some(url),
             status.as_u16(),

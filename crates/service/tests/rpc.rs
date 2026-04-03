@@ -437,6 +437,36 @@ fn rpc_account_update_profile_updates_label_note_tags_and_sort() {
 }
 
 #[test]
+fn rpc_account_update_group_name_roundtrip() {
+    let ctx = RpcTestContext::new("rpc-account-update-group-name");
+    ctx.seed_accounts(1);
+
+    let server = codexmanager_service::start_one_shot_server().expect("start server");
+    let req = JsonRpcRequest {
+        id: 79,
+        method: "account/update".to_string(),
+        params: Some(serde_json::json!({
+            "accountId": "acc-0",
+            "groupName": "auto:team-red"
+        })),
+    };
+    let json = serde_json::to_string(&req).expect("serialize");
+    let v = post_rpc(&server.addr, &json);
+    let result = v.get("result").expect("result");
+    assert_eq!(
+        result.get("ok").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+
+    let storage = Storage::open(ctx.db_path()).expect("open db");
+    let account = storage
+        .find_account_by_id("acc-0")
+        .expect("find account")
+        .expect("account exists");
+    assert_eq!(account.group_name.as_deref(), Some("auto:team-red"));
+}
+
+#[test]
 fn rpc_app_settings_set_invalid_payload_returns_structured_error() {
     let _ctx = RpcTestContext::new("rpc-app-settings-invalid-payload");
     let server = codexmanager_service::start_one_shot_server().expect("start server");

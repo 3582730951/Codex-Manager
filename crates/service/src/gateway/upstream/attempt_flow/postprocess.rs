@@ -604,7 +604,7 @@ where
 
     match decide_upstream_outcome(
         storage,
-        &account.id,
+        account,
         status,
         upstream.headers().get(reqwest::header::CONTENT_TYPE),
         url,

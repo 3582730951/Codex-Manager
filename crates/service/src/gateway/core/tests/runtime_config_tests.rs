@@ -54,6 +54,7 @@ fn reload_from_env_updates_timeout_and_proxy() {
     let _proxy_guard = EnvGuard::set(ENV_UPSTREAM_PROXY_URL, "socks5://127.0.0.1:7890");
     let _gateway_proxy_guard =
         EnvGuard::set(ENV_GATEWAY_ACCOUNT_PROXY_URL, "http://127.0.0.1:8080");
+    let _gateway_proxy_mode_guard = EnvGuard::set(ENV_GATEWAY_ACCOUNT_PROXY_MODE, "group_auto");
 
     reload_from_env();
 
@@ -82,6 +83,7 @@ fn reload_from_env_updates_timeout_and_proxy() {
         gateway_account_proxy_url().as_deref(),
         Some("http://127.0.0.1:8080")
     );
+    assert_eq!(gateway_account_proxy_mode(), GatewayAccountProxyMode::GroupAuto);
 }
 
 #[test]
@@ -96,6 +98,7 @@ fn reload_from_env_defaults_account_max_inflight_to_dynamic_scheduler_mode() {
     let _experimental_log_guard = EnvGuard::clear(ENV_EXPERIMENTAL_ASYNC_REQUEST_LOG);
     let _experimental_sse_guard = EnvGuard::clear(ENV_EXPERIMENTAL_SSE_FRAME_PUMP_V2);
     let _experimental_http_guard = EnvGuard::clear(ENV_EXPERIMENTAL_CAPPED_HTTP_WORKERS);
+    let _gateway_proxy_mode_guard = EnvGuard::clear(ENV_GATEWAY_ACCOUNT_PROXY_MODE);
 
     reload_from_env();
 
@@ -108,6 +111,7 @@ fn reload_from_env_defaults_account_max_inflight_to_dynamic_scheduler_mode() {
     assert!(!experimental_async_request_log_enabled());
     assert!(!experimental_sse_frame_pump_v2_enabled());
     assert!(!experimental_capped_http_workers_enabled());
+    assert_eq!(gateway_account_proxy_mode(), GatewayAccountProxyMode::GroupAuto);
 }
 
 #[test]

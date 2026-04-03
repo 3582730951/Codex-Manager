@@ -165,6 +165,13 @@ pub(crate) const ENV_OVERRIDE_CATALOG: &[EnvOverrideCatalogItem] = &[
         "900",
     ),
     EnvOverrideCatalogItem::new(
+        "CODEXMANAGER_GATEWAY_ACCOUNT_PROXY_MODE",
+        "账号组 WARP 代理模式",
+        ENV_OVERRIDE_SCOPE_SERVICE,
+        ENV_OVERRIDE_APPLY_MODE_RUNTIME,
+        "group_auto",
+    ),
+    EnvOverrideCatalogItem::new(
         "CODEXMANAGER_GATEWAY_KEEPALIVE_JITTER_SECS",
         "保活抖动（秒）",
         ENV_OVERRIDE_SCOPE_SERVICE,

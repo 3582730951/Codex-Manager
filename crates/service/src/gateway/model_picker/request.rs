@@ -207,7 +207,7 @@ mod tests {
         let actual = append_client_version_query("https://example.com/backend-api/codex/models");
         assert_eq!(
             actual,
-            "https://example.com/backend-api/codex/models?client_version=0.101.0"
+            "https://example.com/backend-api/codex/models?client_version=0.118.0"
         );
     }
 
@@ -217,18 +217,18 @@ mod tests {
             append_client_version_query("https://example.com/backend-api/codex/models?limit=20");
         assert_eq!(
             actual,
-            "https://example.com/backend-api/codex/models?limit=20&client_version=0.101.0"
+            "https://example.com/backend-api/codex/models?limit=20&client_version=0.118.0"
         );
     }
 
     #[test]
     fn append_client_version_query_does_not_duplicate_param() {
         let actual = append_client_version_query(
-            "https://example.com/backend-api/codex/models?client_version=0.101.0",
+            "https://example.com/backend-api/codex/models?client_version=0.118.0",
         );
         assert_eq!(
             actual,
-            "https://example.com/backend-api/codex/models?client_version=0.101.0"
+            "https://example.com/backend-api/codex/models?client_version=0.118.0"
         );
     }
 

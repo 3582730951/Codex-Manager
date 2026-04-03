@@ -55,6 +55,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
             let label = super::string_param(req, "label");
             let note = super::string_param(req, "note");
             let tags = super::string_param(req, "tags");
+            let group_name = super::string_param(req, "groupName");
             super::ok_or_error(account_update::update_account(
                 account_id,
                 sort,
@@ -62,6 +63,7 @@ pub(super) fn try_handle(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
                 label.as_deref(),
                 note.as_deref(),
                 tags.as_deref(),
+                group_name.as_deref(),
             ))
         }
         "account/import" => {
